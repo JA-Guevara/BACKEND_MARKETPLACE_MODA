@@ -54,6 +54,12 @@ uvicorn src.main:app --reload --port 8000
 
 Documentacion interactiva: `http://localhost:8000/docs`.
 
+## Despliegue en Railway
+
+El archivo `railway.json` configura Railpack, ejecuta las migraciones antes del despliegue, inicia FastAPI con el puerto asignado por Railway y valida `/health`.
+
+Configure en Railway al menos `DATABASE_URL`, `JWT_SECRET_KEY`, `APP_ENV=production`, `FRONTEND_URL` y `CORS_ORIGINS`. Las variables SMTP son necesarias para enviar correos reales.
+
 ## Rutas principales
 
 - `/api/v1/auth`: registro, login, tokens, contrasena y verificacion.
