@@ -1,0 +1,51 @@
+from functools import lru_cache
+
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
+    )
+
+    app_name: str = "FashionStore API"
+    app_env: str = "development"
+    debug: bool = False
+    api_v1_prefix: str = "/api/v1"
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/fashionstore"
+    jwt_secret_key: str = Field(default="development-only-secret-key-change-me-now", min_length=32)
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 7
+    verification_token_expire_hours: int = 24
+    password_reset_token_expire_minutes: int = 30
+    max_login_attempts: int = 5
+    account_lock_minutes: int = 15
+    frontend_url: str = "http://localhost:4200"
+    cors_origins: list[str] = ["http://localhost:4200"]
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str = "no-reply@fashionstore.local"
+    smtp_use_tls: bool = True
+
+    @field_validator("api_v1_prefix")
+    @classmethod
+    def validate_prefix(cls, value: str) -> str:
+        return "/" + value.strip("/")
+
+    @model_validator(mode="after")
+    def validate_production_secret(self) -> "Settings":
+        if self.app_env.lower() == "production" and self.jwt_secret_key.startswith("development-only"):
+            raise ValueError("JWT_SECRET_KEY must be replaced in production.")
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
