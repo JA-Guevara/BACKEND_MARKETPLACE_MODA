@@ -9,6 +9,7 @@ from sqlalchemy import select, delete, func
 from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
+from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.config.settings import settings
@@ -49,6 +50,7 @@ def branches(db: Session = Depends(get_db)):
 def profile(data: ProfileUpdate, user: User, db: Session = Depends(get_db)):
     for key, value in data.model_dump().items():
         setattr(user, key, value)
+    RecordAuditEvent(db).execute(action="commerce.profile_updated", entity_type="user", entity_id=str(user.id), description="Cliente actualizo su perfil.", actor_user_id=user.id)
     db.commit()
     return response({"id": user.id, "email": user.email, "first_name": user.first_name, "last_name": user.last_name, "phone": user.phone})
 
@@ -133,9 +135,12 @@ def update_stock(variant_id: uuid.UUID, data: StockQuantity, user: StockWriter, 
     db.execute(select(ProductVariantModel.id).where(ProductVariantModel.id == variant_id).with_for_update())
     row = db.scalar(select(StockModel).where(StockModel.variant_id == variant_id, StockModel.branch_id == data.branch_id).with_for_update())
     if row:
+        previous = row.quantity
         row.quantity = data.quantity
     else:
+        previous = 0
         db.add(StockModel(variant_id=variant_id, branch_id=data.branch_id, quantity=data.quantity))
+    RecordAuditEvent(db).execute(action="commerce.stock_adjusted", entity_type="stock", entity_id=str(variant_id), description="Existencias ajustadas por sucursal.", actor_user_id=user.id, metadata={"branch_id":str(data.branch_id),"previous":previous,"quantity":data.quantity})
     db.commit()
     return response({"variant_id": variant_id, **data.model_dump()})
 

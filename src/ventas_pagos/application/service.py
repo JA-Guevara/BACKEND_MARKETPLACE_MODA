@@ -11,11 +11,15 @@ from src.inventario_sucursales.infrastructure.models.organization import BranchM
 from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel, WebhookEventModel
 from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.domain.states import TRANSITIONS
+from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 
 
 class CommerceService:
     def __init__(self, db: Session):
         self.db = db
+
+    def audit(self, order, action, description):
+        RecordAuditEvent(self.db).execute(action="commerce." + action, entity_type="order", entity_id=str(order.id), description=description, metadata={"number":order.number,"status":order.status,"payment_status":order.payment_status})
 
     def branch(self, branch_id):
         branch = self.db.get(BranchModel, branch_id)
@@ -80,6 +84,8 @@ class CommerceService:
                 total=Decimal(cart["total"]), currency=cart["currency"], address=data.address.model_dump(), items=cart["items"],
                 tracking=[{"status": "pending_payment", "note": "Pedido creado; existencias reservadas.", "date": datetime.now(timezone.utc).isoformat()}])
             self.db.add(order)
+            self.db.flush()
+            self.audit(order, "order_created", "Pedido creado con reserva de existencias.")
             self.db.execute(delete(CartItemModel).where(CartItemModel.user_id == user.id))
             self.db.commit()
             self.db.refresh(order)
@@ -106,6 +112,7 @@ class CommerceService:
         if order.stripe_session_id:
             gateways.stripe_request("POST", f"checkout/sessions/{order.stripe_session_id}/expire")
         self.release(order, "cancelled")
+        self.audit(order, "order_cancelled", "Pedido cancelado; existencias liberadas.")
         self.db.commit()
         return order
 
@@ -124,6 +131,7 @@ class CommerceService:
         order.payment_method, order.payment_reference = data.method, data.reference
         order.status, order.payment_status = "paid", "paid"
         self.track(order, "Pago presencial/transferencia confirmado por administracion.")
+        self.audit(order, "payment_confirmed", "Pago manual confirmado por administracion.")
         self.db.commit()
         return order
 
@@ -136,6 +144,7 @@ class CommerceService:
         order.carrier = data.carrier or order.carrier
         order.tracking_number = data.tracking_number or order.tracking_number
         self.track(order, data.note or "Estado actualizado por administracion.")
+        self.audit(order, "tracking_updated", "Seguimiento del pedido actualizado.")
         self.db.commit()
         return order
 
@@ -159,5 +168,6 @@ class CommerceService:
                 order.payment_reference = session.get("payment_intent")
                 self.track(order, "Pago de prueba confirmado por webhook firmado de Stripe.")
         self.db.add(WebhookEventModel(event_id=event["id"]))
+        self.audit(order, "stripe_event", "Evento de Stripe de prueba verificado.")
         self.db.commit()
         return {"received": True}

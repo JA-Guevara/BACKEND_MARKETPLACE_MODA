@@ -29,6 +29,7 @@ class CheckoutOrder(BaseModel):
 
 
 class TrackingUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     status: Literal["processing", "shipped", "delivered"]
     carrier: str | None = Field(default=None, max_length=120)
     tracking_number: str | None = Field(default=None, max_length=150)
@@ -36,11 +37,13 @@ class TrackingUpdate(BaseModel):
 
 
 class ManualPayment(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     method: Literal["cash", "transfer"]
     reference: str = Field(min_length=3, max_length=255)
 
 
 class ProfileUpdate(BaseModel):
-    first_name: str = Field(min_length=1, max_length=100)
-    last_name: str = Field(min_length=1, max_length=100)
+    model_config = ConfigDict(str_strip_whitespace=True)
+    first_name: str = Field(min_length=2, max_length=100)
+    last_name: str = Field(min_length=2, max_length=100)
     phone: str | None = Field(default=None, max_length=30)
