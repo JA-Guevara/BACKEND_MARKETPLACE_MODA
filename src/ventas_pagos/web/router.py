@@ -35,7 +35,9 @@ def response(data=None):
 
 
 def order_data(order):
-    return {column.name: getattr(order, column.name) for column in OrderModel.__table__.columns if column.name not in {"stripe_url", "stripe_session_id"}}
+    data = {column.name: getattr(order, column.name) for column in OrderModel.__table__.columns if column.name not in {"stripe_url", "stripe_session_id"}}
+    data["total"] = str(order.total)
+    return data
 
 
 @router.get("/branches")
