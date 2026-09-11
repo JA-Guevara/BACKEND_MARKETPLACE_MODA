@@ -2,6 +2,8 @@
 
 Actualizado: 10 de septiembre de 2026. Trabajo en curso; presencia de archivos no significa validación funcional.
 
+Actualización 11/09: galería integrada en crear/editar prenda y guardado conjunto probado (ver FORMULARIO_PRENDA_IMAGENES.md). Comercio y analítica ya aparecen registrados en routes.py y existe migración 0003, pero el agente se interrumpió por créditos antes de completar la entrega y su validación. No aplicar automáticamente la migración ni declarar pagos listos.
+
 ## Solicitud y arquitectura
 
 Mantener FastAPI y las capas de cada funcionalidad. El usuario amplió el ciclo 1 del documento FashionStore con importación Excel, bitácora detallada, imágenes, métricas/IA, carrito, pedidos, Stripe y seguimiento. La trazabilidad general y el orden de pantallas están en `../../frontend_marketplace_moda/doc/ESTADO_ACTUAL.md`.

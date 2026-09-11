@@ -234,7 +234,12 @@ class ProductCreate(BaseModel):
     suppliers: list[ProductSupplierInput] = Field(default_factory=list)
 
 
+class ImageEdit(ImageCreate):
+    id: uuid.UUID | None = None
+
+
 class ProductUpdate(BaseModel):
+    images: list[ImageEdit] | None = None
     name: str | None = Field(default=None, min_length=2, max_length=180)
     slug: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, min_length=5)

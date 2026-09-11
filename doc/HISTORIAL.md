@@ -1,5 +1,18 @@
 # Historial de avance
 
+## 2026-09-11 — Revisión de correo de auditoría
+
+- Se confirmó que actor_email devuelve el correo del usuario relacionado con el evento; frontend lo prioriza en la tabla.
+- No se modificó la captura del backend en esta sesión. Pendiente valorar una instantánea histórica para conservar correo tras eliminación/cambios de usuario.
+- Pendientes de integración comercial y revisión general registrados en `../../frontend_marketplace_moda/doc/AJUSTES_VISUALES_Y_PENDIENTES.md`.
+
+## 2026-09-11 — Galería en PATCH de prenda
+
+- Agregado ImageEdit y campo images opcional en ProductUpdate.
+- Se preservan IDs válidos y se rechazan IDs ajenos/repetidos; datos y relación se guardan juntos.
+- Pruebas HTTP adicionales aprobadas junto con 118 comprobaciones de ciclo 1.
+- Documento FORMULARIO_PRENDA_IMAGENES.md agregado. Sin migraciones ni cambios a la base real por esta mejora.
+
 ## 2026-09-10 — Validación ampliada de importación
 
 - Prueba de lote con una fila válida y otra duplicada: no persistió la fila válida, tanto en preview como al intentar importar.

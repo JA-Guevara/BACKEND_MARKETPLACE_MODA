@@ -154,6 +154,22 @@ class CatalogService:
     def update_product(self, entity_id: uuid.UUID, data: ProductUpdate, actor: UserModel) -> ProductModel:
         product = self.require_product(entity_id)
         changes = data.model_dump(exclude_unset=True)
+        changes.pop("images", None)
+        if data.images is not None:
+            self._validate_primary_flags(data.images, "imagenes")
+            existing_images = {image.id: image for image in product.images}
+            ids = [image.id for image in data.images if image.id]
+            if len(ids) != len(set(ids)) or any(image_id not in existing_images for image_id in ids):
+                raise ValidationError("Las imagenes deben pertenecer a esta prenda y no repetirse.")
+            gallery = []
+            for image_data in data.images:
+                image = existing_images.get(image_data.id) if image_data.id else self._build_image(image_data)
+                image.url = str(image_data.url)
+                image.alt_text = image_data.alt_text
+                image.sort_order = image_data.sort_order
+                image.is_primary = image_data.is_primary
+                gallery.append(image)
+            product.images = gallery
         category_id = changes.get("category_id", product.category_id)
         season_id = changes.get("season_id", product.season_id)
         collection_id = changes.get("collection_id", product.collection_id)
