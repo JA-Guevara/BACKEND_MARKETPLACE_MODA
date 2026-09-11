@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from src.infrastructure.config.settings import settings
 from src.infrastructure.database.base import Base
+from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel, WebhookEventModel
 from src.auth.infrastructure.persistence.models.email_verification_token import EmailVerificationTokenModel
 from src.auth.infrastructure.persistence.models.password_reset_token import PasswordResetTokenModel
 from src.auth.infrastructure.persistence.models.refresh_token import RefreshTokenModel

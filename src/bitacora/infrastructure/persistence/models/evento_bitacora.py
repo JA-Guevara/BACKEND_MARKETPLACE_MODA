@@ -3,8 +3,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, ForeignKey, JSON, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.database.base import Base, UUIDPrimaryKeyMixin
 
 
@@ -26,6 +27,18 @@ class AuditEventModel(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
     )
+
+    actor: Mapped["UserModel | None"] = relationship(UserModel, lazy="joined", viewonly=True)
+
+    @property
+    def actor_name(self) -> str | None:
+        if self.actor is None:
+            return None
+        return f"{self.actor.first_name} {self.actor.last_name}".strip()
+
+    @property
+    def actor_email(self) -> str | None:
+        return self.actor.email if self.actor else None
 
 
 EventoBitacoraModel = AuditEventModel

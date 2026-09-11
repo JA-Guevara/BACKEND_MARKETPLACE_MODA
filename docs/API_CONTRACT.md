@@ -522,7 +522,7 @@ Los objetos de actualización contienen los mismos campos opcionales. El código
 | `GET /audit-log` | `audit.read` | `page=1`, `page_size=50`, `actor_user_id`, `action`, `entity_type`, `date_from`, `date_to` | `Page<AuditEvent>` |
 | `GET /audit-log/{event_id}` | `audit.read` | UUID en ruta | `AuditEvent` |
 
-`date_from` y `date_to` usan ISO 8601, por ejemplo `2026-09-01T00:00:00-04:00`. `AuditEvent` contiene `id`, `actor_user_id`, `action`, `entity_type`, `entity_id`, `description`, `metadata_`, `ip_address`, `user_agent` y `created_at`.
+`date_from` y `date_to` usan ISO 8601, por ejemplo `2026-09-01T00:00:00-04:00`. `AuditEvent` contiene `id`, `actor_user_id`, `actor_name`, `actor_email`, `action`, `entity_type`, `entity_id`, `description`, `metadata_`, `ip_address`, `user_agent` y `created_at`. `actor_name`/`actor_email` y `ip_address` se resuelven automáticamente (usuario que originó la acción y IP del request) para todos los módulos, no solo autenticación.
 
 ## Estado y OpenAPI
 

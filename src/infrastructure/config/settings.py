@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_email: str = "no-reply@fashionstore.local"
     smtp_use_tls: bool = True
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    commerce_currency: str = "bob"
+    ai_api_key: str = ""
+    ai_model: str = "gpt-4.1-mini"
+    media_storage_dir: str = "uploads/images"
+    media_public_base_url: str = "http://localhost:8000/api/v1/media/files"
+    media_max_upload_mb: int = 5
 
     @field_validator("api_v1_prefix")
     @classmethod
