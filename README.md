@@ -54,6 +54,33 @@ uvicorn src.main:app --reload --port 8000
 
 Documentacion interactiva: `http://localhost:8000/docs`.
 
+## Catálogo de demostración
+
+`scripts/seed_demo_catalog.py` carga ochenta prendas (diez por tipo: poleras, camisas, blusas,
+pantalones, vestidos, chaquetas, faldas y shorts) con imagen, cuatro variantes de talla y existencias
+en cada sucursal activa. Escribe en la base configurada en `.env`.
+
+```powershell
+.venv\Scripts\python.exe scripts\seed_demo_catalog.py
+```
+
+- **Imágenes.** `scripts/demo_images.py` las dibuja con Pillow según el tipo de prenda y su color; no
+  descarga nada. Se guardan en `frontend_marketplace_moda/public/demo/` (unos 8 KB cada una) y se
+  referencian con ruta relativa (`/demo/archivo.webp`), de modo que se ven tanto en el entorno local
+  como en el desplegado. Nota: esa ruta relativa no es una URL absoluta, así que un cliente externo
+  que consuma la API (por ejemplo la app móvil) debe anteponer el origen del frontend.
+- **Reversión.** Todo lo creado queda anotado en `scripts/demo_catalog_manifest.json`. Para deshacer:
+
+  ```powershell
+  .venv\Scripts\python.exe scripts\cleanup_demo_catalog.py            # simulación
+  .venv\Scripts\python.exe scripts\cleanup_demo_catalog.py --aplicar  # borra
+  ```
+
+  Borra solo esos identificadores, en el orden que respeta las claves foráneas, y conserva las
+  categorías, tallas o colores que hayan quedado en uso por otras prendas.
+- El script no modifica filas existentes y omite las prendas cuyo slug ya esté cargado, así que
+  volver a ejecutarlo no duplica datos.
+
 ## Despliegue en Railway
 
 El archivo `railway.json` configura Railpack, ejecuta las migraciones antes del despliegue, inicia FastAPI con el puerto asignado por Railway y valida `/health`.
