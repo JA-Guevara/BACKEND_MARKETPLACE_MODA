@@ -17,6 +17,8 @@ class AddressModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     phone: Mapped[str] = mapped_column(String(30), nullable=False)
     city: Mapped[str] = mapped_column(String(100), nullable=False)
     address_line: Mapped[str] = mapped_column(String(255), nullable=False)
+    postal_code: Mapped[str | None] = mapped_column(String(20))
+    country: Mapped[str] = mapped_column(String(2), default="BO", server_default="BO", nullable=False)
     reference: Mapped[str | None] = mapped_column(String(255))
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

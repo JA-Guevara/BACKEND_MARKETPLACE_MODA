@@ -47,3 +47,8 @@ class ProfileUpdate(BaseModel):
     first_name: str = Field(min_length=2, max_length=100)
     last_name: str = Field(min_length=2, max_length=100)
     phone: str | None = Field(default=None, max_length=30)
+
+
+class AssistantMessage(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    message: str = Field(min_length=1, max_length=1000)

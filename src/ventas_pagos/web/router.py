@@ -8,7 +8,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select, delete, func
 from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
-from src.auth.web.dependencies import get_current_user
+from src.auth.web.dependencies import get_current_user, get_optional_user
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
@@ -19,11 +19,12 @@ from src.inventario_sucursales.infrastructure.models.organization import BranchM
 from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel
 from src.ventas_pagos.infrastructure.gateways import verify_event
 from src.ventas_pagos.application.service import CommerceService
-from src.ventas_pagos.web.schemas import Quantity, StockQuantity, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate
+from src.ventas_pagos.web.schemas import Quantity, StockQuantity, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
 analytics_router = APIRouter(prefix="/analytics", tags=["analytics"])
 User = Annotated[UserModel, Depends(get_current_user)]
+OptionalUser = Annotated[UserModel | None, Depends(get_optional_user)]
 Reader = Annotated[UserModel, Depends(require_permissions("commerce.read"))]
 Writer = Annotated[UserModel, Depends(require_permissions("commerce.write"))]
 StockReader = Annotated[UserModel, Depends(require_permissions("stock.read"))]
@@ -44,6 +45,26 @@ def order_data(order):
 @router.get("/branches")
 def branches(db: Session = Depends(get_db)):
     return response([{"id": row.id, "name": row.name, "address": row.address} for row in db.scalars(select(BranchModel).where(BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None))).all()])
+
+
+@router.get("/recommendations")
+def recommendations(user: OptionalUser, db: Session = Depends(get_db)):
+    return response(CommerceService(db).recommendations(user))
+
+
+@router.post("/assistant")
+def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db)):
+    if not settings.ai_api_key:
+        return response({"available": False, "reply": "El asistente de IA no esta configurado todavia. Mientras tanto podes consultar el catalogo o contactar a una sucursal."})
+    try:
+        result = httpx.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": "Bearer " + settings.ai_api_key},
+            json={"model": settings.ai_model, "messages": [
+                {"role": "system", "content": "Sos el asistente virtual de FashionStore, una tienda de ropa. Ayudas a clientes con dudas sobre tallas, colores, temporadas, reservas para probarse prendas en sucursal y el proceso de compra. Respondes en espanol, en 2-3 oraciones. No inventes precios, stock ni promociones especificas: si te preguntan eso, indica que lo revisen en el catalogo o en su sucursal mas cercana."},
+                {"role": "user", "content": data.message}], "max_tokens": 300}, timeout=25)
+        result.raise_for_status()
+        return response({"available": True, "reply": result.json()["choices"][0]["message"]["content"]})
+    except (httpx.HTTPError, KeyError, ValueError, IndexError):
+        return response({"available": False, "reply": "No pude responder en este momento. Intenta de nuevo en unos minutos."})
 
 
 @router.patch("/profile")

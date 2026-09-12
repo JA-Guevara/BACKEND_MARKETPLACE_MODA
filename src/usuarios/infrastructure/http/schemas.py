@@ -66,6 +66,8 @@ class AddressCreate(BaseModel):
     phone: str = Field(min_length=5, max_length=30)
     city: str = Field(min_length=2, max_length=100)
     address_line: str = Field(min_length=5, max_length=255)
+    postal_code: str | None = Field(default=None, max_length=20)
+    country: str = Field(default="BO", min_length=2, max_length=2)
     reference: str | None = Field(default=None, max_length=255)
     is_default: bool = False
 
@@ -76,6 +78,8 @@ class AddressUpdate(BaseModel):
     phone: str | None = Field(default=None, min_length=5, max_length=30)
     city: str | None = Field(default=None, min_length=2, max_length=100)
     address_line: str | None = Field(default=None, min_length=5, max_length=255)
+    postal_code: str | None = Field(default=None, max_length=20)
+    country: str | None = Field(default=None, min_length=2, max_length=2)
     reference: str | None = Field(default=None, max_length=255)
     is_default: bool | None = None
 
@@ -90,6 +94,8 @@ class AddressResponse(BaseModel):
     phone: str
     city: str
     address_line: str
+    postal_code: str | None
+    country: str
     reference: str | None
     is_default: bool
     created_at: datetime

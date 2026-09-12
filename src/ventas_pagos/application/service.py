@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.config.settings import settings
 from src.shared.exceptions.domain_exception import ConflictError, NotFoundError, ValidationError
-from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
+from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, ProductVariantModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel, WebhookEventModel
 from src.ventas_pagos.infrastructure import gateways
@@ -54,6 +54,32 @@ class CommerceService:
                 item["available"] = 0
             items.append(item)
         return {"items": items, "total": str(sum((Decimal(item["line_total"]) for item in items), Decimal(0))), "currency": settings.commerce_currency}
+
+    def recommendations(self, user, limit: int = 8):
+        """RF25/CU23: recomendador simple y determinista (sin depender de un
+        servicio externo en vivo). Si el cliente tiene compras pagadas previas,
+        prioriza las mismas categorias; si no, muestra destacados."""
+        query = select(ProductModel).where(ProductModel.is_active.is_(True), ProductModel.deleted_at.is_(None))
+        category_ids: list = []
+        exclude_ids: set = set()
+        if user is not None:
+            paid_orders = self.db.scalars(select(OrderModel).where(OrderModel.user_id == user.id, OrderModel.payment_status == "paid")).all()
+            product_ids = {uuid.UUID(item["product_id"]) for order in paid_orders for item in order.items}
+            if product_ids:
+                exclude_ids = product_ids
+                category_ids = list(self.db.scalars(select(ProductModel.category_id).where(ProductModel.id.in_(product_ids)).distinct()))
+        if category_ids:
+            products = list(self.db.scalars(query.where(ProductModel.category_id.in_(category_ids), ProductModel.id.notin_(exclude_ids)).order_by(ProductModel.created_at.desc()).limit(limit)))
+        else:
+            products = list(self.db.scalars(query.where(ProductModel.is_featured.is_(True)).order_by(ProductModel.created_at.desc()).limit(limit)))
+        if len(products) < limit:
+            have = {p.id for p in products} | exclude_ids
+            filler = self.db.scalars(query.where(ProductModel.id.notin_(have)).order_by(ProductModel.is_featured.desc(), ProductModel.created_at.desc()).limit(limit - len(products)))
+            products = [*products, *filler]
+        return [{
+            "id": str(p.id), "slug": p.slug, "name": p.name, "base_price": str(p.base_price),
+            "image_url": p.images[0].url if p.images else None, "category": p.category.name,
+        } for p in products]
 
     def set_cart(self, user, variant_id, quantity):
         self.variant(variant_id)

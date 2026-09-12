@@ -7,6 +7,8 @@ from src.usuarios_catalogo.web.router import router as users_catalog_router
 from src.shared.bulk.router import router as bulk_router
 from src.usuarios_catalogo.web.routers.media_router import router as media_router
 from src.ventas_pagos.web.router import router as commerce_router, analytics_router
+from src.reservas.web.router import router as reservations_router
+from src.probador_virtual.web.router import router as vestidor_router
 
 
 api_router = APIRouter()
@@ -18,3 +20,5 @@ api_router.include_router(bulk_router)
 api_router.include_router(media_router)
 api_router.include_router(commerce_router)
 api_router.include_router(analytics_router)
+api_router.include_router(reservations_router)
+api_router.include_router(vestidor_router)

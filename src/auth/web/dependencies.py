@@ -31,3 +31,18 @@ def get_current_user(
         raise AuthenticationError("La cuenta no esta disponible.")
     set_audit_actor(user.id)
     return user
+
+
+def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> UserModel | None:
+    """Igual que get_current_user, pero devuelve None en vez de rechazar cuando
+    no hay sesion o el token no es valido. Para endpoints publicos que se
+    personalizan cuando el visitante esta logueado (recomendaciones de IA)."""
+    if not credentials or credentials.scheme.lower() != "bearer":
+        return None
+    try:
+        return get_current_user(credentials, db)
+    except AuthenticationError:
+        return None
