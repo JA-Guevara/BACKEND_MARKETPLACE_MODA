@@ -44,7 +44,15 @@ class CommerceService:
 
     def cart(self, user, branch_id=None):
         rows = self.db.scalars(select(CartItemModel).where(CartItemModel.user_id == user.id)).all()
-        items = [self.snapshot(self.variant(row.variant_id), row.quantity, branch_id) for row in rows]
+        items = []
+        for row in rows:
+            variant = self.db.get(ProductVariantModel, row.variant_id)
+            if variant is None:
+                continue
+            item = self.snapshot(variant, row.quantity, branch_id)
+            if not variant.is_active or not variant.product.is_active or variant.product.deleted_at:
+                item["available"] = 0
+            items.append(item)
         return {"items": items, "total": str(sum((Decimal(item["line_total"]) for item in items), Decimal(0))), "currency": settings.commerce_currency}
 
     def set_cart(self, user, variant_id, quantity):
@@ -74,6 +82,7 @@ class CommerceService:
             raise ValidationError("El carrito esta vacio.")
         try:
             for item in sorted(cart["items"], key=lambda x: x["variant_id"]):
+                self.variant(uuid.UUID(item["variant_id"]))
                 result = self.db.execute(update(StockModel).where(StockModel.variant_id == uuid.UUID(item["variant_id"]),
                     StockModel.branch_id == data.branch_id, StockModel.quantity >= item["quantity"])
                     .values(quantity=StockModel.quantity - item["quantity"]))

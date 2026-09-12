@@ -64,6 +64,13 @@ def test_purchase_stock_permissions_and_payment(monkeypatch):
     assert stats['paid_orders'] == 2
     assert call('POST','/analytics/insights',auth=admin)['available'] is False
     call('GET','/analytics/dashboard',status=403)
+    call('PUT',f'/commerce/cart/items/{variant}',{'quantity':1})
+    call('POST',f"/catalog/admin/products/{stock[0]['product_id']}/deactivate",auth=admin)
+    unavailable = call('GET',f'/commerce/cart?branch_id={branch}')
+    assert unavailable['items'][0]['available'] == 0
+    call('POST','/commerce/orders',payload,status=404)
+    call('DELETE',f'/commerce/cart/items/{variant}')
+    assert call('GET','/commerce/cart')['items'] == []
 
 def test_invalid_webhook_signature():
     from src.infrastructure.config.settings import settings

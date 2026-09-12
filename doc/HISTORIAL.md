@@ -1,5 +1,11 @@
 # Historial de avance
 
+## 2026-09-12 — Contrato comercial y migración
+
+- 2 pruebas comerciales aprobadas; incluye prenda desactivada visible para quitar pero rechazada al comprar.
+- Generación SQL PostgreSQL aprobada. Cadena SQLite temporal no ejecutable por JSONB inicial; documentado, sin cambios a base real.
+- COMERCIO.md registra cobertura y pendientes de concurrencia, migración real y Stripe externo.
+
 ## 2026-09-11 — Revisión de correo de auditoría
 
 - Se confirmó que actor_email devuelve el correo del usuario relacionado con el evento; frontend lo prioriza en la tabla.
