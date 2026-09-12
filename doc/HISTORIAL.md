@@ -1,5 +1,11 @@
 # Historial de avance
 
+## 2026-09-12 — Diagnóstico de petición del carrito
+
+- Endpoints públicos/preflight publicados responden. Pendiente excepción del carrito con sesión real.
+- Manejador de errores de base 503 con CORS y referencia de diagnóstico.
+- 3 pruebas comerciales aprobadas; DIAGNOSTICO_RAILWAY.md agregado. Sin despliegue ni cambios a producción.
+
 ## 2026-09-12 — Contrato comercial y migración
 
 - 2 pruebas comerciales aprobadas; incluye prenda desactivada visible para quitar pero rechazada al comprar.

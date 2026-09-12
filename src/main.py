@@ -1,4 +1,6 @@
 from uuid import uuid4
+import logging
+from sqlalchemy.exc import SQLAlchemyError
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -77,6 +79,22 @@ def create_app() -> FastAPI:
                 },
             },
         )
+
+    @app.exception_handler(SQLAlchemyError)
+    async def handle_database_error(_: Request, exc: SQLAlchemyError) -> JSONResponse:
+        reference = uuid4().hex[:12]
+        original = getattr(exc, "orig", None)
+        diagnostic = getattr(original, "diag", None)
+        logging.getLogger(__name__).error(
+            "Database failure reference=%s type=%s sqlstate=%s table=%s",
+            reference, type(exc).__name__,
+            getattr(original, "sqlstate", None) or getattr(original, "pgcode", None),
+            getattr(diagnostic, "table_name", None),
+        )
+        return JSONResponse(status_code=503, content={
+            "success": False,
+            "error": {"code": "database_unavailable", "message": "El servicio de datos no está disponible. Reintentá en unos momentos. Referencia: " + reference}
+        })
 
     return app
 

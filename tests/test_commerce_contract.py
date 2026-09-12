@@ -84,3 +84,20 @@ def test_invalid_webhook_signature():
         assert error.value.status_code == 400
     finally:
         settings.stripe_webhook_secret = previous
+
+
+def test_cart_database_failure_is_readable_with_cors(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+    from src.ventas_pagos.application.service import CommerceService
+    from src.infrastructure.config.settings import settings
+    client = TestClient(app)
+    token = client.post('/api/v1/auth/login',json={'email':CLIENT_EMAIL,'password':PASSWORD}).json()['data']['access_token']
+    def broken(*args, **kwargs):
+        raise OperationalError('private query', {}, Exception('private database detail'))
+    monkeypatch.setattr(CommerceService, 'cart', broken)
+    origin = settings.cors_origins[0]
+    response = client.get('/api/v1/commerce/cart',headers={'Authorization':'Bearer '+token,'Origin':origin})
+    assert response.status_code == 503
+    assert response.headers['access-control-allow-origin'] == origin
+    assert response.json()['error']['code'] == 'database_unavailable'
+    assert 'private' not in response.text
