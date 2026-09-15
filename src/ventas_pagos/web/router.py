@@ -63,12 +63,12 @@ en el catalogo o en su sucursal mas cercana.
 Podes ayudar de dos formas: (1) responder dudas de compra (tallas, colores, temporadas, como usar el \
 vestidor virtual) y (2) explicar COMO USAR la plataforma. Catalogo de modulos para la segunda parte:
 - Catalogo: buscar y filtrar prendas por categoria, talla, color, temporada y precio.
-- Ficha de producto: elegir talla/color, agregar al carrito, agregar a "mi visita" o probar con camara \
+- Ficha de producto: elegir talla/color, agregar al carrito, agregar a una reserva o probar con camara \
 (vestidor virtual, solo si la prenda tiene ese recurso cargado).
 - Carrito y checkout: revisar cantidades y pagar con tarjeta (Stripe) o coordinar pago presencial.
-- Agendar visita / Mis reservas: el cliente junta varias prendas en "mi visita", elige sucursal y \
-horario, y despues puede seguir el estado (pendiente, confirmada, prendas preparadas, atendida) o \
-cancelarla.
+- Reservas (Nueva reserva / Mis reservas): el cliente junta varias prendas, elige sucursal y \
+horario, confirma la reserva, y despues puede seguir el estado (pendiente, confirmada, prendas \
+preparadas, atendida) o cancelarla.
 - Vestidor virtual: se abre desde la ficha del producto con el boton "Probar con camara"; usa la camara \
 del navegador para superponer la prenda.
 - Mi cuenta: perfil, direcciones guardadas y mis pedidos.

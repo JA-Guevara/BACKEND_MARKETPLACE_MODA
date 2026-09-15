@@ -53,7 +53,7 @@ class CrearReserva:
         for item in items:
             cantidades[item.variant_id] += item.quantity
         if len(cantidades) > MAX_ITEMS_AFTER_MERGE:
-            raise ValidationError("La visita no puede incluir mas de 20 prendas distintas.")
+            raise ValidationError("La reserva no puede incluir mas de 20 prendas distintas.")
         if any(quantity > 10 for quantity in cantidades.values()):
             raise ValidationError("No se puede reservar mas de 10 unidades de una misma talla.")
         return [
@@ -62,7 +62,7 @@ class CrearReserva:
         ]
 
     def _validar_disponibilidad(self, branch_id, items) -> None:
-        """La visita sirve para probarse una talla puntual: si la sucursal no la
+        """La reserva sirve para probarse una talla puntual: si la sucursal no la
         tiene, o no alcanza para la cantidad pedida, se rechaza con el detalle
         en vez de hacer viajar al cliente."""
         disponibilidad = ConsultarDisponibilidad(self.db).execute(
@@ -99,8 +99,8 @@ class CrearReserva:
     def _ensure_same_payload(self, existing: ReservationModel, data: CrearReservaRequest) -> None:
         if not self._same_payload(existing, data):
             raise ValidationError(
-                "Ese intento ya corresponde a una visita registrada con otras prendas u horario. "
-                "Revisá Mis reservas o cancelá esa visita para agendar una nueva."
+                "Ese intento ya corresponde a una reserva registrada con otras prendas u horario. "
+                "Revisá Mis reservas o cancelá esa reserva para crear una nueva."
             )
 
     def execute(self, user: UserModel, data: CrearReservaRequest) -> ReservationModel:

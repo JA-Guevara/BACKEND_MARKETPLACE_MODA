@@ -1,6 +1,6 @@
 """Disponibilidad de tallas concretas en una sucursal.
 
-Reservar una visita sirve para probarse una talla puntual: si esa talla no está
+Hacer una reserva sirve para probarse una talla puntual: si esa talla no está
 en la sucursal elegida, el cliente viaja al local para nada. Este caso de uso
 responde, por cada variante pedida, si la sucursal la tiene, cuántas unidades y
 si alcanza para la cantidad que el cliente quiere probarse.
