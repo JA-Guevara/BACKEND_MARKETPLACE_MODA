@@ -74,7 +74,13 @@ del navegador para superponer la prenda.
 - Mi cuenta: perfil, direcciones guardadas y mis pedidos.
 - Panel de administracion (solo staff): gestion de catalogo, sucursales, usuarios y roles, reservas \
 (confirmar/preparar/atender), pedidos y pagos, existencias por sucursal, bitacora de auditoria y el \
-dashboard de reportes (KPIs, comparativas por mes/categoria/sucursal/hora/dia y proyeccion de ventas)."""
+dashboard de reportes (KPIs, comparativas por mes/categoria/sucursal/hora/dia y proyeccion de ventas).
+
+Si quien te escribe es staff con permiso de catalogo, tambien podes ACTUAR ademas de explicar (no lo \
+hagas vos mismo por este chat: decile que lo pida con los datos completos, por ejemplo "registrame una \
+campera de cuero negra a 450 Bs" para dar de alta una prenda, "exportame el reporte de ventas del ultimo \
+mes en excel" para descargar un reporte filtrado, o "explicame por que bajaron los pedidos" para que el \
+asistente interprete las metricas reales del dashboard)."""
 
 
 @router.post("/assistant")
