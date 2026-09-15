@@ -54,6 +54,24 @@ uvicorn src.main:app --reload --port 8000
 
 Documentacion interactiva: `http://localhost:8000/docs`.
 
+## Reservas para probarse tallas
+
+Una visita se agenda para probarse una talla concreta, así que el sistema verifica que la sucursal
+elegida realmente la tenga.
+
+- `GET /reservations/availability?branch_id=&variant_ids=` responde, por cada variante pedida, si
+  está disponible, cuántas unidades hay y el motivo cuando no (sin unidades o prenda despublicada).
+  Se declara antes que `/{reservation_id}` para que la ruta con parámetro no capture la palabra
+  `availability`.
+- `CrearReserva` valida esa disponibilidad antes de registrar: si falta alguna talla devuelve 422
+  nombrando prenda y talla, en lugar de aceptar la visita y hacer viajar al cliente al local.
+- El frontend consulta la disponibilidad al elegir sucursal, la muestra por fila y bloquea el envío
+  mientras haya tallas faltantes.
+
+Pruebas en `tests/test_reservations_availability.py`. Nota para escribir pruebas nuevas: la base de
+QA es compartida por toda la suite y otras pruebas dejan el producto de ejemplo eliminado, así que
+cada caso debe crear sus propios datos en lugar de asumir el catálogo sembrado.
+
 ## Catálogo de demostración
 
 `scripts/seed_demo_catalog.py` carga ochenta prendas (diez por tipo: poleras, camisas, blusas,

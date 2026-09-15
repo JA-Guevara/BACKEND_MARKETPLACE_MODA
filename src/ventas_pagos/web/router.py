@@ -1,11 +1,11 @@
 import uuid
-from collections import Counter
-from decimal import Decimal
+from datetime import datetime
 from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import select, delete, func
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user, get_optional_user
@@ -14,12 +14,15 @@ from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.config.settings import settings
 from src.shared.responses.api_response import ApiResponse
-from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel, ProductModel
+from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductVariantModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel
 from src.ventas_pagos.infrastructure.gateways import verify_event
 from src.ventas_pagos.application.service import CommerceService
-from src.ventas_pagos.web.schemas import Quantity, StockQuantity, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage
+from src.ventas_pagos.application.reports_service import ReportsService
+from src.ventas_pagos.application.reports_ai import ReportsAI
+from src.ventas_pagos.application import exporter
+from src.ventas_pagos.web.schemas import Quantity, StockQuantity, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
 analytics_router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -52,15 +55,40 @@ def recommendations(user: OptionalUser, db: Session = Depends(get_db)):
     return response(CommerceService(db).recommendations(user))
 
 
+ASSISTANT_SYSTEM_PROMPT = """Sos el asistente virtual de FashionStore, una tienda de ropa con venta presencial \
+y digital. Respondes en espanol, en 2 a 4 oraciones o una lista corta de pasos. No inventes precios, \
+stock, promociones ni datos que no esten en este mensaje: si te preguntan eso, indica que lo revisen \
+en el catalogo o en su sucursal mas cercana.
+
+Podes ayudar de dos formas: (1) responder dudas de compra (tallas, colores, temporadas, como usar el \
+vestidor virtual) y (2) explicar COMO USAR la plataforma. Catalogo de modulos para la segunda parte:
+- Catalogo: buscar y filtrar prendas por categoria, talla, color, temporada y precio.
+- Ficha de producto: elegir talla/color, agregar al carrito, agregar a "mi visita" o probar con camara \
+(vestidor virtual, solo si la prenda tiene ese recurso cargado).
+- Carrito y checkout: revisar cantidades y pagar con tarjeta (Stripe) o coordinar pago presencial.
+- Agendar visita / Mis reservas: el cliente junta varias prendas en "mi visita", elige sucursal y \
+horario, y despues puede seguir el estado (pendiente, confirmada, prendas preparadas, atendida) o \
+cancelarla.
+- Vestidor virtual: se abre desde la ficha del producto con el boton "Probar con camara"; usa la camara \
+del navegador para superponer la prenda.
+- Mi cuenta: perfil, direcciones guardadas y mis pedidos.
+- Panel de administracion (solo staff): gestion de catalogo, sucursales, usuarios y roles, reservas \
+(confirmar/preparar/atender), pedidos y pagos, existencias por sucursal, bitacora de auditoria y el \
+dashboard de reportes (KPIs, comparativas por mes/categoria/sucursal/hora/dia y proyeccion de ventas)."""
+
+
 @router.post("/assistant")
 def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db)):
     if not settings.ai_api_key:
         return response({"available": False, "reply": "El asistente de IA no esta configurado todavia. Mientras tanto podes consultar el catalogo o contactar a una sucursal."})
+    user_content = data.message
+    if data.context:
+        user_content = f"Seccion actual del sitio: {data.context}\n\nPregunta: {data.message}"
     try:
         result = httpx.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": "Bearer " + settings.ai_api_key},
             json={"model": settings.ai_model, "messages": [
-                {"role": "system", "content": "Sos el asistente virtual de FashionStore, una tienda de ropa. Ayudas a clientes con dudas sobre tallas, colores, temporadas, reservas para probarse prendas en sucursal y el proceso de compra. Respondes en espanol, en 2-3 oraciones. No inventes precios, stock ni promociones especificas: si te preguntan eso, indica que lo revisen en el catalogo o en su sucursal mas cercana."},
-                {"role": "user", "content": data.message}], "max_tokens": 300}, timeout=25)
+                {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content}], "max_tokens": 350}, timeout=25)
         result.raise_for_status()
         return response({"available": True, "reply": result.json()["choices"][0]["message"]["content"]})
     except (httpx.HTTPError, KeyError, ValueError, IndexError):
@@ -144,7 +172,10 @@ def stock(user: StockReader, branch_id: uuid.UUID, db: Session = Depends(get_db)
     service = CommerceService(db)
     service.branch(branch_id)
     variants = db.scalars(select(ProductVariantModel).where(ProductVariantModel.is_active.is_(True))).all()
-    return response([{**service.snapshot(v, 1, branch_id), "branch_id": branch_id, "quantity": service.snapshot(v, 1, branch_id)["available"]} for v in variants if v.product.is_active and not v.product.deleted_at])
+    rows_by_variant = {row.variant_id: row.quantity for row in db.execute(
+        select(StockModel).where(StockModel.branch_id == branch_id)
+    ).scalars()}
+    return response([{**service.snapshot(v, 1, branch_id), "branch_id": str(branch_id), "quantity": rows_by_variant.get(v.id, 0)} for v in variants if v.product.is_active and not v.product.deleted_at])
 
 
 @router.put("/admin/stock/{variant_id}")
@@ -172,42 +203,86 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     return CommerceService(db).webhook(verify_event(body, request.headers.get("stripe-signature", "")))
 
 
-def metrics(db):
-    orders = db.scalars(select(OrderModel)).all()
-    paid = [o for o in orders if o.payment_status == "paid"]
-    products = db.scalar(select(func.count()).select_from(ProductModel).where(ProductModel.deleted_at.is_(None)))
-    statuses = Counter(o.status for o in orders)
-    daily = {}
-    top = {}
-    for order in paid:
-        day = order.created_at.date().isoformat()
-        daily[day] = daily.get(day, Decimal(0)) + order.total
-        for item in order.items:
-            top[item["name"]] = top.get(item["name"], 0) + item["quantity"]
-    return {"orders": len(orders), "paid_orders": len(paid), "pending_orders": statuses.get("pending_payment", 0),
-        "revenue": str(sum((o.total for o in paid), Decimal(0))), "currency": settings.commerce_currency,
-        "products": products, "customers": db.scalar(select(func.count()).select_from(UserModel)),
-        "low_stock": db.scalar(select(func.count()).select_from(StockModel).where(StockModel.quantity < 5)),
-        "by_status": dict(statuses), "daily_sales": [{"date": key, "total": str(value)} for key, value in sorted(daily.items())[-30:]],
-        "top_products": [{"name": key, "quantity": value} for key, value in sorted(top.items(), key=lambda x: -x[1])[:5]],
-        "stripe_ready": settings.stripe_secret_key.startswith("sk_test_") and bool(settings.stripe_webhook_secret),
-        "ai_ready": bool(settings.ai_api_key)}
-
-
 @analytics_router.get("/dashboard")
-def dashboard(user: Analyst, db: Session = Depends(get_db)):
-    return response(metrics(db))
+def dashboard(user: Analyst, db: Session = Depends(get_db), date_from: datetime | None = None, date_to: datetime | None = None,
+              branch_id: uuid.UUID | None = None, category_id: uuid.UUID | None = None,
+              status: str | None = Query(default=None, max_length=30), low_stock_lt: int | None = Query(default=None, ge=0, le=10000)):
+    return response(ReportsService(db).dashboard(date_from, date_to, branch_id, category_id, status, low_stock_lt))
 
 
 @analytics_router.post("/insights")
-def insights(user: Analyst, db: Session = Depends(get_db)):
+def insights(user: Analyst, data: InsightsRequest | None = None, db: Session = Depends(get_db)):
+    """Recomendaciones de la IA sobre el contexto real (retrocompatible: si no
+    se envia cuerpo se usa el dashboard completo)."""
     if not settings.ai_api_key:
         return response({"available": False, "message": "Configure AI_API_KEY para habilitar recomendaciones. Las metricas reales ya estan disponibles."})
+    filters = data.filters if data and data.filters else ReportFilters()
+    snapshot = ReportsService(db).dashboard(filters.date_from, filters.date_to, filters.branch_id, filters.category_id, filters.status)
     try:
         result = httpx.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": "Bearer " + settings.ai_api_key},
-            json={"model": settings.ai_model, "messages": [{"role": "system", "content": "Eres analista de FashionStore. Da 3 recomendaciones breves en español basadas solo en metricas agregadas. No inventes tendencias ni causalidad. Señala cuando faltan datos."},
-            {"role": "user", "content": str(metrics(db))}], "max_tokens": 450}, timeout=25)
+            json={"model": settings.ai_model, "messages": [{"role": "system", "content": "Eres analista de FashionStore. Da 3 recomendaciones breves en espanol basadas solo en metricas agregadas. No inventes tendencias ni causalidad. Senala cuando faltan datos."},
+            {"role": "user", "content": str(snapshot)}], "max_tokens": min(450, settings.ai_max_tokens)}, timeout=settings.ai_timeout)
         result.raise_for_status()
         return response({"available": True, "message": result.json()["choices"][0]["message"]["content"]})
     except (httpx.HTTPError, KeyError, ValueError, IndexError):
         return response({"available": False, "message": "El servicio de IA no respondio. Puede continuar usando las metricas reales."})
+
+
+@analytics_router.post("/assistant/interpret", tags=["analytics"])
+def interpret(data: InterpretRequest, user: Analyst, db: Session = Depends(get_db)):
+    """Funcion A del asistente de reportes: consulta en lenguaje natural a una
+    estructura validada (vista, filtros, agrupacion, metrica, comparacion).
+    No modifica datos y resuelve nombres contra el catalogo autorizado."""
+    branches = [
+        {"id": str(row.id), "name": row.name}
+        for row in db.scalars(select(BranchModel).where(BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None)))
+        if row.name
+    ]
+    categories = [{"id": str(row.id), "name": row.name} for row in db.scalars(select(CategoryModel)) if row.name]
+    result = ReportsAI(db).interpret(data.message, data.current, {"branches": branches, "categories": categories})
+    return response(result)
+
+
+@analytics_router.post("/assistant/explain", tags=["analytics"])
+def explain(data: ExplainRequest, user: Analyst, db: Session = Depends(get_db)):
+    """Funcion B del asistente de reportes: explica metricas agregadas usando
+    el contexto de filtros visible. El servidor recalcula las metricas; no
+    confia en cifras del navegador."""
+    return response(ReportsAI(db).explain(data.question, data.filters or ReportFilters()))
+
+
+@analytics_router.get("/reports/export", tags=["analytics"])
+def export_reports(user: Analyst, db: Session = Depends(get_db), report: str = Query(default="ventas"),
+                   format: str = Query(default="xlsx"), date_from: datetime | None = None, date_to: datetime | None = None,
+                   branch_id: uuid.UUID | None = None, category_id: uuid.UUID | None = None,
+                   status: str | None = Query(default=None, max_length=30)):
+    """Exporta el conjunto filtrado autorizado (max report_export_max_rows),
+    con totales consistentes con el dashboard. xlsx principal, csv tabular."""
+    if format not in {"xlsx", "csv"}:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Formato no soportado: use xlsx o csv.")
+    if report not in {"ventas", "pedidos", "pagos", "prendas_vendidas", "existencias", "sucursales"}:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Reporte no soportado.")
+    fif = ReportFilters(date_from=date_from, date_to=date_to, branch_id=branch_id, category_id=category_id, status=status)
+    title, headers, rows = ReportsService(db).export_report(report, fif.date_from, fif.date_to, fif.branch_id, fif.category_id, fif.status)
+    truncated = len(rows) > settings.report_export_max_rows
+    rows = rows[: settings.report_export_max_rows]
+    period = ReportsService(db)._window(fif.date_from, fif.date_to)
+    period_text = f"{period[0].isoformat() if period[0] else 'inicio'} a {period[1].isoformat() if period[1] else 'hoy'}"
+    filtro_text = "; ".join(
+        part for part in [
+            f"sucursal={str(fif.branch_id)}" if fif.branch_id else "",
+            f"categoria={str(fif.category_id)}" if fif.category_id else "",
+            f"estado={fif.status}" if fif.status else "",
+        ] if part
+    )
+    metadata = exporter.build_metadata(title, period_text, filtro_text, settings.commerce_currency.upper(), truncated=truncated)
+    filename = f"fashionstore_{report}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{format}"
+    if format == "csv":
+        content = exporter.to_csv(title, headers, rows, metadata)
+        return StreamingResponse(iter([content]), media_type="text/csv; charset=utf-8",
+                                 headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    content = exporter.to_xlsx(title, headers, rows, metadata)
+    return StreamingResponse(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})

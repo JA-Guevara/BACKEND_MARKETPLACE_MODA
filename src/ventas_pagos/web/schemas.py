@@ -1,4 +1,5 @@
 from typing import Literal
+from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -52,3 +53,35 @@ class ProfileUpdate(BaseModel):
 class AssistantMessage(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     message: str = Field(min_length=1, max_length=1000)
+    context: str | None = Field(default=None, max_length=120)
+
+
+class ReportFilters(BaseModel):
+    """Contexto de filtros del dashboard que comparte la vista. El servidor
+    siempre recalcula las metricas con estos filtros; nunca confia en cifras
+    enviadas por el navegador."""
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+    branch_id: UUID | None = None
+    category_id: UUID | None = None
+    status: str | None = Field(default=None, max_length=30)
+
+
+class InterpretRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    message: str = Field(min_length=1, max_length=300)
+    current: ReportFilters | None = None
+
+
+class ExplainRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    question: str = Field(min_length=1, max_length=500)
+    filters: ReportFilters | None = None
+
+
+class InsightsRequest(BaseModel):
+    """Cuerpo opcional para /analytics/insights (retrocompatible): si llega
+    vacio se usa el dashboard completo; si llega, filtra el contexto que vera
+    la IA."""
+    question: str | None = Field(default=None, max_length=500)
+    filters: ReportFilters | None = None

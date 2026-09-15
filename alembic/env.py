@@ -16,6 +16,7 @@ from src.roles.infrastructure.persistence.models.role import RoleModel
 from src.usuarios.infrastructure.persistence.models.usuario import AddressModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel, CashPointModel, CityModel, SupplierModel
 from src.usuarios_catalogo.infrastructure.models.catalog import ARAssetModel, CategoryModel, CollectionModel, ColorModel, ProductImageModel, ProductModel, ProductSupplierModel, ProductVariantModel, SeasonModel, SizeModel
+from src.reservas.infrastructure.persistence.models.reserva import ReservationModel
 
 
 config = context.config

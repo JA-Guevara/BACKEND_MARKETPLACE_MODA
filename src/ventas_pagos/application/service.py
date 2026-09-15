@@ -165,6 +165,7 @@ class CommerceService:
             raise ConflictError("Solo se confirman pagos manuales pendientes.")
         order.payment_method, order.payment_reference = data.method, data.reference
         order.status, order.payment_status = "paid", "paid"
+        order.paid_at = datetime.now(timezone.utc)
         self.track(order, "Pago presencial/transferencia confirmado por administracion.")
         self.audit(order, "payment_confirmed", "Pago manual confirmado por administracion.")
         self.db.commit()
@@ -200,6 +201,7 @@ class CommerceService:
                 if session.get("currency") != order.currency or session.get("amount_total") != int(order.total * 100) or session.get("client_reference_id") != str(order.id):
                     raise ConflictError("La confirmacion no coincide con el pedido.")
                 order.status, order.payment_status = "paid", "paid"
+                order.paid_at = datetime.now(timezone.utc)
                 order.payment_reference = session.get("payment_intent")
                 self.track(order, "Pago de prueba confirmado por webhook firmado de Stripe.")
         self.db.add(WebhookEventModel(event_id=event["id"]))

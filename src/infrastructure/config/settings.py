@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     commerce_currency: str = "bob"
     ai_api_key: str = ""
     ai_model: str = "gpt-4.1-mini"
+    ai_timeout: int = 30
+    ai_max_tokens: int = 600
+    report_export_max_rows: int = 10000
+    low_stock_threshold: int = 5
     media_storage_dir: str = "uploads/images"
     media_public_base_url: str = "http://localhost:8000/api/v1/media/files"
     media_max_upload_mb: int = 5

@@ -16,6 +16,11 @@ class CrearReservaRequest(BaseModel):
     scheduled_at: datetime
     items: list[ReservaItemInput] = Field(min_length=1, max_length=20)
     notes: str | None = Field(default=None, max_length=1000)
+    client_key: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Clave idempotente generada por el cliente para el mismo intento.",
+    )
 
 
 class EstadoReservaUpdate(BaseModel):

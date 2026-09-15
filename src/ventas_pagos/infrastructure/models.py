@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import String, Integer, Numeric, ForeignKey, JSON, CheckConstraint, UniqueConstraint
+from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, JSON, CheckConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from src.infrastructure.database.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
@@ -40,6 +41,7 @@ class OrderModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     tracking_number: Mapped[str | None] = mapped_column(String(150))
     stripe_session_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     stripe_url: Mapped[str | None] = mapped_column(String(2000))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, default=None, index=True)
 
 
 class WebhookEventModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):

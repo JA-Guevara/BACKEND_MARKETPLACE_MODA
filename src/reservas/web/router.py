@@ -1,3 +1,4 @@
+from datetime import datetime
 import uuid
 from math import ceil
 from typing import Annotated
@@ -9,8 +10,10 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
+from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.reservas.application.use_cases.cancel_reserva import CancelarReserva
 from src.reservas.application.use_cases.confirm_reserva import ActualizarEstadoReserva
+from src.reservas.application.use_cases.consultar_disponibilidad import ConsultarDisponibilidad
 from src.reservas.application.use_cases.create_reserva import CrearReserva
 from src.reservas.application.use_cases.get_reserva import ObtenerReserva
 from src.reservas.application.use_cases.list_reservas import ListarReservas
@@ -40,10 +43,39 @@ def reserva_data(reserva: ReservationModel) -> dict:
     }
 
 
+def _user_data(users: dict, reservation: ReservationModel) -> dict:
+    user = users.get(reservation.user_id)
+    if not user:
+        return {}
+    return {
+        "user_name": f"{user.first_name} {user.last_name}".strip(),
+        "user_email": user.email,
+    }
+
+
 @router.post("", status_code=201)
 def create_reservation(data: CrearReservaRequest, user: User, db: Session = Depends(get_db)):
     reserva = CrearReserva(db).execute(user, data)
-    return ApiResponse(message="Reserva registrada.", data=reserva_data(reserva))
+    branch = db.get(BranchModel, reserva.branch_id)
+    return ApiResponse(
+        message="Reserva registrada.",
+        data={**reserva_data(reserva), "branch_name": branch.name if branch else None},
+    )
+
+
+@router.get("/availability")
+def check_availability(
+    user: User,
+    branch_id: uuid.UUID,
+    variant_ids: Annotated[list[uuid.UUID], Query()],
+    quantities: Annotated[list[int] | None, Query()] = None,
+    db: Session = Depends(get_db),
+):
+    """Indica, por cada talla pedida, si la sucursal elegida alcanza para las
+    cantidades solicitadas. ``quantities`` (opcional) viaja alineado y por la
+    misma posición que ``variant_ids``."""
+    datos = ConsultarDisponibilidad(db).execute(branch_id, variant_ids, quantities)
+    return ApiResponse(message="Disponibilidad obtenida.", data=datos)
 
 
 @router.get("", response_model=ApiResponse[Page[dict]])
@@ -80,9 +112,39 @@ def list_all_reservations(
     page_size: int = Query(50, ge=1, le=200),
     branch_id: uuid.UUID | None = None,
     status: str | None = None,
+    q: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    order: str = Query("scheduled_at", pattern="^(scheduled_at|created_at)$"),
+    direction: str = Query("desc", pattern="^(asc|desc)$"),
 ):
-    items, total = ListarReservas(db).execute(page=page, page_size=page_size, branch_id=branch_id, status=status)
-    result = Page(items=[reserva_data(r) for r in items], total=total, page=page, page_size=page_size, pages=ceil(total / page_size) if total else 0)
+    items, total = ListarReservas(db).execute(
+        page=page,
+        page_size=page_size,
+        branch_id=branch_id,
+        status=status,
+        q=q,
+        date_from=date_from,
+        date_to=date_to,
+        order=order,
+        direction=direction,
+    )
+    branches = {b.id: b for b in db.query(BranchModel).filter(BranchModel.id.in_({r.branch_id for r in items})).all()} if items else {}
+    users = {u.id: u for u in db.query(UserModel).filter(UserModel.id.in_({r.user_id for r in items})).all()} if items else {}
+    result = Page(
+        items=[
+            {
+                **reserva_data(r),
+                "branch_name": branches.get(r.branch_id).name if r.branch_id in branches else None,
+                **_user_data(users, r),
+            }
+            for r in items
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=ceil(total / page_size) if total else 0,
+    )
     return ApiResponse(message="Reservas obtenidas.", data=result)
 
 
