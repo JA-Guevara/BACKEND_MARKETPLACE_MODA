@@ -5,6 +5,11 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
+class ProductDraftRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    message: str = Field(min_length=3, max_length=500)
+
+
 class CategoryCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     slug: str | None = Field(default=None, max_length=140)

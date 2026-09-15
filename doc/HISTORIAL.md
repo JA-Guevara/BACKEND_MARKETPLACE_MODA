@@ -1,5 +1,11 @@
 # Historial de avance
 
+## 2026-09-15 — Verificación del contrato de probador virtual
+
+- Revisados resolución de recurso activo, autenticación y registro del actor.
+- 4 pruebas HTTP sobre SQLite descartable aprobadas; sin modificaciones de producción ni cambios a los contratos.
+- PROBADOR_VIRTUAL.md documenta evidencia y límites. Frontend manual corregido; cámara física y seguimiento corporal pendientes.
+
 ## 2026-09-12 — Diagnóstico de petición del carrito
 
 - Endpoints públicos/preflight publicados responden. Pendiente excepción del carrito con sesión real.

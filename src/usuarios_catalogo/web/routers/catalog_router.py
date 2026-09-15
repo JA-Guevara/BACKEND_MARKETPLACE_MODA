@@ -1,12 +1,16 @@
+import json
 import uuid
 from decimal import Decimal
 from math import ceil
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
+from src.infrastructure.config.settings import settings
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
 from src.shared.exceptions.domain_exception import NotFoundError
@@ -15,7 +19,7 @@ from src.shared.responses.pagination import Page
 from src.usuarios_catalogo.application.services.catalog_service import CatalogService
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, CollectionModel, ColorModel, ProductModel, SeasonModel, SizeModel
 from src.usuarios_catalogo.infrastructure.repositories.catalog_repository import CatalogRepository
-from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, CategoryCreate, CategoryResponse, CategoryUpdate, CollectionCreate, CollectionResponse, CollectionUpdate, ColorCreate, ColorResponse, ColorUpdate, ImageCreate, ProductCreate, ProductResponse, ProductUpdate, PublicProductResponse, SeasonCreate, SeasonResponse, SeasonUpdate, SetProductSuppliersRequest, SizeCreate, SizeResponse, SizeUpdate, VariantCreate, VariantUpdate
+from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, CategoryCreate, CategoryResponse, CategoryUpdate, CollectionCreate, CollectionResponse, CollectionUpdate, ColorCreate, ColorResponse, ColorUpdate, ImageCreate, ProductCreate, ProductDraftRequest, ProductResponse, ProductUpdate, PublicProductResponse, SeasonCreate, SeasonResponse, SeasonUpdate, SetProductSuppliersRequest, SizeCreate, SizeResponse, SizeUpdate, VariantCreate, VariantUpdate
 
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
@@ -92,6 +96,89 @@ def admin_products(
 @router.post("/admin/products", response_model=ApiResponse[ProductResponse], status_code=status.HTTP_201_CREATED)
 def create_product(data: ProductCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
     return ApiResponse(message="Producto creado.", data=CatalogService(db).create_product(data, actor))
+
+
+PRODUCT_DRAFT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string"},
+        "base_price": {"type": "number"},
+        "category_name": {"type": "string"},
+        "brand": {"type": "string"},
+        "gender": {"type": "string"},
+        "description": {"type": "string"},
+    },
+    "required": ["name", "base_price", "category_name", "brand", "gender", "description"],
+}
+
+
+def _normalize_name(text: str) -> str:
+    accents = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ñ": "n"}
+    return "".join(accents.get(ch, ch) for ch in text.lower()).strip()
+
+
+def _draft_unavailable(message: str) -> ApiResponse:
+    return ApiResponse(message=message, data={
+        "available": False, "name": "", "base_price": 0.0, "category_id": None,
+        "category_name": "", "brand": None, "gender": None, "description": "", "matched": False,
+    })
+
+
+@router.post("/admin/products/draft", tags=["catalog"])
+def draft_product(data: ProductDraftRequest, actor: CatalogWriter, db: Session = Depends(get_db)):
+    """Extrae, con IA, los campos de una prenda nueva a partir de un pedido en
+    lenguaje natural (ej.: "registrame una campera de cuero a 450 bolivianos").
+    NO crea nada: el admin revisa el borrador y confirma con POST /admin/products
+    como cualquier alta manual. category_name solo se acepta si coincide EXACTO
+    (normalizado) con una categoria activa real; nunca se inventa un id."""
+    if not settings.ai_api_key:
+        return _draft_unavailable("El asistente de IA no esta configurado todavia.")
+    categories = [{"id": str(c.id), "name": c.name} for c in db.scalars(select(CategoryModel).where(CategoryModel.is_active.is_(True)))]
+    system = (
+        "Extraes los datos de una prenda nueva a partir de un pedido en espanol, para el panel de "
+        "administracion de FashionStore. Devolves SOLO los campos del esquema, sin texto extra.\n"
+        "category_name: el nombre EXACTO de una de estas categorias si hay coincidencia clara, o cadena "
+        "vacia si no hay ninguna coincidencia razonable: " + ", ".join(c["name"] for c in categories) + ".\n"
+        "base_price: el precio numerico que mencionen (sin simbolo de moneda); 0 si no dan un precio claro.\n"
+        "description: una oracion breve y honesta describiendo la prenda; si no hay info suficiente, "
+        "repeti el nombre a modo de descripcion minima."
+    )
+    try:
+        result = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": "Bearer " + settings.ai_api_key},
+            json={
+                "model": settings.ai_model,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": data.message}],
+                "max_tokens": 300,
+                "response_format": {"type": "json_schema", "json_schema": {"name": "product_draft", "strict": True, "schema": PRODUCT_DRAFT_SCHEMA}},
+            },
+            timeout=25,
+        )
+        result.raise_for_status()
+        parsed = json.loads(result.json()["choices"][0]["message"]["content"])
+    except (httpx.HTTPError, KeyError, ValueError, IndexError):
+        return _draft_unavailable("No pude interpretar el pedido en este momento. Intenta de nuevo.")
+
+    wanted = _normalize_name(str(parsed.get("category_name") or ""))
+    matched = next((c for c in categories if _normalize_name(c["name"]) == wanted), None) if wanted else None
+    try:
+        price = max(0.0, float(parsed.get("base_price") or 0))
+    except (TypeError, ValueError):
+        price = 0.0
+
+    return ApiResponse(message="Borrador generado.", data={
+        "available": True,
+        "name": str(parsed.get("name") or "").strip()[:180],
+        "base_price": price,
+        "category_id": matched["id"] if matched else None,
+        "category_name": matched["name"] if matched else "",
+        "brand": (str(parsed.get("brand") or "").strip()[:100] or None),
+        "gender": (str(parsed.get("gender") or "").strip()[:30] or None),
+        "description": str(parsed.get("description") or "").strip()[:2000],
+        "matched": matched is not None,
+    })
 
 
 @router.get("/admin/products/{product_id}", response_model=ApiResponse[ProductResponse])
