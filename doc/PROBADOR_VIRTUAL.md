@@ -6,10 +6,11 @@
   defecto: al activar una prenda, las demás del mismo `asset_type` del producto quedan
   inactivas (`CatalogService.update_ar_asset`). Probado en
   `tests/unit/catalog/test_cycle_one_services.py`.
+- POST /api/v1/media/images (permiso catalog.write) permite subir la imagen del probador (PNG/JPEG/WebP) y ahora lo usa el formulario del editor de producto.
 - El cliente (vestidor Angular) sigue usando `POST /api/v1/vestidor/sessions` sin cambios;
   el seguimiento corporal ocurre íntegramente en el navegador (MediaPipe vía CDN), el
   backend no recibe fotogramas ni posturas.
-- Suite unitaria completa: **64 passed**.
+- Suite unitaria completa: **71 passed**.
 
 Fecha 15/09 (histórico de la tanda anterior):
 
