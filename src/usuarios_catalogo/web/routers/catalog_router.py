@@ -19,7 +19,7 @@ from src.shared.responses.pagination import Page
 from src.usuarios_catalogo.application.services.catalog_service import CatalogService
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, CollectionModel, ColorModel, ProductModel, SeasonModel, SizeModel
 from src.usuarios_catalogo.infrastructure.repositories.catalog_repository import CatalogRepository
-from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, CategoryCreate, CategoryResponse, CategoryUpdate, CollectionCreate, CollectionResponse, CollectionUpdate, ColorCreate, ColorResponse, ColorUpdate, ImageCreate, ProductCreate, ProductDraftRequest, ProductResponse, ProductUpdate, PublicProductResponse, SeasonCreate, SeasonResponse, SeasonUpdate, SetProductSuppliersRequest, SizeCreate, SizeResponse, SizeUpdate, VariantCreate, VariantUpdate
+from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, ARAssetUpdate, CategoryCreate, CategoryResponse, CategoryUpdate, CollectionCreate, CollectionResponse, CollectionUpdate, ColorCreate, ColorResponse, ColorUpdate, ImageCreate, ProductCreate, ProductDraftRequest, ProductResponse, ProductUpdate, PublicProductResponse, SeasonCreate, SeasonResponse, SeasonUpdate, SetProductSuppliersRequest, SizeCreate, SizeResponse, SizeUpdate, VariantCreate, VariantUpdate
 
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
@@ -235,6 +235,11 @@ def delete_image(product_id: uuid.UUID, image_id: uuid.UUID, actor: CatalogWrite
 @router.post("/admin/products/{product_id}/ar-assets", response_model=ApiResponse[ProductResponse])
 def add_ar_asset(product_id: uuid.UUID, data: ARAssetCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
     return ApiResponse(message="Activo AR agregado.", data=CatalogService(db).add_ar_asset(product_id, data, actor))
+
+
+@router.patch("/admin/products/{product_id}/ar-assets/{asset_id}", response_model=ApiResponse[ProductResponse])
+def update_ar_asset(product_id: uuid.UUID, asset_id: uuid.UUID, data: ARAssetUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Activo AR actualizado.", data=CatalogService(db).update_ar_asset(product_id, asset_id, data, actor))
 
 
 @router.delete("/admin/products/{product_id}/ar-assets/{asset_id}", response_model=ApiResponse[ProductResponse])

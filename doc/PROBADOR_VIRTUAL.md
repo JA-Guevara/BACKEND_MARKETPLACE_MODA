@@ -1,5 +1,18 @@
 # Contrato del probador virtual y estado de verificación
 
+## Actualización 16/09 (Etapas 5–6)
+- `PATCH /api/v1/catalog/admin/products/{product_id}/ar-assets/{asset_id}` (NUEVO):
+  schema `ARAssetUpdate` (`asset_url`, `preview_url`, `is_active` opcionales). Regla por
+  defecto: al activar una prenda, las demás del mismo `asset_type` del producto quedan
+  inactivas (`CatalogService.update_ar_asset`). Probado en
+  `tests/unit/catalog/test_cycle_one_services.py`.
+- El cliente (vestidor Angular) sigue usando `POST /api/v1/vestidor/sessions` sin cambios;
+  el seguimiento corporal ocurre íntegramente en el navegador (MediaPipe vía CDN), el
+  backend no recibe fotogramas ni posturas.
+- Suite unitaria completa: **64 passed**.
+
+Fecha 15/09 (histórico de la tanda anterior):
+
 Fecha: 15/09/2026. Se revisó el backend existente y se añadieron pruebas; no se modificaron sus rutas, modelos ni migraciones en esta sesión.
 
 ## Implementación existente

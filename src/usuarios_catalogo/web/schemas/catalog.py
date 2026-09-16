@@ -195,6 +195,16 @@ class ARAssetCreate(BaseModel):
     preview_url: HttpUrl | None = None
 
 
+class ARAssetUpdate(BaseModel):
+    """Editacion de un recurso AR existente: se pueden corregir las URLs o
+    activarlo/desactivarlo como recurso por defecto del probador. Campo por
+    campo, sin tocar los que no llegan."""
+    asset_type: str | None = Field(default=None, pattern=r"^(image_overlay|glb|gltf|usdz)$")
+    asset_url: HttpUrl | None = None
+    preview_url: HttpUrl | None = None
+    is_active: bool | None = None
+
+
 class ARAssetResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

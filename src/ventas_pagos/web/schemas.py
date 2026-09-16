@@ -85,3 +85,39 @@ class InsightsRequest(BaseModel):
     la IA."""
     question: str | None = Field(default=None, max_length=500)
     filters: ReportFilters | None = None
+
+
+REPORT_TYPES = {"ventas", "pedidos", "pagos", "prendas_vendidas", "existencias", "sucursales"}
+
+
+class MultiExportRequest(BaseModel):
+    """Solicitud de exportacion multiple: varios reportes en una sola operacion.
+    Los tipos y filtros se validan en el servidor; el orden pedido se conserva
+    (los duplicados se eliminan)."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reports: list[str] = Field(min_length=1, max_length=6)
+    format: Literal["xlsx", "pdf", "csv"]
+    filters: ReportFilters | None = None
+
+
+class ExportReportToolParams(BaseModel):
+    """Parametros validados de la herramienta export_report del asistente."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reports: list[str] = Field(min_length=1, max_length=6)
+    format: Literal["xlsx", "pdf", "csv"]
+    filters: ReportFilters | None = None
+
+
+class AssistantToolRequest(BaseModel):
+    """Pedido de ejecutar una herramienta tipada del asistente. Solo existen
+    las herramientas del registro autorizado en el servidor; los parametros se
+    validan aqui. request_id hace idempotente la operacion (una sola bitacora)."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    tool: Literal["export_report"]
+    request_id: str | None = Field(
+        default=None, max_length=64, pattern=r"^[A-Za-z0-9._-]+$"
+    )
+    params: ExportReportToolParams | None = None

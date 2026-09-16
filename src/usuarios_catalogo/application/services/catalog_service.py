@@ -16,7 +16,7 @@ from src.shared.exceptions.domain_exception import ConflictError, NotFoundError,
 from src.shared.responses.pagination import Page
 from src.usuarios_catalogo.infrastructure.models.catalog import ARAssetModel, CategoryModel, CollectionModel, ColorModel, ProductImageModel, ProductModel, ProductSupplierModel, ProductVariantModel, SeasonModel, SizeModel
 from src.usuarios_catalogo.infrastructure.repositories.catalog_repository import CatalogRepository
-from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, CategoryCreate, CategoryUpdate, CollectionCreate, CollectionUpdate, ColorCreate, ColorUpdate, ImageCreate, ProductCreate, ProductSupplierInput, ProductUpdate, PublicProductResponse, SeasonCreate, SeasonUpdate, SizeCreate, SizeUpdate, VariantCreate, VariantUpdate
+from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, ARAssetUpdate, CategoryCreate, CategoryUpdate, CollectionCreate, CollectionUpdate, ColorCreate, ColorUpdate, ImageCreate, ProductCreate, ProductSupplierInput, ProductUpdate, PublicProductResponse, SeasonCreate, SeasonUpdate, SizeCreate, SizeUpdate, VariantCreate, VariantUpdate
 
 
 class CatalogService:
@@ -267,6 +267,36 @@ class CatalogService:
             raise NotFoundError("Activo de realidad aumentada no encontrado.")
         self._audit(actor, "catalog.ar_asset_deleted", asset, "Activo de realidad aumentada eliminado.")
         self.db.delete(asset)
+        self.db.commit()
+        return self.repository.get_product(product.id) or product
+
+    def update_ar_asset(self, product_id: uuid.UUID, asset_id: uuid.UUID, data: ARAssetUpdate, actor: UserModel) -> ProductModel:
+        """Edita un recurso AR: puede corregir tipo/URLs y activarlo como el
+        recurso por defecto de su tipo (los demás del mismo tipo quedan
+        inactivos para que el probador sepa cuál usar)."""
+        product = self.require_product(product_id)
+        asset = self.repository.get_ar_asset(product_id, asset_id)
+        if not asset:
+            raise NotFoundError("Activo de realidad aumentada no encontrado.")
+        changes = {}
+        if data.asset_type is not None:
+            changes["asset_type"] = data.asset_type
+        if data.asset_url is not None:
+            changes["asset_url"] = str(data.asset_url)
+        if data.preview_url is not None:
+            changes["preview_url"] = str(data.preview_url)
+        if data.is_active is True:
+            self.db.execute(
+                update(ARAssetModel)
+                .where(ARAssetModel.product_id == product_id, ARAssetModel.id != asset_id)
+                .values(is_active=False)
+            )
+            changes["is_active"] = True
+        elif data.is_active is False:
+            changes["is_active"] = False
+        for key, value in changes.items():
+            setattr(asset, key, value)
+        self._audit(actor, "catalog.ar_asset_updated", asset, "Activo de realidad aumentada actualizado.")
         self.db.commit()
         return self.repository.get_product(product.id) or product
 

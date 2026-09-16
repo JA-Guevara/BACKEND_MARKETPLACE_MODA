@@ -90,3 +90,45 @@ def test_soft_deleted_product_is_hidden_from_public_catalog() -> None:
     public_page = catalog.public_page(page=1, page_size=24, include_deleted=False)
     assert public_page.total == 0
     assert catalog.require_product(product.id, include_deleted=True).deleted_at is not None
+
+
+def test_ar_asset_update_activa_recurso_por_default_y_corrige_url() -> None:
+    """Etapa 5: edicion de recursos AR. Al activar uno, los demas del mismo tipo
+    quedan inactivos (el probador sabe cual usar) y se pueden corregir las URLs."""
+    from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, ARAssetUpdate
+
+    db, actor = make_session()
+    catalog = CatalogService(db)
+    category = catalog.create_category(CategoryCreate(name="Camperas"), actor)
+    product = catalog.create_product(
+        ProductCreate(name="Campera de cuero", description="Campera para probador.",
+                      base_price=Decimal("450.00"), category_id=category.id),
+        actor,
+    )
+    catalog.add_ar_asset(product.id, ARAssetCreate(asset_type="image_overlay",
+                                                   asset_url="https://cdn.example.com/overlay_v1.png"), actor)
+    catalog.add_ar_asset(product.id, ARAssetCreate(asset_type="image_overlay",
+                                                   asset_url="https://cdn.example.com/overlay_v2.png"), actor)
+
+    # Refrescar la colección de recursos (en sesiones nuevas se carga sola;
+    # acá el identity map mantiene la colección vieja de create_product).
+    db.expire_all()
+    second = catalog.require_product(product.id)
+
+    assets = second.ar_assets
+    assert len(assets) == 2
+    first_id, second_id = assets[0].id, assets[1].id
+
+    updated = catalog.update_ar_asset(
+        product.id, second_id,
+        ARAssetUpdate(is_active=True, asset_url="https://cdn.example.com/overlay_v2_final.png"),
+        actor,
+    )
+    by_id = {a.id: a for a in updated.ar_assets}
+    assert by_id[second_id].is_active is True
+    assert by_id[second_id].asset_url == "https://cdn.example.com/overlay_v2_final.png"
+    assert by_id[first_id].is_active is False
+
+    # Desactivar el activo por defecto también funciona (edición campo a campo).
+    deactivated = catalog.update_ar_asset(product.id, second_id, ARAssetUpdate(is_active=False), actor)
+    assert {a.id: a.is_active for a in deactivated.ar_assets}[second_id] is False

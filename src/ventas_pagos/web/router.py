@@ -22,7 +22,9 @@ from src.ventas_pagos.application.service import CommerceService
 from src.ventas_pagos.application.reports_service import ReportsService
 from src.ventas_pagos.application.reports_ai import ReportsAI
 from src.ventas_pagos.application import exporter
-from src.ventas_pagos.web.schemas import Quantity, StockQuantity, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest
+from src.ventas_pagos.application.multi_export_service import MultiExportService
+from src.ventas_pagos.application.assistant_tools import AssistantTools, UnknownToolError
+from src.ventas_pagos.web.schemas import Quantity, StockQuantity, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, REPORT_TYPES
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
 analytics_router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -257,6 +259,34 @@ def explain(data: ExplainRequest, user: Analyst, db: Session = Depends(get_db)):
     return response(ReportsAI(db).explain(data.question, data.filters or ReportFilters()))
 
 
+@analytics_router.post("/assistant/execute", tags=["analytics"])
+def execute_tool(data: AssistantToolRequest, user: Analyst, db: Session = Depends(get_db)):
+    """Ejecuta una herramienta tipada del asistente (hoy export_report) con
+    parametros validados en esta capa y datos autorizados. Deja bitacora con el
+    correo del actor; si llega una request_id repetida dentro de la ventana,
+    no vuelve a auditar la accion (X-Idempotent-Replay: true)."""
+    try:
+        result = AssistantTools(db).execute(data.tool, data.params, user, data.request_id)
+    except UnknownToolError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    headers = {
+        "Content-Disposition": f'attachment; filename="{result.filename}"',
+        "X-Tool": data.tool,
+        "X-Reports": "+".join(result.reports),
+        "X-Truncated": "true" if result.truncated else "false",
+        "X-Audited": "true" if result.audited else "false",
+    }
+    if result.replay:
+        headers["X-Idempotent-Replay"] = "true"
+    return StreamingResponse(
+        iter([result.payload]), media_type=result.media_type, headers=headers
+    )
+
+
 @analytics_router.get("/reports/export", tags=["analytics"])
 def export_reports(user: Analyst, db: Session = Depends(get_db), report: str = Query(default="ventas"),
                    format: str = Query(default="xlsx"), date_from: datetime | None = None, date_to: datetime | None = None,
@@ -292,3 +322,45 @@ def export_reports(user: Analyst, db: Session = Depends(get_db), report: str = Q
     content = exporter.to_xlsx(title, headers, rows, metadata)
     return StreamingResponse(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@analytics_router.post("/reports/export-multiple", tags=["analytics"])
+def export_reports_multiple(data: MultiExportRequest, user: Analyst, db: Session = Depends(get_db)):
+    """Exportacion multiple (NUEVO): varios reportes en una sola operacion.
+
+    - xlsx: un archivo con una hoja por reporte + hoja "Criterios".
+    - pdf: un documento con cabecera, criterios y una seccion por reporte,
+      encabezados repetidos y paginas numeradas.
+    - csv: un reporte => .csv; varios => .zip con un CSV por reporte y
+      criterios.txt (nunca se concatenan tablas incompatibles).
+
+    Mantiene el endpoint individual GET /analytics/reports/export compatible.
+    Valida tipos, formato, filtros y permiso (dashboard.read) en el servidor;
+    respeta el limite de filas y comunica el truncamiento por encabezado.
+    """
+    from fastapi import HTTPException
+
+    invalid = [key for key in data.reports if key not in REPORT_TYPES]
+    if invalid:
+        raise HTTPException(status_code=422, detail=f"Reportes no soportados: {', '.join(invalid)}.")
+    reports = list(dict.fromkeys(data.reports))
+    if not reports:
+        raise HTTPException(status_code=422, detail="Selecciona al menos un reporte.")
+
+    payload, media_type, filename, summary = MultiExportService(db).export(reports, data.format, data.filters)
+    RecordAuditEvent(db).execute(
+        action="analytics.reports_export_multiple",
+        entity_type="report",
+        description=f"Exportacion multiple en {data.format}: {', '.join(summary['reports'])}.",
+        actor_user_id=user.id,
+        metadata={"reports": reports, "format": data.format, **{k: v for k, v in summary.items() if k != "reports"}},
+    )
+    db.commit()
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Export-Reports": ",".join(reports),
+        "X-Export-Format": data.format,
+        "X-Export-Truncated": "true" if summary["truncated"] else "false",
+    }
+    return StreamingResponse(iter([payload.getvalue()] if hasattr(payload, "getvalue") else [payload]),
+                             media_type=media_type, headers=headers)

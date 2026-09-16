@@ -2,6 +2,16 @@
 
 Fecha: 2026-09-15 · Análisis realizado antes de modificar código.
 
+> **Actualización 2026-09-16 (Etapas 2–6):** el asistente ahora ejecuta herramientas
+> tipadas. Nuevo `POST /analytics/assistant/execute` (permiso `dashboard.read`) que
+> permite la tool `export_report` (whitelist en `ventas_pagos/application/assistant_tools.py`),
+> con `request_id` idempotente (TTL 60 s en memoria; en replay regenera el archivo **sin**
+> re-auditar, cabecera `X-Idempotent-Replay`), cabeceras `X-Tool`/`X-Reports`/`X-Truncated`/
+> `X-Audited`, y bitácora `analytics.tool_export_report` con `actor_email` y `request_id` en
+> `metadata`. En catálogo: `PATCH /catalog/admin/products/{id}/ar-assets/{asset_id}`
+> (schema `ARAssetUpdate`; activar una prenda desactiva las demás del mismo tipo). Verificado
+> con `pytest tests/unit -q` → **64 passed**.
+
 > **Actualización 2026-09-15 (fin de tanda):** plan A, B y C **completos y
 > verificados** (`pytest -q` → 36 passed). Cambios en `reports_service.py`
 > (bloque `meta`, `period.*`, `units_sold`, `comparison`, `low_stock_variants`,
@@ -175,3 +185,48 @@ sucursal" es agrupación, no filtro.
 Pruebas nuevas: `tests/unit/ventas_pagos/test_reports_ai_contexto.py` (4 tests):
 pedido referido siembra contexto; periodo explícito gana; sucursal nombrada gana;
 sin referencia no siembra.
+
+## 9. Actualización 2026-09-16 — exportación múltiple (Etapa 1)
+
+**Estado: Verificado localmente** (`pytest tests/unit -q` → 56 passed, 1 warning;
+frontend `test:ci` → 108 passed; `ng build` completo, solo warning de presupuesto
+de estilos del dashboard ya existente).
+
+Nuevo `POST /api/v1/analytics/reports/export-multiple` (permiso `dashboard.read`).
+Recibe `{reports: [...], format: xlsx|pdf|csv, filters?: ReportFilters}`; valida en
+el servidor tipos/formato/filtros, elimina duplicados conservando el orden, y
+devuelve el archivo con `Content-Disposition` y encabezados `X-Export-Reports`,
+`X-Export-Format` y `X-Export-Truncated`. Registra bitácora
+`analytics.reports_export_multiple` con el usuario autenticado.
+
+Archivos nuevos: `src/ventas_pagos/application/multi_exporter.py`
+(serializadores) y `multi_export_service.py` (caso de uso con resumen para
+bitácora/encabezados). `MultiExportRequest` en `schemas.py`.
+
+| Formato | Comportamiento |
+|---|---|
+| xlsx | Una hoja por reporte + hoja "Criterios" (período, filtros, zona, moneda, generado, nota; qué filtros NO aplican por reporte y referencia de fecha). |
+| pdf | Un documento apaisado (los reportes tienen >5 columnas): cabecera FashionStore, criterios, sección por reporte, encabezados de tabla repetidos (`repeatRows=1`), páginas numeradas, texto saneado a Latin-1 y barra del reporte `ventas` (15 días) y `sucursales` (top 8) con los mismos datos de la tabla. |
+| csv | Un reporte → `.csv`; varios → `.zip` con un CSV por reporte + `criterios.txt`. Nunca se concatenan tablas incompatibles. |
+
+Coherencia: cada reporte se calcula con `ReportsService.export_report` (el MISMO
+conjunto que el dashboard) aplicando `report_export_max_rows` por reporte; el
+truncamiento se comunica por encabezado y en la nota, nunca se silencia. Se
+documenta por reporte qué filtros NO aplican (p. ej. `periodo/estado/categoria`
+no aplican a `existencias`, que es fotografía del momento) y la referencia de
+fecha (paid_at con respaldo en creación para históricos).
+
+Pendiente de producto (fuera de esta etapa): `paid_at` obligatorio, abandono de
+carrito, devoluciones, stock histórico.
+
+### Punto de reanudación (Etapa 1)
+- [x] Exportación múltiple backend + pruebas (`test_multi_exporter.py`,
+  `test_multi_export_service.py`, 10 tests nuevos incluidos los 56 totales).
+- [x] Panel de exportación en dashboard frontend (multi-selección, Excel/PDF/CSV,
+  resumen de filtros visibles, advertencia de truncamiento, botón deshabilitado
+  sin selección) — `dashboard.service.ts.exportMultiple` +
+  `dashboard.component.ts`. El endpoint individual `GET /reports/export` sigue
+  activo y compatible.
+- [x] Fix de robustez: `ReportService.export_report` ordena por
+  `_utc_of(created_at)` para soportar datos mixtos (historicos naive en SQLite y
+  pedidos nuevos aware).

@@ -94,7 +94,7 @@ def test_period_comparison_with_previous_revenue():
     db, world = make_world()
     user = world["actor"]
     add_order(db, world["branch"], user, world["v1"].id, 1, Decimal("100"), days_ago=1)
-    add_order(db, world["branch"], user, world["v1"].id, 1, Decimal("50"), days_ago=10)
+    add_order(db, world["branch"], user, world["v1"].id, 1, Decimal("50"), days_ago=9)
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=5)
     data = ReportsService(db).dashboard(start, end)

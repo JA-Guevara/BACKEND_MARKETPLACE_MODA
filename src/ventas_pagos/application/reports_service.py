@@ -571,7 +571,7 @@ class ReportsService:
             orders = [o for o in windowed if kept is None or order_contains_category(o)]
             headers = ["numero", "fecha", "correo", "sucursal", "estado", "pago", "metodo", "total", "moneda"]
             rows = []
-            for o in sorted(orders, key=lambda o: o.created_at, reverse=True):
+            for o in sorted(orders, key=lambda o: _utc_of(o.created_at), reverse=True):
                 row = {
                     "numero": o.number, "fecha": _local(o.created_at).strftime("%Y-%m-%d %H:%M"),
                     "correo": o.customer_email, "sucursal": branches.get(o.branch_id, "-"),
@@ -588,7 +588,7 @@ class ReportsService:
         if report == "pagos":
             orders = [o for o in windowed_paid if kept is None or order_contains_category(o)]
             rows = []
-            for o in sorted(orders, key=lambda o: o.created_at, reverse=True):
+            for o in sorted(orders, key=lambda o: _utc_of(o.created_at), reverse=True):
                 monto = float(sum(_line_amount(it) for it in o.items if self._product_in(it, kept))) if kept is not None else float(o.total)
                 row = {
                     "numero": o.number, "fecha": _local(self._payment_instant(o)).strftime("%Y-%m-%d %H:%M"),
