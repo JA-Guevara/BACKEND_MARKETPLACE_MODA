@@ -154,3 +154,24 @@ horaria de negocio es `America/La_Paz` (documentada en `meta.timezone`).
   `frontend_marketplace_moda/doc/`).
 - Pendiente de producto (no de backend): export **PDF**, `paid_at`, abandono de
   carrito, devoluciones, stock histórico (tablas/eventos nuevos).
+
+---
+
+## 8. Actualización 2026-09-16 — contexto visible en interpret (unidad 2-C)
+
+**Estado: Verificado localmente** (`pytest -q` → 51 passed, 1 warning).
+
+`ReportsAI.interpret(message, current, catalog)` ahora **usa `current`**
+(antes lo ignoraba). Regla determinista: si el texto hace referencia explícita
+al contexto visible (`esto|eso|ese/este contexto|lo que veo|en pantalla|de la
+vista|visible|actual|esta ventana|de aqui`), siembra los filtros de `current`
+(`branch_id`, `category_id`, `status`, rango `date_from/date_to`, col 2026) como
+punto de partida y registra una aclaración ("Usé los filtros visibles del
+dashboard como punto de partida."). Lo que el texto pide explícitamente después
+(periodo, sucursal nombrada, categoría) gana sobre esa siembra. Pedidos sin
+referencia al contexto (`"ventas por sucursal"`) no siembran nada: "por
+sucursal" es agrupación, no filtro.
+
+Pruebas nuevas: `tests/unit/ventas_pagos/test_reports_ai_contexto.py` (4 tests):
+pedido referido siembra contexto; periodo explícito gana; sucursal nombrada gana;
+sin referencia no siembra.

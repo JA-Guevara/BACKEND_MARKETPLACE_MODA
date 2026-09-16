@@ -59,6 +59,23 @@ class ReportsAI:
             "respuesta": "",
         }
 
+        # Contexto visible del dashboard: pedidos como "explicame esto" o
+        # "exportá esto" reutilizan los filtros que la pantalla ya está
+        # mostrando. Lo que el texto pida explícitamente (periodo, sucursal
+        # nombrada, categoría) gana después sobre estos valores de arranque.
+        if current and re.search(r"esto|este (?:contexto|tablero)|lo que veo|en pantalla|de la vista|visible|actual|esta ventana|de aqui", text):
+            if current.branch_id:
+                result["filtros"]["branch_id"] = str(current.branch_id)
+            if current.category_id:
+                result["filtros"]["category_id"] = str(current.category_id)
+            if current.status:
+                result["filtros"]["status"] = current.status
+            if current.date_from:
+                result["filtros"]["date_from"] = current.date_from.isoformat()
+            if current.date_to:
+                result["filtros"]["date_to"] = current.date_to.isoformat()
+            result["aclaraciones"].append("Usé los filtros visibles del dashboard como punto de partida.")
+
         # Periodo.
         period, day = self._period(text)
         if period:
