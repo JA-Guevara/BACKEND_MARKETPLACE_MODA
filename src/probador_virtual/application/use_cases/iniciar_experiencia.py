@@ -16,15 +16,21 @@ class IniciarExperiencia:
         self.db = db
         self.service = VirtualFittingService(db)
 
-    def execute(self, product_id: uuid.UUID, user: UserModel) -> ExperienciaVirtual:
-        experiencia = self.service.resolve_asset(product_id)
+    def execute(
+        self, product_id: uuid.UUID, user: UserModel, color_id: uuid.UUID | None = None
+    ) -> ExperienciaVirtual:
+        experiencia = self.service.resolve_asset(product_id, color_id)
         RecordAuditEvent(self.db).execute(
             action="probador_virtual.session_started",
             entity_type="product",
             entity_id=str(product_id),
             description="Cliente abrio el vestidor virtual para una prenda.",
             actor_user_id=user.id,
-            metadata={"asset_type": experiencia.asset_type},
+            metadata={
+                "asset_type": experiencia.asset_type,
+                "body_region": experiencia.body_region,
+                "color_id": str(experiencia.color_id) if experiencia.color_id else None,
+            },
         )
         self.db.commit()
         return experiencia
