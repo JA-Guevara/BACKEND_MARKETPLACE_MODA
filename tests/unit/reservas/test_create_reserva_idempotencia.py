@@ -82,3 +82,19 @@ def test_claves_distintas_crean_reservas_distintas():
     a = CrearReserva(db).execute(user, request(branch.id, variant.id, str(uuid.uuid4()), quantity=1))
     b = CrearReserva(db).execute(user, request(branch.id, variant.id, str(uuid.uuid4()), quantity=1))
     assert a.id != b.id
+
+
+def test_reserva_aparta_y_luego_libera_unidades_al_ser_atendida():
+    from src.reservas.application.use_cases.confirm_reserva import ActualizarEstadoReserva
+    from sqlalchemy import select
+    db, world = make_world()
+    user, branch, variant = world["actor"], world["branch"], world["variant"]
+    reserva = CrearReserva(db).execute(user, request(branch.id, variant.id, str(uuid.uuid4()), quantity=2))
+    stock = db.scalar(select(StockModel).where(StockModel.variant_id == variant.id, StockModel.branch_id == branch.id))
+    assert reserva.inventory_held and stock.quantity == 18
+    states = ActualizarEstadoReserva(db)
+    states.execute(reserva, "confirmed", user)
+    states.execute(reserva, "ready", user)
+    states.execute(reserva, "attended", user)
+    db.refresh(stock)
+    assert not reserva.inventory_held and stock.quantity == 20

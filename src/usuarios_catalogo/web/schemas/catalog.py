@@ -5,19 +5,23 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
+class CatalogInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
 class ProductDraftRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     message: str = Field(min_length=3, max_length=500)
 
 
-class CategoryCreate(BaseModel):
+class CategoryCreate(CatalogInput):
     name: str = Field(min_length=2, max_length=120)
     slug: str | None = Field(default=None, max_length=140)
     description: str | None = None
     parent_id: uuid.UUID | None = None
 
 
-class CategoryUpdate(BaseModel):
+class CategoryUpdate(CatalogInput):
     name: str | None = Field(default=None, min_length=2, max_length=120)
     slug: str | None = Field(default=None, max_length=140)
     description: str | None = None
@@ -37,13 +41,13 @@ class CategoryResponse(BaseModel):
     updated_at: datetime
 
 
-class SizeCreate(BaseModel):
+class SizeCreate(CatalogInput):
     code: str = Field(min_length=1, max_length=30)
     name: str = Field(min_length=1, max_length=80)
     sort_order: int = Field(default=0, ge=0)
 
 
-class SizeUpdate(BaseModel):
+class SizeUpdate(CatalogInput):
     code: str | None = Field(default=None, min_length=1, max_length=30)
     name: str | None = Field(default=None, min_length=1, max_length=80)
     sort_order: int | None = Field(default=None, ge=0)
@@ -61,12 +65,12 @@ class SizeResponse(BaseModel):
     updated_at: datetime
 
 
-class ColorCreate(BaseModel):
+class ColorCreate(CatalogInput):
     name: str = Field(min_length=2, max_length=80)
     hex_code: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
 
 
-class ColorUpdate(BaseModel):
+class ColorUpdate(CatalogInput):
     name: str | None = Field(default=None, min_length=2, max_length=80)
     hex_code: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
@@ -82,7 +86,7 @@ class ColorResponse(BaseModel):
     updated_at: datetime
 
 
-class SeasonCreate(BaseModel):
+class SeasonCreate(CatalogInput):
     name: str = Field(min_length=2, max_length=120)
     description: str | None = None
     start_date: date | None = None
@@ -112,13 +116,13 @@ class SeasonResponse(BaseModel):
     updated_at: datetime
 
 
-class CollectionCreate(BaseModel):
+class CollectionCreate(CatalogInput):
     name: str = Field(min_length=2, max_length=120)
     description: str | None = None
     season_id: uuid.UUID | None = None
 
 
-class CollectionUpdate(BaseModel):
+class CollectionUpdate(CatalogInput):
     name: str | None = Field(default=None, min_length=2, max_length=120)
     description: str | None = None
     season_id: uuid.UUID | None = None
@@ -137,7 +141,7 @@ class CollectionResponse(BaseModel):
     updated_at: datetime
 
 
-class VariantCreate(BaseModel):
+class VariantCreate(CatalogInput):
     size_id: uuid.UUID
     color_id: uuid.UUID
     sku: str = Field(min_length=2, max_length=80)
@@ -145,7 +149,7 @@ class VariantCreate(BaseModel):
     price_override: Decimal | None = Field(default=None, ge=0)
 
 
-class VariantUpdate(BaseModel):
+class VariantUpdate(CatalogInput):
     size_id: uuid.UUID | None = None
     color_id: uuid.UUID | None = None
     sku: str | None = Field(default=None, min_length=2, max_length=80)
@@ -171,7 +175,7 @@ class VariantResponse(BaseModel):
     updated_at: datetime
 
 
-class ImageCreate(BaseModel):
+class ImageCreate(CatalogInput):
     url: HttpUrl
     alt_text: str | None = Field(default=None, max_length=255)
     sort_order: int = Field(default=0, ge=0)
@@ -216,7 +220,7 @@ class ARAssetResponse(BaseModel):
     is_active: bool
 
 
-class ProductSupplierInput(BaseModel):
+class ProductSupplierInput(CatalogInput):
     supplier_id: uuid.UUID
     supplier_sku: str | None = Field(default=None, max_length=100)
     unit_cost: Decimal | None = Field(default=None, ge=0)
@@ -233,7 +237,7 @@ class ProductSupplierResponse(BaseModel):
     is_primary: bool
 
 
-class ProductCreate(BaseModel):
+class ProductCreate(CatalogInput):
     name: str = Field(min_length=2, max_length=180)
     slug: str | None = Field(default=None, max_length=200)
     description: str = Field(min_length=5)
@@ -253,7 +257,7 @@ class ImageEdit(ImageCreate):
     id: uuid.UUID | None = None
 
 
-class ProductUpdate(BaseModel):
+class ProductUpdate(CatalogInput):
     images: list[ImageEdit] | None = None
     name: str | None = Field(default=None, min_length=2, max_length=180)
     slug: str | None = Field(default=None, max_length=200)

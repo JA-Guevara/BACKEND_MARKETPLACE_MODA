@@ -33,6 +33,8 @@ def _filter_text(filters: ReportFilters, db: Session, branch_name: str | None, c
         parts.append(f"categoria={category_name or filters.category_id}")
     if filters.status:
         parts.append(f"estado={filters.status}")
+    if filters.low_stock_lt is not None:
+        parts.append(f"existencias menores a={filters.low_stock_lt}")
     return "; ".join(parts) if parts else "sin filtros adicionales"
 
 
@@ -51,6 +53,7 @@ class MultiExportService:
             filters.branch_id,
             filters.category_id,
             filters.status,
+            low_stock_lt=filters.low_stock_lt,
         )
         truncated = len(rows) > settings.report_export_max_rows
         rows = rows[: settings.report_export_max_rows]

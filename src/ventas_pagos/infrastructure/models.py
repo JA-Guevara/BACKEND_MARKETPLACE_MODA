@@ -25,7 +25,12 @@ class CartItemModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class OrderModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "commerce_orders"
     number: Mapped[str] = mapped_column(String(40), unique=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    sales_channel: Mapped[str] = mapped_column(String(10), default="web", server_default="web")
+    cash_point_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cash_points.id", ondelete="RESTRICT"))
+    cashier_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    client_request_id: Mapped[uuid.UUID | None] = mapped_column(unique=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
     customer_email: Mapped[str] = mapped_column(String(320))
     branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"))
     status: Mapped[str] = mapped_column(String(30), default="pending_payment", index=True)
@@ -47,3 +52,21 @@ class OrderModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class WebhookEventModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "commerce_webhook_events"
     event_id: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class StockMovementModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "commerce_stock_movements"
+    __table_args__ = (
+        CheckConstraint("quantity_before >= 0 AND quantity_after >= 0", name="nonnegative_balances"),
+        CheckConstraint("quantity_after = quantity_before + delta", name="balanced_movement"),
+    )
+    variant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("product_variants.id", ondelete="RESTRICT"), index=True)
+    branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)
+    delta: Mapped[int] = mapped_column(Integer)
+    quantity_before: Mapped[int] = mapped_column(Integer)
+    quantity_after: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(String(500))
+    reference: Mapped[str | None] = mapped_column(String(100))
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    actor_email: Mapped[str | None] = mapped_column(String(320))

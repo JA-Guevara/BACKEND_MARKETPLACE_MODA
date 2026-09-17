@@ -40,6 +40,7 @@ def reserva_data(reserva: ReservationModel) -> dict:
         "tracking": reserva.tracking,
         "created_at": reserva.created_at,
         "updated_at": reserva.updated_at,
+        "inventory_held": reserva.inventory_held,
     }
 
 

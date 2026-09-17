@@ -106,7 +106,7 @@ class ReportsService:
 
         all_orders = list(self.db.scalars(select(OrderModel)))
         if status:
-            all_orders = [o for o in all_orders if o.status == status]
+            all_orders = [o for o in all_orders if self._matches_status(o, status)]
         if branch_id:
             all_orders = [o for o in all_orders if o.branch_id == branch_id]
 
@@ -364,11 +364,10 @@ class ReportsService:
 
     # ---------- desgloses ----------
 
-    @staticmethod
-    def _daily_sales(lines: list[tuple], days: int) -> list[tuple[str, Decimal]]:
+    def _daily_sales(self, lines: list[tuple], days: int) -> list[tuple[str, Decimal]]:
         daily: dict[str, Decimal] = {}
         for order, item, scoped in lines:
-            key = _local(ReportsService._payment_instant(order)).date().isoformat()
+            key = _local(self._payment_instant(order)).date().isoformat()
             daily[key] = daily.get(key, Decimal(0)) + ReportsService._amount(order, item, scoped)
         return sorted(daily.items())[-days:] if days else sorted(daily.items())
 
@@ -399,28 +398,26 @@ class ReportsService:
         buckets: dict[str, Decimal] = {key: Decimal(0) for key in keys}
         orders: dict[str, set] = {key: set() for key in keys}
         for order, item, scoped in lines:
-            key = _local(ReportsService._payment_instant(order)).date().isoformat()[:7]
+            key = _local(self._payment_instant(order)).date().isoformat()[:7]
             if key in buckets:
                 buckets[key] += self._amount(order, item, scoped)
                 orders[key].add(order.id)
         return [{"month": key, "total": str(buckets[key]), "orders": len(orders[key])} for key in keys]
 
-    @staticmethod
-    def _hourly_distribution(lines: list[tuple]) -> list[dict]:
+    def _hourly_distribution(self, lines: list[tuple]) -> list[dict]:
         totals = {h: Decimal(0) for h in range(24)}
         counts = {h: set() for h in range(24)}
         for order, item, scoped in lines:
-            hour = _local(ReportsService._payment_instant(order)).hour
+            hour = _local(self._payment_instant(order)).hour
             totals[hour] += ReportsService._amount(order, item, scoped)
             counts[hour].add(order.id)
         return [{"hour": h, "total": str(totals[h]), "orders": len(counts[h])} for h in range(24)]
 
-    @staticmethod
-    def _weekday_distribution(lines: list[tuple]) -> list[dict]:
+    def _weekday_distribution(self, lines: list[tuple]) -> list[dict]:
         totals = {i: Decimal(0) for i in range(7)}
         counts = {i: set() for i in range(7)}
         for order, item, scoped in lines:
-            day = _local(ReportsService._payment_instant(order)).weekday()
+            day = _local(self._payment_instant(order)).weekday()
             totals[day] += ReportsService._amount(order, item, scoped)
             counts[day].add(order.id)
         return [{"weekday": WEEKDAY_LABELS[i], "total": str(totals[i]), "orders": len(counts[i])} for i in range(7)]
@@ -537,6 +534,12 @@ class ReportsService:
 
     # ---------- exportacion ----------
 
+    @staticmethod
+    def _matches_status(order: OrderModel, status: str) -> bool:
+        # A paid sale remains paid after preparation, shipping or delivery.
+        # This also includes sales completed at the physical cash register.
+        return order.payment_status == "paid" if status == "paid" else order.status == status
+
     def export_report(
         self,
         report: str,
@@ -545,6 +548,7 @@ class ReportsService:
         branch_id: uuid.UUID | None = None,
         category_id: uuid.UUID | None = None,
         status: str | None = None,
+        low_stock_lt: int | None = None,
     ) -> tuple[str, list[str], list[dict]]:
         """Construye filas para exportar. Devuelve (titulo, cabeceras, filas)
         sobre el MISMO conjunto que el dashboard: una categoria solo suma sus
@@ -552,7 +556,7 @@ class ReportsService:
         pagados, igual que las tarjetas del centro de reportes."""
         all_orders = list(self.db.scalars(select(OrderModel)))
         if status:
-            all_orders = [o for o in all_orders if o.status == status]
+            all_orders = [o for o in all_orders if self._matches_status(o, status)]
         if branch_id:
             all_orders = [o for o in all_orders if o.branch_id == branch_id]
         start, end = self._window(date_from, date_to)
@@ -635,6 +639,8 @@ class ReportsService:
                 query = query.where(StockModel.branch_id == branch_id)
             if category_id:
                 query = query.where(ProductModel.category_id == category_id)
+            if low_stock_lt is not None:
+                query = query.where(StockModel.quantity < low_stock_lt)
             rows = [{"sku": v.sku, "nombre": p.name, "talla": v.size.name, "color": v.color.name,
                      "sucursal": b.name, "cantidad": s.quantity}
                     for v, p, s, b in self.db.execute(query)]

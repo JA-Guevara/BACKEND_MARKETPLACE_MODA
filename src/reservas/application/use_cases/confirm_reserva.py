@@ -7,6 +7,7 @@ from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.reservas.domain.entities.reserva import TRANSITIONS
 from src.reservas.domain.exceptions import TransicionInvalidaError
 from src.reservas.infrastructure.persistence.models.reserva import ReservationModel
+from src.reservas.application.use_cases.reservation_inventory import release_reservation_inventory
 
 STATUS_NOTES = {
     "confirmed": "Sucursal confirmo la reserva y prepara las prendas.",
@@ -27,6 +28,12 @@ class ActualizarEstadoReserva:
         allowed = TRANSITIONS.get(reserva.status, set())
         if nuevo_estado not in allowed:
             raise TransicionInvalidaError(f"No se puede pasar de '{reserva.status}' a '{nuevo_estado}'.")
+        if nuevo_estado in {"cancelled", "attended"}:
+            release_reservation_inventory(
+                self.db, reserva, actor.id,
+                "Fin del apartado: reserva cancelada." if nuevo_estado == "cancelled"
+                else "Fin del apartado: visita atendida; la compra se registra por separado.",
+            )
         reserva.status = nuevo_estado
         reserva.tracking = [
             *reserva.tracking,

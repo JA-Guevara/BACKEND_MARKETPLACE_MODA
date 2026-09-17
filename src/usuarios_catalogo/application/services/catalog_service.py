@@ -36,10 +36,14 @@ class CatalogService:
     def update_category(self, entity_id: uuid.UUID, data: CategoryUpdate, actor: UserModel) -> CategoryModel:
         entity = self.require_reference(CategoryModel, entity_id)
         changes = data.model_dump(exclude_unset=True)
-        if changes.get("parent_id") == entity.id:
-            raise ValidationError("Una categoria no puede ser su propia categoria superior.")
         if changes.get("parent_id"):
-            self.require_reference(CategoryModel, changes["parent_id"])
+            parent_id = changes["parent_id"]
+            seen = {entity.id}
+            while parent_id:
+                if parent_id in seen:
+                    raise ValidationError("La categoria superior no puede crear un ciclo en la jerarquia.")
+                seen.add(parent_id)
+                parent_id = self.require_reference(CategoryModel, parent_id).parent_id
         if "slug" in changes:
             source = changes.get("slug") or entity.slug
             changes["slug"] = self._unique_slug(source, CategoryModel, entity.id)
@@ -214,6 +218,10 @@ class CatalogService:
         changes = data.model_dump(exclude_unset=True)
         size_id = changes.get("size_id", variant.size_id)
         color_id = changes.get("color_id", variant.color_id)
+        if changes.get("sku"):
+            changes["sku"] = changes["sku"].strip().upper()
+        if "barcode" in changes:
+            changes["barcode"] = self._strip(changes["barcode"])
         self._validate_variant_references(size_id, color_id)
         if any(item.id != variant.id and item.size_id == size_id and item.color_id == color_id for item in product.variants):
             raise ConflictError("La variante de talla y color ya existe.")

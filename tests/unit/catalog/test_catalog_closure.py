@@ -143,3 +143,40 @@ def test_excel_export_keeps_formula_like_text_inert():
     book = load_workbook(BytesIO(content))
     assert book['Datos']['B2'].data_type == 's'
     book.close()
+
+
+def test_category_parent_cannot_be_itself_or_a_descendant(fixture):
+    from src.shared.exceptions.domain_exception import ValidationError
+    _, actor, service, product, _ = fixture
+    parent = product.category
+    child = service.create_category(CategoryCreate(name='Subcategoria', parent_id=parent.id), actor)
+    grandchild = service.create_category(CategoryCreate(name='Nieto', parent_id=child.id), actor)
+    for target in (parent, child, grandchild):
+        with pytest.raises(ValidationError, match='ciclo'):
+            service.update_category(parent.id, CategoryUpdate(parent_id=target.id), actor)
+        assert parent.parent_id is None
+    assert service.update_category(child.id, CategoryUpdate(parent_id=None), actor).parent_id is None
+
+
+def test_variant_update_normalizes_identity_and_detects_trimmed_duplicate(fixture):
+    _, actor, service, product, _ = fixture
+    variant = product.variants[0]
+    service.update_variant(product.id, variant.id, VariantUpdate(sku=' lino-renovada ', barcode=' 00123 '), actor)
+    assert variant.sku == 'LINO-RENOVADA'
+    assert variant.barcode == '00123'
+    other_size = service.create_size(SizeCreate(code='S', name='Pequeña'), actor)
+    service.add_variant(product.id, VariantCreate(size_id=other_size.id, color_id=variant.color_id, sku='OTRA-S'), actor)
+    with pytest.raises(ConflictError, match='SKU'):
+        service.update_variant(product.id, variant.id, VariantUpdate(sku=' otra-s '), actor)
+
+
+@pytest.mark.parametrize('schema,values', [
+    (CategoryCreate, {'name': '  '}),
+    (SizeCreate, {'name': 'Mediana', 'code': '  '}),
+    (VariantUpdate, {'sku': '  '}),
+    (ProductUpdate, {'name': '  '}),
+])
+def test_catalog_inputs_reject_whitespace_only_values(schema, values):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        schema(**values)

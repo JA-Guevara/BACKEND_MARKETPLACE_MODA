@@ -74,6 +74,8 @@ class ReportsAI:
                 result["filtros"]["date_from"] = current.date_from.isoformat()
             if current.date_to:
                 result["filtros"]["date_to"] = current.date_to.isoformat()
+            if current.low_stock_lt is not None:
+                result["filtros"]["low_stock_lt"] = current.low_stock_lt
             result["aclaraciones"].append("Usé los filtros visibles del dashboard como punto de partida.")
 
         # Periodo.
@@ -98,7 +100,7 @@ class ReportsAI:
 
         # Sucursal(es) nominales. Se comparan nombres normalizados (sin
         # mayusculas ni tildes) contra el texto de la consulta.
-        branches = [b for b in catalog.get("branches", []) if self._normalize(b["name"]) in text]
+        branches = [b for b in catalog.get("branches", []) if self._named(b["name"], text)]
         if len(branches) == 1:
             result["filtros"]["branch_id"] = branches[0]["id"]
         elif len(branches) > 1:
@@ -109,7 +111,7 @@ class ReportsAI:
             result["aclaraciones"].append("No encontre esa sucursal en los datos autorizados; no puedo filtrar por ella.")
 
         # Categoria nominal.
-        categories = [c for c in catalog.get("categories", []) if self._normalize(c["name"]) in text]
+        categories = [c for c in catalog.get("categories", []) if self._named(c["name"], text)]
         if len(categories) == 1:
             result["filtros"]["category_id"] = categories[0]["id"]
         elif len(categories) > 1:
@@ -118,6 +120,17 @@ class ReportsAI:
         elif re.search(r"\bcategoria\s+(?!actual\b|seleccionada\b|visible\b)\w+", text) and not re.search(r"por categoria|sin categoria|(?:quita|limpia|elimina).*categoria", text):
             result['ok'] = False
             result['aclaraciones'].append('No encontre esa categoria en el catalogo; indicá su nombre antes de aplicar el filtro.')
+
+        threshold = re.search(r'(?:stock|existencias?)(?:\s+bajo)?\s+(?:menor(?:es)?\s+(?:a|que)|por debajo de|inferior(?:es)?\s+a|<)\s*(\d+)', text)
+        if threshold:
+            value = int(threshold.group(1))
+            if 1 <= value <= 10000:
+                result['filtros']['low_stock_lt'] = value
+                result['metrica'] = 'low_stock'
+                result['vista'] = 'productos_inventario'
+            else:
+                result['ok'] = False
+                result['aclaraciones'].append('El umbral de existencias debe estar entre 1 y 10000.')
 
         if re.search(r"pendiente|sin pagar|por pagar", text):
             result["filtros"]["status"] = "pending_payment"
@@ -140,8 +153,14 @@ class ReportsAI:
         if result["comparacion"] != "none" and result["metrica"] != "low_stock":
             result["vista"] = "comparativas"
 
-        result["respuesta"] = self._summary(result, catalog)
+        result["respuesta"] = self._summary(result, catalog) if result['ok'] else ' '.join(result['aclaraciones'])
         return result
+
+    @classmethod
+    def _named(cls, name: str, text: str) -> bool:
+        # Punctuation after an authorized name must not turn it into an
+        # unknown entity, and partial words must never match another name.
+        return bool(re.search(r'(?<!\w)' + re.escape(cls._normalize(name).strip()) + r'(?!\w)', text))
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -152,7 +171,7 @@ class ReportsAI:
     def _period(self, text: str) -> tuple[tuple[str, str], str] | tuple[None, str]:
         now = datetime.now(BUSINESS_TZ)
         today = now.date()
-        iso_from = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S")
+        iso_from = lambda dt: dt.replace(tzinfo=BUSINESS_TZ).isoformat()
         dates = re.findall(r'\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})\b', text)
         if dates:
             if len(dates) > 2:

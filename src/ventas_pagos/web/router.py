@@ -16,15 +16,17 @@ from src.infrastructure.config.settings import settings
 from src.shared.responses.api_response import ApiResponse
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductVariantModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
-from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel
+from src.ventas_pagos.infrastructure.models import StockModel, StockMovementModel, CartItemModel, OrderModel
+from src.inventario_sucursales.infrastructure.models.organization import CashPointModel
 from src.ventas_pagos.infrastructure.gateways import verify_event
 from src.ventas_pagos.application.service import CommerceService
+from src.ventas_pagos.application.stock_service import StockService
 from src.ventas_pagos.application.reports_service import ReportsService
 from src.ventas_pagos.application.reports_ai import ReportsAI
 from src.ventas_pagos.application import exporter
 from src.ventas_pagos.application.multi_export_service import MultiExportService
 from src.ventas_pagos.application.assistant_tools import AssistantTools, UnknownToolError
-from src.ventas_pagos.web.schemas import Quantity, StockQuantity, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, REPORT_TYPES
+from src.ventas_pagos.web.schemas import Quantity, StockQuantity, StockEntry, POSSale, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, REPORT_TYPES
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
 analytics_router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -187,6 +189,57 @@ def payment(order_id: uuid.UUID, data: ManualPayment, user: Writer, db: Session 
     return response(order_data(service.manual_payment(service.order(order_id), data)))
 
 
+@router.get("/admin/cash-points")
+def cash_points(user: Writer, branch_id: uuid.UUID, db: Session = Depends(get_db)):
+    CommerceService(db).branch(branch_id)
+    rows = db.scalars(select(CashPointModel).where(
+        CashPointModel.branch_id == branch_id, CashPointModel.is_active.is_(True),
+        CashPointModel.deleted_at.is_(None)
+    ).order_by(CashPointModel.code)).all()
+    return response([{"id": row.id, "code": row.code, "name": row.name, "branch_id": row.branch_id} for row in rows])
+
+
+@router.post("/admin/pos/sales", status_code=201)
+def pos_sale(data: POSSale, user: Writer, db: Session = Depends(get_db)):
+    order, replay = CommerceService(db).pos_sale(user, data)
+    return response({**order_data(order), "idempotent_replay": replay})
+
+
+@router.get("/admin/orders/{order_id}/receipt")
+def pos_receipt(order_id: uuid.UUID, user: Writer, db: Session = Depends(get_db)):
+    order = CommerceService(db).order(order_id)
+    if order.sales_channel != "pos" or order.cashier_user_id != user.id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="No tiene permiso para descargar este comprobante.")
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A5
+    from reportlab.pdfgen import canvas
+    stream = BytesIO()
+    pdf = canvas.Canvas(stream, pagesize=A5)
+    width, height = A5
+    y = height - 42
+    for line in ["FashionStore", "COMPROBANTE DE VENTA", f"N.º {order.number}",
+                 f"Cliente: {order.address.get('recipient', 'Consumidor final')}",
+                 f"Pago: {order.payment_method} · Ref. {order.payment_reference}"]:
+        pdf.drawString(38, y, line[:96])
+        y -= 18
+    y -= 8
+    for item in order.items:
+        pdf.drawString(38, y, f"{item['quantity']} × {item['name']} ({item['sku']})"[:80])
+        pdf.drawRightString(width - 38, y, f"{item['line_total']} {order.currency}")
+        y -= 16
+        if y < 58:
+            pdf.showPage(); y = height - 42
+    y -= 10
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawRightString(width - 38, y, f"TOTAL: {order.total} {order.currency}")
+    pdf.save()
+    stream.seek(0)
+    return StreamingResponse(stream, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="comprobante_{order.number}.pdf"'
+    })
+
+
 @router.get("/admin/stock")
 def stock(user: StockReader, branch_id: uuid.UUID, db: Session = Depends(get_db)):
     service = CommerceService(db)
@@ -198,23 +251,60 @@ def stock(user: StockReader, branch_id: uuid.UUID, db: Session = Depends(get_db)
     return response([{**service.snapshot(v, 1, branch_id), "branch_id": str(branch_id), "quantity": rows_by_variant.get(v.id, 0)} for v in variants if v.product.is_active and not v.product.deleted_at])
 
 
+@router.get("/admin/pos/stock")
+def pos_stock(user: Writer, branch_id: uuid.UUID, db: Session = Depends(get_db)):
+    service = CommerceService(db)
+    service.branch(branch_id)
+    variants = db.scalars(select(ProductVariantModel).where(ProductVariantModel.is_active.is_(True))).all()
+    rows_by_variant = {row.variant_id: row.quantity for row in db.scalars(
+        select(StockModel).where(StockModel.branch_id == branch_id)
+    )}
+    return response([{**service.snapshot(v, 1, branch_id), "branch_id": str(branch_id), "quantity": rows_by_variant.get(v.id, 0)}
+                     for v in variants if v.product.is_active and not v.product.deleted_at and rows_by_variant.get(v.id, 0) > 0])
+
+
 @router.put("/admin/stock/{variant_id}")
 def update_stock(variant_id: uuid.UUID, data: StockQuantity, user: StockWriter, db: Session = Depends(get_db)):
     service = CommerceService(db)
     service.branch(data.branch_id)
     service.variant(variant_id)
-    # Serialize inserts as well as updates by locking the existing variant.
-    db.execute(select(ProductVariantModel.id).where(ProductVariantModel.id == variant_id).with_for_update())
-    row = db.scalar(select(StockModel).where(StockModel.variant_id == variant_id, StockModel.branch_id == data.branch_id).with_for_update())
-    if row:
-        previous = row.quantity
-        row.quantity = data.quantity
-    else:
-        previous = 0
-        db.add(StockModel(variant_id=variant_id, branch_id=data.branch_id, quantity=data.quantity))
+    row = StockService(db).locked_stock(variant_id, data.branch_id)
+    previous = row.quantity if row else 0
+    StockService(db).change(variant_id, data.branch_id, data.quantity - previous, "adjustment", data.reason, actor_id=user.id)
     RecordAuditEvent(db).execute(action="commerce.stock_adjusted", entity_type="stock", entity_id=str(variant_id), description="Existencias ajustadas por sucursal.", actor_user_id=user.id, metadata={"branch_id":str(data.branch_id),"previous":previous,"quantity":data.quantity})
     db.commit()
     return response({"variant_id": variant_id, **data.model_dump()})
+
+
+@router.get("/admin/stock/movements")
+def stock_movements(user: StockReader, branch_id: uuid.UUID, variant_id: uuid.UUID | None = None,
+                    limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db)):
+    CommerceService(db).branch(branch_id)
+    query = select(StockMovementModel).where(StockMovementModel.branch_id == branch_id)
+    if variant_id:
+        query = query.where(StockMovementModel.variant_id == variant_id)
+    rows = db.scalars(query.order_by(StockMovementModel.created_at.desc()).limit(limit)).all()
+    return response([{
+        "id": row.id, "variant_id": row.variant_id, "delta": row.delta,
+        "quantity_before": row.quantity_before, "quantity_after": row.quantity_after,
+        "kind": row.kind, "reason": row.reason, "reference": row.reference,
+        "actor_email": row.actor_email, "created_at": row.created_at,
+    } for row in rows])
+
+
+@router.post("/admin/stock/{variant_id}/movements", status_code=201)
+def register_stock_movement(variant_id: uuid.UUID, data: StockEntry, user: StockWriter, db: Session = Depends(get_db)):
+    service = CommerceService(db)
+    service.branch(data.branch_id)
+    service.variant(variant_id)
+    delta = -data.quantity if data.kind == "issue" else data.quantity
+    row = StockService(db).change(variant_id, data.branch_id, delta, data.kind, data.reason,
+                                  reference=data.reference, actor_id=user.id)
+    RecordAuditEvent(db).execute(action="commerce.stock_movement", entity_type="stock", entity_id=str(variant_id),
+        description=f"Movimiento de inventario: {data.kind}.", actor_user_id=user.id,
+        metadata={"branch_id": str(data.branch_id), "delta": delta, "quantity": row.quantity, "reason": data.reason})
+    db.commit()
+    return response({"variant_id": variant_id, "branch_id": data.branch_id, "quantity": row.quantity})
 
 
 @router.post("/stripe/webhook")

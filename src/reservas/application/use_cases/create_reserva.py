@@ -1,6 +1,8 @@
 from collections import Counter
 from datetime import datetime, timezone
+import uuid
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,7 @@ from src.reservas.infrastructure.persistence.models.reserva import ReservationMo
 from src.reservas.infrastructure.persistence.repositories.reserva_repository import ReservaRepository
 from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
+from src.ventas_pagos.application.stock_service import StockService
 
 MAX_ITEMS_AFTER_MERGE = 20
 
@@ -110,6 +113,10 @@ class CrearReserva:
             )
 
     def execute(self, user: UserModel, data: CrearReservaRequest) -> ReservationModel:
+        # Serializar reintentos del mismo usuario ANTES de comprobar stock:
+        # una segunda petición debe devolver la reserva, incluso si la primera
+        # ya apartó las últimas unidades disponibles.
+        self.db.scalar(select(UserModel).where(UserModel.id == user.id).with_for_update())
         if data.client_key:
             existing = self.repository.get_by_client_key(user.id, data.client_key)
             if existing:
@@ -122,6 +129,7 @@ class CrearReserva:
         self._validar_disponibilidad(data.branch_id, items)
         snapshot = [self._snapshot(item["variant_id"], item["quantity"]).as_dict() for item in items]
         reserva = ReservationModel(
+            id=uuid.uuid4(),
             user_id=user.id,
             branch_id=data.branch_id,
             status="pending",
@@ -132,12 +140,20 @@ class CrearReserva:
             tracking=[
                 {
                     "status": "pending",
-                    "note": "Reserva registrada; pendiente de confirmacion de la sucursal.",
+                    "note": "Reserva registrada; prendas apartadas, pendiente de confirmacion de la sucursal.",
                     "date": datetime.now(timezone.utc).isoformat(),
                 }
             ],
         )
         try:
+            inventory = StockService(self.db)
+            for item in sorted(items, key=lambda item: str(item["variant_id"])):
+                inventory.change(
+                    item["variant_id"], data.branch_id, -item["quantity"],
+                    "reservation_hold", "Prendas apartadas para una reserva en sucursal.",
+                    reference=str(reserva.id), actor_id=user.id,
+                )
+            reserva.inventory_held = True
             self.repository.add(reserva)
             RecordAuditEvent(self.db).execute(
                 action="reservas.created",
@@ -158,6 +174,11 @@ class CrearReserva:
                 if existing:
                     self._ensure_same_payload(existing, data)
                     return existing
+            raise
+        except Exception:
+            # Una falla en cualquier prenda revierte la reserva y TODOS sus
+            # movimientos; nunca dejar apartada solo una parte de la solicitud.
+            self.db.rollback()
             raise
         self.db.refresh(reserva)
         return reserva

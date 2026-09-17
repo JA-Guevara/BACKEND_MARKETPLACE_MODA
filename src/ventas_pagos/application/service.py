@@ -1,4 +1,6 @@
 import uuid
+import hashlib
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from sqlalchemy import select, update, delete
@@ -7,11 +9,12 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.config.settings import settings
 from src.shared.exceptions.domain_exception import ConflictError, NotFoundError, ValidationError
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, ProductVariantModel
-from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+from src.inventario_sucursales.infrastructure.models.organization import BranchModel, CashPointModel
 from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel, WebhookEventModel
 from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.domain.states import TRANSITIONS
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
+from src.ventas_pagos.application.stock_service import StockService
 
 
 class CommerceService:
@@ -109,11 +112,9 @@ class CommerceService:
         try:
             for item in sorted(cart["items"], key=lambda x: x["variant_id"]):
                 self.variant(uuid.UUID(item["variant_id"]))
-                result = self.db.execute(update(StockModel).where(StockModel.variant_id == uuid.UUID(item["variant_id"]),
-                    StockModel.branch_id == data.branch_id, StockModel.quantity >= item["quantity"])
-                    .values(quantity=StockModel.quantity - item["quantity"]))
-                if result.rowcount != 1:
-                    raise ConflictError("Stock insuficiente para " + item["name"])
+                StockService(self.db).change(uuid.UUID(item["variant_id"]), data.branch_id,
+                    -item["quantity"], "web_order_hold", "Existencias reservadas para pedido web.",
+                    reference="nuevo-pedido", actor_id=user.id)
             order = OrderModel(number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=user.id,
                 branch_id=data.branch_id, customer_email=user.email, payment_method=data.payment_method,
                 total=Decimal(cart["total"]), currency=cart["currency"], address=data.address.model_dump(), items=cart["items"],
@@ -130,9 +131,10 @@ class CommerceService:
             raise
 
     def release(self, order, status):
-        for item in order.items:
-            self.db.execute(update(StockModel).where(StockModel.variant_id == uuid.UUID(item["variant_id"]), StockModel.branch_id == order.branch_id)
-                .values(quantity=StockModel.quantity + item["quantity"]))
+        for item in sorted(order.items, key=lambda row: row["variant_id"]):
+            StockService(self.db).change(uuid.UUID(item["variant_id"]), order.branch_id,
+                item["quantity"], "web_order_release", "Existencias liberadas por pedido no cobrado.",
+                reference=order.number)
         order.status = status
         order.payment_status = "cancelled"
         self.track(order, "Existencias liberadas.")
@@ -220,6 +222,68 @@ class CommerceService:
         self.audit(order, "payment_confirmed", "Pago manual confirmado por administracion.")
         self.db.commit()
         return order
+
+    def pos_sale(self, actor, data):
+        """Registers an already received in-person payment atomically.
+
+        The frontend supplies only identities and quantities. Product prices,
+        branch availability and totals always come from the server.
+        """
+        fingerprint_data = {
+            "branch_id": str(data.branch_id), "cash_point_id": str(data.cash_point_id),
+            "customer_name": data.customer_name, "customer_email": data.customer_email or "",
+            "payment_method": data.payment_method, "payment_reference": data.payment_reference,
+            "items": sorted([{"variant_id": str(row.variant_id), "quantity": row.quantity} for row in data.items], key=lambda row: row["variant_id"]),
+        }
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        try:
+            # This lock serializes retries that target the same physical cash point.
+            cash_point = self.db.scalar(select(CashPointModel).where(CashPointModel.id == data.cash_point_id).with_for_update())
+            if not cash_point or cash_point.deleted_at or not cash_point.is_active:
+                raise ValidationError("El punto de caja no está disponible.")
+            if cash_point.branch_id != data.branch_id:
+                raise ValidationError("El punto de caja no pertenece a la sucursal seleccionada.")
+            self.branch(data.branch_id)
+            replay = self.db.scalar(select(OrderModel).where(OrderModel.client_request_id == data.client_request_id).with_for_update())
+            if replay:
+                if replay.cashier_user_id != actor.id or replay.request_fingerprint != fingerprint:
+                    raise ConflictError("La clave de esta venta ya fue utilizada con otros datos.")
+                return replay, True
+
+            known_user = None
+            if data.customer_email:
+                known_user = self.db.scalar(select(UserModel).where(UserModel.email == data.customer_email, UserModel.is_active.is_(True)))
+            items = []
+            total = Decimal(0)
+            stock = StockService(self.db)
+            for line in sorted(data.items, key=lambda row: str(row.variant_id)):
+                variant = self.variant(line.variant_id)
+                snapshot = self.snapshot(variant, line.quantity, data.branch_id)
+                stock.change(line.variant_id, data.branch_id, -line.quantity, "pos_sale",
+                    "Salida por venta presencial cobrada.", reference="venta-en-caja", actor_id=actor.id)
+                items.append(snapshot)
+                total += Decimal(snapshot["line_total"])
+            now = datetime.now(timezone.utc)
+            order = OrderModel(
+                number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=known_user.id if known_user else None,
+                customer_email=data.customer_email or "", branch_id=data.branch_id,
+                sales_channel="pos", cash_point_id=cash_point.id, cashier_user_id=actor.id,
+                client_request_id=data.client_request_id, request_fingerprint=fingerprint,
+                status="delivered", payment_status="paid", payment_method=data.payment_method,
+                payment_reference=data.payment_reference, total=total, currency=settings.commerce_currency,
+                address={"recipient": data.customer_name, "channel": "pos"}, items=items,
+                tracking=[{"status": "delivered", "note": "Venta presencial cobrada y entregada en caja.", "date": now.isoformat()}],
+                paid_at=now,
+            )
+            self.db.add(order)
+            self.db.flush()
+            self.audit(order, "pos_sale_created", "Venta presencial registrada, cobrada y entregada.")
+            self.db.commit()
+            self.db.refresh(order)
+            return order, False
+        except Exception:
+            self.db.rollback()
+            raise
 
     def tracking(self, order, data):
         if data.status not in TRANSITIONS.get(order.status, set()):
