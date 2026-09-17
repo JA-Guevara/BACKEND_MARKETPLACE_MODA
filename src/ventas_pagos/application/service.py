@@ -152,6 +152,10 @@ class CommerceService:
         return order
 
     def checkout(self, order):
+        if order.payment_method == "stripe" and order.stripe_session_id:
+            self.reconcile_payment(order)
+        if order.payment_status == "paid":
+            return {"status": order.status, "url": None}
         if order.status != "pending_payment" or order.payment_method != "stripe":
             raise ConflictError("Pedido no disponible para pago con Stripe.")
         if not order.stripe_session_id:
@@ -159,6 +163,52 @@ class CommerceService:
             order.stripe_session_id, order.stripe_url = session["id"], session["url"]
             self.db.commit()
         return {"session_id": order.stripe_session_id, "url": order.stripe_url}
+
+    def confirm_stripe_payment(self, order, session, note, confirmed_at=None):
+        if (session.get("id") != order.stripe_session_id
+                or session.get("currency", "").lower() != order.currency.lower()
+                or session.get("amount_total") != int(order.total * 100)
+                or session.get("client_reference_id") != str(order.id)):
+            raise ConflictError("La confirmacion no coincide con el pedido.")
+        if order.payment_status == "paid":
+            return False
+        if order.status != "pending_payment":
+            raise ConflictError("El pedido ya no admite confirmaciones de pago; requiere revision.")
+        intent = session.get("payment_intent")
+        reference = intent.get("id") if isinstance(intent, dict) else intent
+        if not reference:
+            raise ConflictError("Stripe no devolvio la referencia del pago.")
+        charge = intent.get("latest_charge") if isinstance(intent, dict) else None
+        paid_timestamp = charge.get("created") if isinstance(charge, dict) else confirmed_at
+        order.status, order.payment_status = "paid", "paid"
+        order.paid_at = datetime.fromtimestamp(paid_timestamp, timezone.utc) if paid_timestamp else datetime.now(timezone.utc)
+        order.payment_reference = reference
+        self.track(order, note)
+        return True
+
+    def reconcile_payment(self, order):
+        """Recupera confirmaciones atrasadas consultando Stripe desde el servidor.
+
+        El llamador obtiene order() con bloqueo y control de propietario/permisos.
+        Comparte transicion con webhook: no descuenta stock ni acredita dos veces.
+        """
+        if order.payment_method != "stripe" or order.payment_status == "paid" or order.status != "pending_payment":
+            return order
+        if not order.stripe_session_id:
+            return order
+        session = gateways.retrieve_session(order.stripe_session_id)
+        if (session.get("id") != order.stripe_session_id or session.get("livemode") is not False
+                or session.get("mode") != "payment"):
+            raise ConflictError("La sesion consultada no corresponde a un pago de prueba valido.")
+        if session.get("status") == "complete" and session.get("payment_status") == "paid":
+            self.confirm_stripe_payment(order, session, "Pago confirmado mediante consulta segura a Stripe.")
+            self.audit(order, "payment_reconciled", "Pago confirmado consultando Stripe desde el backend.")
+            self.db.commit()
+        elif session.get("status") == "expired":
+            self.release(order, "expired")
+            self.audit(order, "payment_expired", "Sesion de Stripe expirada; existencias liberadas.")
+            self.db.commit()
+        return order
 
     def manual_payment(self, order, data):
         if order.status != "pending_payment" or order.payment_method != "manual":
@@ -198,12 +248,8 @@ class CommerceService:
             if event["type"] == "checkout.session.expired":
                 self.release(order, "expired")
             elif session.get("payment_status") == "paid":
-                if session.get("currency") != order.currency or session.get("amount_total") != int(order.total * 100) or session.get("client_reference_id") != str(order.id):
-                    raise ConflictError("La confirmacion no coincide con el pedido.")
-                order.status, order.payment_status = "paid", "paid"
-                order.paid_at = datetime.now(timezone.utc)
-                order.payment_reference = session.get("payment_intent")
-                self.track(order, "Pago de prueba confirmado por webhook firmado de Stripe.")
+                self.confirm_stripe_payment(order, session,
+                    "Pago de prueba confirmado por webhook firmado de Stripe.", event.get("created"))
         self.db.add(WebhookEventModel(event_id=event["id"]))
         self.audit(order, "stripe_event", "Evento de Stripe de prueba verificado.")
         self.db.commit()

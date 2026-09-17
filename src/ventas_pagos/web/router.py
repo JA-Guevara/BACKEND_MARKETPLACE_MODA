@@ -158,6 +158,18 @@ def cancel(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
     return response(order_data(service.cancel(service.order(order_id, user))))
 
 
+@router.post("/orders/{order_id}/payment-status")
+def reconcile_payment(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
+    service = CommerceService(db)
+    return response(order_data(service.reconcile_payment(service.order(order_id, user))))
+
+
+@router.post("/admin/orders/{order_id}/payment-status")
+def admin_reconcile_payment(order_id: uuid.UUID, user: Writer, db: Session = Depends(get_db)):
+    service = CommerceService(db)
+    return response(order_data(service.reconcile_payment(service.order(order_id))))
+
+
 @router.get("/admin/orders")
 def admin_orders(user: Reader, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     return response([order_data(o) for o in db.scalars(select(OrderModel).order_by(OrderModel.created_at.desc()).offset(offset).limit(limit))])

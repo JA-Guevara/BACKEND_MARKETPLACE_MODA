@@ -25,8 +25,8 @@ def stripe_request(method: str, path: str, data=None, key=None):
 def create_session(order):
     base = settings.frontend_url.rstrip("/")
     data = {"mode": "payment", "payment_method_types[0]": "card",
-        "success_url": base + "/mi-cuenta/pedidos?payment=success",
-        "cancel_url": base + "/mi-cuenta/pedidos?payment=cancelled",
+        "success_url": base + "/mi-cuenta/pedidos?payment=success&pedido=" + str(order.id),
+        "cancel_url": base + "/mi-cuenta/pedidos?payment=cancelled&pedido=" + str(order.id),
         "client_reference_id": str(order.id), "metadata[order_id]": str(order.id),
         "customer_email": order.customer_email}
     for i, item in enumerate(order.items):
@@ -36,6 +36,11 @@ def create_session(order):
             f"{prefix}[price_data][unit_amount]": str(int(Decimal(item["unit_price"]) * 100)),
             f"{prefix}[quantity]": str(item["quantity"])})
     return stripe_request("POST", "checkout/sessions", data, "fashion-order-" + str(order.id))
+
+
+def retrieve_session(session_id):
+    # El ID procede de nuestra base, nunca de una URL o cuerpo del cliente.
+    return stripe_request("GET", f"checkout/sessions/{session_id}?expand[]=payment_intent.latest_charge")
 
 
 def verify_event(body: bytes, signature: str):

@@ -1,5 +1,11 @@
 # Historial de avance
 
+## 2026-09-17 — Recuperación de confirmaciones de Stripe
+
+- Endpoints de conciliación para propietario/gestión, consulta de sesión existente antes de abrir checkout y confirmación compartida con webhook.
+- 84 pruebas unitarias aprobadas, incluidas 12 nuevas de pagos; sin migraciones ni cambios a producción.
+- `STRIPE_Y_ASISTENTE_2026-09-17.md` documenta controles, limitaciones y comprobación pendiente en Railway/Stripe.
+
 ## 2026-09-15 — Verificación del contrato de probador virtual
 
 - Revisados resolución de recurso activo, autenticación y registro del actor.

@@ -1,5 +1,7 @@
 # Estado y punto de reanudación
 
+Actualización 17/09 — Conciliación autenticada de Stripe y confirmación compartida con webhook; validación de importe/moneda/pedido y protección frente a repeticiones. **84 pruebas unitarias aprobadas**, incluidas 12 nuevas de pagos. Frontend asociado: 161 pruebas y build aprobados. Sin despliegue ni modificación de pedidos publicados. Ver [contrato y pendientes de servidor](STRIPE_Y_ASISTENTE_2026-09-17.md).
+
 Actualización 15/09 — Contrato de probador verificado con 4 pruebas HTTP aisladas. PROBADOR_VIRTUAL.md identifica rutas, actor en bitácora y límites. Sin cámara física ni cambios a producción; seguimiento corporal pendiente. Las notas siguientes conservan sus fechas históricas.
 
 Estado vigente 12/09: interfaces comerciales conectadas y 2 pruebas de contrato aprobadas. Generación SQL PostgreSQL aprobada; pendiente ejecución de migración en PostgreSQL descartable, concurrencia y Stripe externo. Consultar COMERCIO.md; las notas del 10/09 describen el inventario inicial.
