@@ -212,6 +212,9 @@ def process(db: Session, resource: Resource, actor, content: bytes, mode: str, *
             work.close()
             batch.commit()
             db.commit()
+            # ImportSession wrote through the same connection. Discard objects
+            # cached by the request session before the import to avoid stale exports.
+            db.expire_all()
             report['imported'] = len(rows)
         else:
             work.close()

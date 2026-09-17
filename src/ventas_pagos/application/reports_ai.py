@@ -77,7 +77,13 @@ class ReportsAI:
             result["aclaraciones"].append("Usé los filtros visibles del dashboard como punto de partida.")
 
         # Periodo.
-        period, day = self._period(text)
+        try:
+            period, day = self._period(text)
+        except ValueError as error:
+            result['ok'] = False
+            result['aclaraciones'].append(str(error))
+            result['respuesta'] = str(error)
+            return result
         if period:
             result["filtros"]["date_from"], result["filtros"]["date_to"] = period
         result["comparacion"] = self._comparison(text, day)
@@ -96,8 +102,10 @@ class ReportsAI:
         if len(branches) == 1:
             result["filtros"]["branch_id"] = branches[0]["id"]
         elif len(branches) > 1:
+            result['ok'] = False
             result["aclaraciones"].append("Encontre varias sucursales con ese nombre; elegí una para filtrar.")
-        elif re.search(r"sucursal|local|tienda de", text):
+        elif re.search(r"\b(?:sucursal|local|tienda de)\s+(?!actual\b|seleccionada\b|visible\b)\w+", text) and not re.search(r"por (?:sucursal|local)|todas las sucursales|sin sucursal|(?:quita|limpia|elimina).*sucursal", text):
+            result['ok'] = False
             result["aclaraciones"].append("No encontre esa sucursal en los datos autorizados; no puedo filtrar por ella.")
 
         # Categoria nominal.
@@ -105,14 +113,23 @@ class ReportsAI:
         if len(categories) == 1:
             result["filtros"]["category_id"] = categories[0]["id"]
         elif len(categories) > 1:
+            result['ok'] = False
             result["aclaraciones"].append("Encontre varias categorias coincidentes; elegí una.")
-        elif re.search(r"categor|prenda|prenda de", text) and metrica != "low_stock":
-            result["aclaraciones"].append("No encontre esa categoria en el catalogo; puedo mostrar el desglose general.")
+        elif re.search(r"\bcategoria\s+(?!actual\b|seleccionada\b|visible\b)\w+", text) and not re.search(r"por categoria|sin categoria|(?:quita|limpia|elimina).*categoria", text):
+            result['ok'] = False
+            result['aclaraciones'].append('No encontre esa categoria en el catalogo; indicá su nombre antes de aplicar el filtro.')
 
         if re.search(r"pendiente|sin pagar|por pagar", text):
             result["filtros"]["status"] = "pending_payment"
         elif re.search(r"cobrados?|pagad", text):
-            result["filtros"]["status"] = None
+            result["filtros"]["status"] = 'paid'
+        else:
+            for pattern, status in ((r'cancelad', 'cancelled'), (r'entregad', 'delivered'),
+                                    (r'enviad|en camino', 'shipped'), (r'en preparacion|procesando', 'processing'),
+                                    (r'expirad|vencid', 'expired')):
+                if re.search(pattern, text):
+                    result['filtros']['status'] = status
+                    break
 
         # Agrupacion.
         result["agrupacion"] = self._grouping(text)
@@ -136,6 +153,18 @@ class ReportsAI:
         now = datetime.now(BUSINESS_TZ)
         today = now.date()
         iso_from = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S")
+        dates = re.findall(r'\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})\b', text)
+        if dates:
+            if len(dates) > 2:
+                raise ValueError('Indicá como máximo una fecha inicial y una final.')
+            try:
+                parsed = [datetime.strptime(value, '%Y-%m-%d' if '-' in value else '%d/%m/%Y').date() for value in dates]
+            except ValueError:
+                raise ValueError('La fecha no es válida. Usá DD/MM/AAAA o AAAA-MM-DD.')
+            first, last = parsed[0], parsed[-1]
+            if first > last:
+                raise ValueError('La fecha inicial no puede ser posterior a la final.')
+            return (iso_from(datetime.combine(first, datetime.min.time())), iso_from(datetime.combine(last, datetime.max.time()))), 'explicit'
         if re.search(r"hoy", text):
             return (iso_from(datetime.combine(today, datetime.min.time())), iso_from(datetime.combine(today, datetime.max.time()))), "today"
         if re.search(r"ayer", text):
@@ -146,6 +175,8 @@ class ReportsAI:
             value = int(match.group(1))
             unit = match.group(2)
             days = value * (30 if unit.startswith("mes") else 7 if unit.startswith("sema") else 1)
+            if not 1 <= days <= 3660:
+                raise ValueError('El período debe estar entre 1 día y 10 años.')
             start = iso_from(datetime.combine(today - timedelta(days=days - 1), datetime.min.time()))
             return (start, iso_from(now)), "last_days"
         if re.search(r"mes actual|este mes", text):
@@ -240,6 +271,8 @@ class ReportsAI:
                 max_tokens=450,
             )
             payload = json.loads(content)
+            if not isinstance(payload, dict) or not all(isinstance(value, str) for value in payload.values()):
+                raise ValueError('Respuesta de IA no estructurada.')
             sections = {
                 "hallazgo": payload.get("hallazgo", ""),
                 "cifras": payload.get("cifras", ""),
@@ -259,6 +292,7 @@ class ReportsAI:
         data = ReportsService(self.db).dashboard(
             date_from=filters.date_from, date_to=filters.date_to,
             branch_id=filters.branch_id, category_id=filters.category_id, status=filters.status,
+            low_stock_lt=filters.low_stock_lt,
         )
         compact = {
             "periodo": data["meta"]["period"],
@@ -289,4 +323,5 @@ class ReportsAI:
             "branch_id": str(filters.branch_id) if filters.branch_id else None,
             "category_id": str(filters.category_id) if filters.category_id else None,
             "status": filters.status,
+            "low_stock_lt": filters.low_stock_lt,
         }

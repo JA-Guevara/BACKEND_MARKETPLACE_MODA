@@ -40,6 +40,9 @@ class ConsultarDisponibilidad:
                 "La cantidad solicitada no coincide con la lista de prendas."
             )
 
+        if len(variant_ids) > 20 or any(q < 1 or q > 10 for q in pedidos):
+            raise ValidationError("Consultá hasta 20 variantes con cantidades entre 1 y 10.")
+
         existencias = {
             fila.variant_id: fila.quantity
             for fila in self.db.query(StockModel)

@@ -17,6 +17,7 @@ totales que el exportador individual, para mantener "dashboard = export".
 import csv
 import io
 import zipfile
+from xml.sax.saxutils import escape
 from datetime import datetime
 
 from reportlab.graphics.charts.barcharts import HorizontalBarChart, VerticalBarChart
@@ -66,15 +67,15 @@ REPORT_SHEET_NAMES = {
 }
 
 # Que filtros del dashboard se aplican Y a que fecha se atribuye cada reporte.
-# Existencias no usa periodo/estado/categoria (es una fotografia del momento);
+# Existencias no usa periodo/estado (es una fotografia del momento);
 # el resto deriva de pedidos y respeta filtro de estado de pedido.
 FILTER_APPLIES = {
     "ventas": {"periodo": True, "branch": True, "category": True, "status": True},
     "pedidos": {"periodo": True, "branch": True, "category": True, "status": True},
     "pagos": {"periodo": True, "branch": True, "category": True, "status": True},
     "prendas_vendidas": {"periodo": True, "branch": True, "category": True, "status": True},
-    "existencias": {"periodo": False, "branch": True, "category": False, "status": False},
-    "sucursales": {"periodo": True, "branch": True, "category": False, "status": True},
+    "existencias": {"periodo": False, "branch": True, "category": True, "status": False},
+    "sucursales": {"periodo": True, "branch": True, "category": True, "status": True},
 }
 
 DATE_REFERENCE = {
@@ -128,7 +129,7 @@ def build_multi_xlsx(reports: list[dict], metadata: dict) -> io.BytesIO:
     header_font = Font(color="FFFFFF", bold=True)
     for i, (key, value) in enumerate(_criteria_rows(metadata), start=2):
         criteria_sheet.cell(row=i, column=1, value=label(key))
-        criteria_sheet["B" + str(i)] = value
+        criteria_sheet["B" + str(i)] = safe_value(value)
     criteria_sheet["A8"] = "Reporte"
     criteria_sheet["B8"] = "Filtros que NO aplican"
     criteria_sheet["C8"] = "Referencia de fecha"
@@ -208,7 +209,7 @@ def _pdf_text(value) -> str:
     un nombre con simbolo no rompa la generacion del PDF."""
     if not isinstance(value, str):
         value = str(value)
-    return _safe(value).encode("latin-1", "replace").decode("latin-1")
+    return escape(_safe(value).encode("latin-1", "replace").decode("latin-1"))
 
 
 def _chart_for(key: str, headers: list[str], rows: list[dict], width: float, height: float):
@@ -302,6 +303,8 @@ def build_multi_pdf(reports: list[dict], metadata: dict) -> io.BytesIO:
     styles.add(ParagraphStyle(name="Crit", fontName="Helvetica", fontSize=8, leading=11, textColor=colors.HexColor("#24231f")))
     styles.add(ParagraphStyle(name="Sec", fontName="Helvetica-Bold", fontSize=11, leading=14, spaceBefore=10, textColor=colors.HexColor("#24231f")))
     styles.add(ParagraphStyle(name="Nota", fontName="Helvetica-Oblique", fontSize=7.5, leading=10, textColor=colors.HexColor("#756c62"), spaceAfter=4))
+    styles.add(ParagraphStyle(name='Cell', fontName='Helvetica', fontSize=8, leading=10, wordWrap='CJK'))
+    styles.add(ParagraphStyle(name='CellHead', parent=styles['Cell'], fontName='Helvetica-Bold', textColor=colors.white))
 
     story = [
         Paragraph("FashionStore - Reportes de la tienda", styles["H1"]),
@@ -326,9 +329,9 @@ Paragraph(
         if bundle.get("no_aplica") not in (None, "", "ninguno"):
             story.append(Paragraph(f"No aplican a este reporte: {_pdf_text(bundle['no_aplica'])}. {_pdf_text(bundle.get('referencia', ''))}", styles["Nota"]))
         headers, rows = bundle["headers"], bundle["rows"]
-        data = [[_pdf_text(label(key)) for key in headers]]
+        data = [[Paragraph(_pdf_text(label(key)), styles['CellHead']) for key in headers]]
         for row in rows:
-            data.append([_pdf_text(row.get(key, "")) for key in headers])
+            data.append([Paragraph(_pdf_text(row.get(key, '')), styles['Cell']) for key in headers])
         if not rows:
             story.append(Paragraph("Sin datos para el periodo y filtros seleccionados.", styles["Meta"]))
         col_widths = []

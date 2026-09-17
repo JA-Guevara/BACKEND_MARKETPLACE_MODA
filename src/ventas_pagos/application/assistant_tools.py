@@ -4,11 +4,12 @@ El asistente puede ejecutar SOLO las herramientas registradas en este archivo
 (allowlist). Cada ejecucion valida los parametros con el mismo motor de la capa
 web, genera el archivo con ``MultiExportService`` y deja bitacora con el correo
 del actor. Una misma ``request_id`` (generada en el navegador de la sesion) se
-procesa una sola vez: si se repite dentro de la ventana TTL, no se vuelve a
-auditar ni a regenerar la respuesta, y se avisa con el encabezado
+se audita una sola vez: si se repite dentro de la ventana TTL, se regenera
+el archivo con datos actuales sin duplicar la auditoria, y se avisa con el encabezado
 ``X-Idempotent-Replay`` (politica best-effort en memoria).
 """
 from dataclasses import dataclass
+from hashlib import sha256
 from threading import Lock
 from time import monotonic
 from typing import Literal
@@ -97,11 +98,15 @@ class AssistantTools:
     ) -> AssistantToolResult:
         if params is None:
             raise ValueError("La herramienta export_report requiere parametros.")
-        replay = bool(request_id) and not _store.claim(actor.id, request_id)
         filters = params.filters or ReportFilters()
         payload, media_type, filename, summary = self.service.export(
             params.reports, params.format, filters
         )
+        # An export that failed must not suppress the audit of its successful
+        # retry. Different parameters are distinct operations even if a client
+        # mistakenly reuses the same request identifier.
+        fingerprint = sha256(params.model_dump_json().encode()).hexdigest()
+        replay = bool(request_id) and not _store.claim(actor.id, f'{request_id}:{fingerprint}')
         if not replay:
             RecordAuditEvent(self.db).execute(
                 action="analytics.tool_export_report",

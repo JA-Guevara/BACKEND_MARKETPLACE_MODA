@@ -6,11 +6,12 @@ import uuid
 from datetime import datetime, timezone
 from math import ceil
 
-from sqlalchemy import func, select, update
+from sqlalchemy import String, cast, func, select, update
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
+from src.infrastructure.database.base import Base
 from src.inventario_sucursales.infrastructure.models.organization import SupplierModel
 from src.shared.exceptions.domain_exception import ConflictError, NotFoundError, ValidationError
 from src.shared.responses.pagination import Page
@@ -39,8 +40,8 @@ class CatalogService:
             raise ValidationError("Una categoria no puede ser su propia categoria superior.")
         if changes.get("parent_id"):
             self.require_reference(CategoryModel, changes["parent_id"])
-        if "slug" in changes or "name" in changes:
-            source = changes.get("slug") or changes.get("name") or entity.slug
+        if "slug" in changes:
+            source = changes.get("slug") or entity.slug
             changes["slug"] = self._unique_slug(source, CategoryModel, entity.id)
         return self._save_updated(entity, changes, actor, "catalog.category_updated", "Categoria actualizada.")
 
@@ -174,8 +175,8 @@ class CatalogService:
         season_id = changes.get("season_id", product.season_id)
         collection_id = changes.get("collection_id", product.collection_id)
         self._validate_product_references(category_id, season_id, collection_id)
-        if "slug" in changes or "name" in changes:
-            source = changes.get("slug") or changes.get("name") or product.slug
+        if "slug" in changes:
+            source = changes.get("slug") or product.slug
             changes["slug"] = self._unique_slug(source, ProductModel, product.id)
         product = self._save_updated(product, changes, actor, "catalog.product_updated", "Producto actualizado.")
         return self.repository.get_product(product.id) or product
@@ -227,6 +228,19 @@ class CatalogService:
         variant = self.repository.get_variant(product_id, variant_id)
         if not variant:
             raise NotFoundError("Variante no encontrada.")
+        # A variant is the identity used by stock, carts and the movement ledger.
+        # Keep every referencing row intact; historical snapshots also retain it.
+        for table in Base.metadata.tables.values():
+            for column in table.columns:
+                if any(fk.target_fullname == "product_variants.id" for fk in column.foreign_keys):
+                    if self.db.scalar(select(column).where(column == variant_id).limit(1)) is not None:
+                        raise ConflictError("La variante tiene existencias, movimientos o carritos asociados. Desactivala desde Editar para conservar el historial.")
+        for table_name in ("commerce_orders", "reservations"):
+            table = Base.metadata.tables.get(table_name)
+            if table is not None and self.db.scalar(
+                select(table.c.id).where(cast(table.c["items"], String).contains(str(variant_id))).limit(1)
+            ) is not None:
+                raise ConflictError("La variante tiene pedidos o reservas asociados. Desactivala desde Editar para conservar el historial.")
         self._audit(actor, "catalog.variant_deleted", variant, "Variante eliminada.")
         self.db.delete(variant)
         self.db.commit()
@@ -303,7 +317,16 @@ class CatalogService:
     def set_suppliers(self, product_id: uuid.UUID, suppliers: list[ProductSupplierInput], actor: UserModel) -> ProductModel:
         product = self.require_product(product_id)
         self._validate_primary_flags(suppliers, "proveedores")
-        product.suppliers = self._build_supplier_links(suppliers)
+        validated = self._build_supplier_links(suppliers)
+        existing = {link.supplier_id: link for link in product.suppliers}
+        links = []
+        for incoming in validated:
+            link = existing.get(incoming.supplier_id, incoming)
+            link.supplier_sku = incoming.supplier_sku
+            link.unit_cost = incoming.unit_cost
+            link.is_primary = incoming.is_primary
+            links.append(link)
+        product.suppliers = links
         self._audit(actor, "catalog.product_suppliers_updated", product, "Proveedores del producto actualizados.")
         self.db.commit()
         return self.repository.get_product(product.id) or product

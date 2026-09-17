@@ -128,7 +128,8 @@ class ReportsService:
 
         kept = None
         if category_id:
-            kept = self._product_ids_by_category(windowed_paid, category_id)
+            kept = self._product_ids_by_category(all_orders, category_id)
+            windowed_all = [o for o in windowed_all if any(self._product_in(item, kept) for item in o.items)]
         lines = self._lines(windowed_paid, kept)
 
         period_orders = len(windowed_all)
@@ -140,7 +141,7 @@ class ReportsService:
 
         daily = self._daily_sales(lines, days=30)
         comparison = self._comparison(start, end, paid, kept)
-        low_stock = self._low_stock_variants(threshold, branch_id)
+        low_stock = self._low_stock_variants(threshold, branch_id, category_id)
         projection = self._projection(daily)
 
         stripe_mode = (
@@ -367,7 +368,7 @@ class ReportsService:
     def _daily_sales(lines: list[tuple], days: int) -> list[tuple[str, Decimal]]:
         daily: dict[str, Decimal] = {}
         for order, item, scoped in lines:
-            key = _local(order.created_at).date().isoformat()
+            key = _local(ReportsService._payment_instant(order)).date().isoformat()
             daily[key] = daily.get(key, Decimal(0)) + ReportsService._amount(order, item, scoped)
         return sorted(daily.items())[-days:] if days else sorted(daily.items())
 
@@ -398,7 +399,7 @@ class ReportsService:
         buckets: dict[str, Decimal] = {key: Decimal(0) for key in keys}
         orders: dict[str, set] = {key: set() for key in keys}
         for order, item, scoped in lines:
-            key = _local(order.created_at).date().isoformat()[:7]
+            key = _local(ReportsService._payment_instant(order)).date().isoformat()[:7]
             if key in buckets:
                 buckets[key] += self._amount(order, item, scoped)
                 orders[key].add(order.id)
@@ -409,7 +410,7 @@ class ReportsService:
         totals = {h: Decimal(0) for h in range(24)}
         counts = {h: set() for h in range(24)}
         for order, item, scoped in lines:
-            hour = _local(order.created_at).hour
+            hour = _local(ReportsService._payment_instant(order)).hour
             totals[hour] += ReportsService._amount(order, item, scoped)
             counts[hour].add(order.id)
         return [{"hour": h, "total": str(totals[h]), "orders": len(counts[h])} for h in range(24)]
@@ -419,7 +420,7 @@ class ReportsService:
         totals = {i: Decimal(0) for i in range(7)}
         counts = {i: set() for i in range(7)}
         for order, item, scoped in lines:
-            day = _local(order.created_at).weekday()
+            day = _local(ReportsService._payment_instant(order)).weekday()
             totals[day] += ReportsService._amount(order, item, scoped)
             counts[day].add(order.id)
         return [{"weekday": WEEKDAY_LABELS[i], "total": str(totals[i]), "orders": len(counts[i])} for i in range(7)]
@@ -468,7 +469,7 @@ class ReportsService:
         counts = Counter(o.payment_method for o in relevant)
         return [{"method": method, "orders": counts[method]} for method in sorted(counts, key=lambda m: -counts[m])]
 
-    def _low_stock_variants(self, threshold: int, branch_id: uuid.UUID | None) -> list[dict]:
+    def _low_stock_variants(self, threshold: int, branch_id: uuid.UUID | None, category_id: uuid.UUID | None = None) -> list[dict]:
         query = (
             select(ProductVariantModel, ProductModel, StockModel, BranchModel)
             .join(ProductModel, ProductVariantModel.product_id == ProductModel.id)
@@ -479,6 +480,8 @@ class ReportsService:
         )
         if branch_id:
             query = query.where(StockModel.branch_id == branch_id)
+        if category_id:
+            query = query.where(ProductModel.category_id == category_id)
         rows = []
         for variant, product, stock, branch in self.db.execute(query):
             rows.append(
@@ -558,8 +561,8 @@ class ReportsService:
         windowed_paid = [o for o in paid if self._in_payment_window(o, start, end)]
 
         kept = None
-        if category_id and report in {"ventas", "pedidos", "pagos", "prendas_vendidas"}:
-            kept = self._product_ids_by_category(windowed_paid, category_id)
+        if category_id and report in {"ventas", "pedidos", "pagos", "prendas_vendidas", "sucursales"}:
+            kept = self._product_ids_by_category(all_orders, category_id)
 
         branches = {b.id: b.name for b in self.db.scalars(select(BranchModel))}
         currency = settings.commerce_currency.upper()
@@ -630,6 +633,8 @@ class ReportsService:
                      .where(ProductModel.deleted_at.is_(None)))
             if branch_id:
                 query = query.where(StockModel.branch_id == branch_id)
+            if category_id:
+                query = query.where(ProductModel.category_id == category_id)
             rows = [{"sku": v.sku, "nombre": p.name, "talla": v.size.name, "color": v.color.name,
                      "sucursal": b.name, "cantidad": s.quantity}
                     for v, p, s, b in self.db.execute(query)]
@@ -650,7 +655,7 @@ class ReportsService:
         lines = self._daily_sales(self._lines(windowed_paid, kept), days=0)
         orders_by_day: dict[str, set] = {}
         for order, item, scoped in self._lines(windowed_paid, kept):
-            key = _local(order.created_at).date().isoformat()
+            key = _local(self._payment_instant(order)).date().isoformat()
             orders_by_day.setdefault(key, set()).add(order.id)
         rows = [{"fecha": d, "pedidos_pagados": len(orders_by_day.get(d, set())),
                  "total": float(total), "moneda": currency}

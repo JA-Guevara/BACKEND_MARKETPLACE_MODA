@@ -1,7 +1,7 @@
 from typing import Literal
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 class Quantity(BaseModel):
@@ -64,7 +64,19 @@ class ReportFilters(BaseModel):
     date_to: datetime | None = None
     branch_id: UUID | None = None
     category_id: UUID | None = None
-    status: str | None = Field(default=None, max_length=30)
+    status: Literal['pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'cancelled', 'expired'] | None = None
+    low_stock_lt: int | None = Field(default=None, ge=1, le=10000)
+
+    @model_validator(mode='after')
+    def ordered_dates(self):
+        from zoneinfo import ZoneInfo
+        if self.date_from and self.date_to:
+            zone = ZoneInfo('America/La_Paz')
+            start = self.date_from if self.date_from.tzinfo else self.date_from.replace(tzinfo=zone)
+            end = self.date_to if self.date_to.tzinfo else self.date_to.replace(tzinfo=zone)
+            if start > end:
+                raise ValueError('La fecha inicial no puede ser posterior a la final.')
+        return self
 
 
 class InterpretRequest(BaseModel):

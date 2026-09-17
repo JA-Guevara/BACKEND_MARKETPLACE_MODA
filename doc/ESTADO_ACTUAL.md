@@ -1,5 +1,7 @@
 # Estado y punto de reanudación
 
+Actualización 17/09 — Dashboard frontend reorganizado en tres vistas; contrato backend sin cambios. Generación IA/3D del probador sigue como propuesta, no implementada. Coordinación y alcance en [dashboard y probador](DASHBOARD_Y_PROBADOR_2026-09-17.md).
+
 Actualización 17/09 — Conciliación autenticada de Stripe y confirmación compartida con webhook; validación de importe/moneda/pedido y protección frente a repeticiones. **84 pruebas unitarias aprobadas**, incluidas 12 nuevas de pagos. Frontend asociado: 161 pruebas y build aprobados. Sin despliegue ni modificación de pedidos publicados. Ver [contrato y pendientes de servidor](STRIPE_Y_ASISTENTE_2026-09-17.md).
 
 Actualización 15/09 — Contrato de probador verificado con 4 pruebas HTTP aisladas. PROBADOR_VIRTUAL.md identifica rutas, actor en bitácora y límites. Sin cámara física ni cambios a producción; seguimiento corporal pendiente. Las notas siguientes conservan sus fechas históricas.

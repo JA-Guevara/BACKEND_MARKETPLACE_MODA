@@ -86,7 +86,13 @@ class CrearReserva:
         se avisa en vez de devolver en silencio la reserva anterior."""
         if existing.branch_id != data.branch_id:
             return False
-        if existing.scheduled_at != data.scheduled_at:
+        # SQLite devuelve datetime sin tz; PostgreSQL puede conservarla.
+        # Comparar el instante UTC evita rechazar un reintento idéntico.
+        def utc(value):
+            return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+        if utc(existing.scheduled_at) != utc(data.scheduled_at):
+            return False
+        if (existing.notes or "").strip() != (data.notes or "").strip():
             return False
         try:
             merged = self._merge_items(data.items)

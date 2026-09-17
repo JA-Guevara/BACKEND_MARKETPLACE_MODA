@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -5,6 +6,12 @@ from src.auth.application.services.auth_service import AuthService
 from src.auth.infrastructure.http.schemas import RegisterRequest
 from src.infrastructure.database.base import Base
 from src.roles.infrastructure.persistence.models.role import RoleModel
+
+
+@pytest.fixture(autouse=True)
+def isolate_email(monkeypatch):
+    # Unit tests never use credentials from .env or send real verification mail.
+    monkeypatch.setattr("src.auth.infrastructure.email.smtp_sender.SMTPEmailSender.send", lambda *args, **kwargs: True)
 
 
 def make_session() -> Session:

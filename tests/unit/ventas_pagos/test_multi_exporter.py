@@ -110,6 +110,6 @@ def test_metadatos_multi_xlsx_no_ocultan_truncamiento():
 
 
 def test_filtros_aplicables_por_reporte():
-    assert multi_exporter.FILTER_APPLIES["existencias"] == {"periodo": False, "branch": True, "category": False, "status": False}
+    assert multi_exporter.FILTER_APPLIES["existencias"] == {"periodo": False, "branch": True, "category": True, "status": False}
     assert multi_exporter.FILTER_APPLIES["ventas"]["periodo"] is True
     assert multi_exporter.FILTER_APPLIES["existencias"]["periodo"] is False
