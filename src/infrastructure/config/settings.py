@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_email: str = "no-reply@fashionstore.local"
     smtp_use_tls: bool = True
+    # Casilla que recibe los avisos de reserva cuando la sucursal todavia
+    # no tiene correo propio cargado (RF11).
+    operations_email: str | None = None
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     commerce_currency: str = "bob"

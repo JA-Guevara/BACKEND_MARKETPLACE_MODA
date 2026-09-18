@@ -40,7 +40,8 @@ class TrackingUpdate(BaseModel):
 
 class ManualPayment(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
-    method: Literal["cash", "transfer"]
+    # El pago de un pedido web tambien se puede recibir por QR o tarjeta en el local.
+    method: Literal["cash", "qr", "card", "transfer"]
     reference: str = Field(min_length=3, max_length=255)
 
 
@@ -148,7 +149,7 @@ class POSSale(BaseModel):
     cash_point_id: UUID
     customer_name: str = Field(min_length=2, max_length=200)
     customer_email: str | None = Field(default=None, max_length=320)
-    payment_method: Literal["cash", "transfer"]
+    payment_method: Literal["cash", "qr", "card", "transfer"]
     payment_reference: str = Field(min_length=3, max_length=255)
     payment_received: Literal[True]
     items: list[POSItem] = Field(min_length=1, max_length=100)
@@ -170,3 +171,42 @@ class StockEntry(BaseModel):
     quantity: int = Field(ge=1, le=1000000)
     reason: str = Field(min_length=3, max_length=500)
     reference: str | None = Field(default=None, max_length=100)
+
+
+class ReturnItemInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    variant_id: UUID
+    quantity: int = Field(ge=1, le=99)
+
+
+class ReturnRequest(BaseModel):
+    """Solicitud de devolución del cliente (CU19)."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    reason: str = Field(min_length=5, max_length=500)
+    items: list[ReturnItemInput] = Field(min_length=1, max_length=50)
+    #: Evita duplicar la devolución si el formulario se reenvía.
+    client_request_id: UUID | None = None
+
+
+class CounterReturn(BaseModel):
+    """Devolución atendida en el mostrador: se registra y reintegra de una vez."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    order_id: UUID
+    reason: str = Field(min_length=5, max_length=500)
+    items: list[ReturnItemInput] = Field(min_length=1, max_length=50)
+    note: str | None = Field(default=None, max_length=500)
+    #: Evita reintegrar dos veces si el cajero vuelve a enviar el formulario.
+    client_request_id: UUID
+
+
+class ReturnResolution(BaseModel):
+    """Respuesta de administración a una devolución (CU19)."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    status: Literal["approved", "rejected", "completed"]
+    note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def rechazo_con_motivo(self):
+        if self.status == "rejected" and not (self.note or "").strip():
+            raise ValueError("Indicá el motivo del rechazo para que el cliente lo entienda.")
+        return self

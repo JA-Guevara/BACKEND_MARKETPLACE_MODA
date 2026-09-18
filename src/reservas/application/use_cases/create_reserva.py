@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+from src.notificaciones.application.use_cases.send_notification import notificar_reserva
 from src.reservas.application.dto.reserva_dto import ReservaItemSnapshot
 from src.reservas.application.use_cases.consultar_disponibilidad import ConsultarDisponibilidad
 from src.reservas.domain.entities.horario import validar_horario
@@ -181,4 +182,6 @@ class CrearReserva:
             self.db.rollback()
             raise
         self.db.refresh(reserva)
+        # CU15 al cliente y RF11 a la sucursal, una vez que la reserva existe.
+        notificar_reserva(self.db, reserva, avisar_sucursal=True)
         return reserva

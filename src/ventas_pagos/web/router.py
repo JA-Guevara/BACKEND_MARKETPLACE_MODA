@@ -13,20 +13,22 @@ from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.config.settings import settings
+from src.shared.exceptions.domain_exception import NotFoundError
 from src.shared.responses.api_response import ApiResponse
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductVariantModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
-from src.ventas_pagos.infrastructure.models import StockModel, StockMovementModel, CartItemModel, OrderModel
+from src.ventas_pagos.infrastructure.models import StockModel, StockMovementModel, CartItemModel, OrderModel, OrderReturnModel
 from src.inventario_sucursales.infrastructure.models.organization import CashPointModel
 from src.ventas_pagos.infrastructure.gateways import verify_event
 from src.ventas_pagos.application.service import CommerceService
 from src.ventas_pagos.application.stock_service import StockService
+from src.ventas_pagos.application.returns_service import ReturnsService
 from src.ventas_pagos.application.reports_service import ReportsService
 from src.ventas_pagos.application.reports_ai import ReportsAI
 from src.ventas_pagos.application import exporter
 from src.ventas_pagos.application.multi_export_service import MultiExportService
 from src.ventas_pagos.application.assistant_tools import AssistantTools, UnknownToolError
-from src.ventas_pagos.web.schemas import Quantity, StockQuantity, StockEntry, POSSale, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, REPORT_TYPES
+from src.ventas_pagos.web.schemas import Quantity, StockQuantity, StockEntry, POSSale, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, ReturnRequest, ReturnResolution, CounterReturn, REPORT_TYPES
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
 analytics_router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -41,6 +43,12 @@ Analyst = Annotated[UserModel, Depends(require_permissions("dashboard.read"))]
 
 def response(data=None):
     return ApiResponse(message="Operacion completada.", data=jsonable_encoder(data))
+
+
+def return_data(devolucion):
+    data = {column.name: getattr(devolucion, column.name) for column in OrderReturnModel.__table__.columns}
+    data["refund_amount"] = str(devolucion.refund_amount)
+    return data
 
 
 def order_data(order):
@@ -160,6 +168,73 @@ def cancel(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
     return response(order_data(service.cancel(service.order(order_id, user))))
 
 
+@router.get("/orders/{order_id}/returns")
+def order_returns(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
+    """CU19: que puede devolver el cliente de este pedido y que ya pidio."""
+    order = CommerceService(db).order(order_id, user)
+    service = ReturnsService(db)
+    return response({
+        **service.devolvible(order),
+        "returns": [return_data(row) for row in service.del_pedido(order.id)],
+    })
+
+
+@router.post("/orders/{order_id}/returns", status_code=201)
+def request_return(order_id: uuid.UUID, data: ReturnRequest, user: User, db: Session = Depends(get_db)):
+    order = CommerceService(db).order(order_id, user)
+    return response(return_data(ReturnsService(db).solicitar(user, order, data)))
+
+
+@router.get("/returns")
+def my_returns(user: User, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    return response([return_data(row) for row in ReturnsService(db).mias(user, limit, offset)])
+
+
+@router.get("/admin/pos/orders")
+def pos_lookup(user: Writer, db: Session = Depends(get_db), number: str = Query(min_length=3, max_length=40)):
+    """Busca una venta por su número, para atender una devolución en el mostrador."""
+    order = db.scalar(select(OrderModel).where(OrderModel.number == number.strip().upper()))
+    if not order:
+        raise NotFoundError("No encontramos una venta con ese número.")
+    service = ReturnsService(db)
+    return response({
+        "order": order_data(order),
+        **service.devolvible(order),
+        "returns": [return_data(row) for row in service.del_pedido(order.id)],
+    })
+
+
+@router.post("/admin/pos/returns", status_code=201)
+def pos_return(data: CounterReturn, user: Writer, db: Session = Depends(get_db)):
+    """CU19 en el mostrador: registra la devolución y reintegra en un solo paso."""
+    order = CommerceService(db).order(data.order_id)
+    return response(return_data(ReturnsService(db).registrar_en_caja(user, order, data)))
+
+
+@router.get("/admin/returns")
+def admin_returns(
+    user: Reader,
+    db: Session = Depends(get_db),
+    status: str | None = Query(None, max_length=20),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    branch_id: uuid.UUID | None = None,
+    q: str | None = Query(None, max_length=60),
+):
+    service = ReturnsService(db)
+    filas = service.todas(status, limit, offset, branch_id=branch_id, q=q)
+    contexto = service.enriquecer(filas)
+    return response([
+        {**return_data(row), **contexto.get(str(row.id), {})} for row in filas
+    ])
+
+
+@router.patch("/admin/returns/{return_id}")
+def resolve_return(return_id: uuid.UUID, data: ReturnResolution, user: Writer, db: Session = Depends(get_db)):
+    service = ReturnsService(db)
+    return response(return_data(service.resolver(user, service.obtener(return_id), data)))
+
+
 @router.post("/orders/{order_id}/payment-status")
 def reconcile_payment(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
     service = CommerceService(db)
@@ -173,8 +248,44 @@ def admin_reconcile_payment(order_id: uuid.UUID, user: Writer, db: Session = Dep
 
 
 @router.get("/admin/orders")
-def admin_orders(user: Reader, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-    return response([order_data(o) for o in db.scalars(select(OrderModel).order_by(OrderModel.created_at.desc()).offset(offset).limit(limit))])
+def admin_orders(
+    user: Reader,
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None, max_length=30),
+    branch_id: uuid.UUID | None = None,
+    channel: str | None = Query(None, pattern="^(web|pos)$"),
+    q: str | None = Query(None, max_length=120),
+):
+    """Bandeja de pedidos para gestión, con los filtros con los que se trabaja.
+
+    Sin filtros hay que pasar páginas a mano para encontrar un pedido: quien
+    despacha trabaja por estado y por sucursal, y cuando un cliente llama trae
+    su número o su correo.
+    """
+    consulta = select(OrderModel)
+    if status:
+        consulta = consulta.where(OrderModel.status == status)
+    if branch_id:
+        consulta = consulta.where(OrderModel.branch_id == branch_id)
+    if channel:
+        consulta = consulta.where(OrderModel.sales_channel == channel)
+    if q:
+        texto = f"%{q.strip()}%"
+        consulta = consulta.where(
+            OrderModel.number.ilike(texto.upper()) | OrderModel.customer_email.ilike(texto)
+        )
+    rows = db.scalars(consulta.order_by(OrderModel.created_at.desc()).offset(offset).limit(limit)).all()
+    # Una marca por pedido evita que gestión abra uno por uno para ver si tiene
+    # devoluciones pendientes de resolver.
+    con_devolucion = set(db.scalars(select(OrderReturnModel.order_id).where(
+        OrderReturnModel.order_id.in_([o.id for o in rows] or [uuid.uuid4()]),
+        OrderReturnModel.status.in_(["requested", "approved"]),
+    )))
+    return response([
+        {**order_data(o), "has_open_return": o.id in con_devolucion} for o in rows
+    ])
 
 
 @router.patch("/admin/orders/{order_id}/tracking")

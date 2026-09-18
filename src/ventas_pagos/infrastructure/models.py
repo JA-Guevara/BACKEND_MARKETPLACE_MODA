@@ -70,3 +70,26 @@ class StockMovementModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     reference: Mapped[str | None] = mapped_column(String(100))
     actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     actor_email: Mapped[str | None] = mapped_column(String(320))
+
+
+class OrderReturnModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Devolución de prendas de un pedido entregado (CU19).
+
+    Guarda una copia de las prendas devueltas con su precio: el catálogo puede
+    cambiar después y el reintegro tiene que corresponder a lo que se cobró.
+    """
+
+    __tablename__ = "commerce_order_returns"
+    order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("commerce_orders.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="requested", index=True)
+    reason: Mapped[str] = mapped_column(String(500))
+    items: Mapped[list] = mapped_column(JSON)
+    refund_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(3))
+    resolution_note: Mapped[str | None] = mapped_column(String(500))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    #: Evita duplicar la devolución si el cliente reenvía el formulario.
+    client_request_id: Mapped[uuid.UUID | None] = mapped_column(unique=True)

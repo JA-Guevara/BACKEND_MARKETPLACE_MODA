@@ -8,6 +8,7 @@ from src.reservas.domain.entities.reserva import TRANSITIONS
 from src.reservas.domain.exceptions import TransicionInvalidaError
 from src.reservas.infrastructure.persistence.models.reserva import ReservationModel
 from src.reservas.application.use_cases.reservation_inventory import release_reservation_inventory
+from src.notificaciones.application.use_cases.send_notification import notificar_reserva
 
 STATUS_NOTES = {
     "confirmed": "Sucursal confirmo la reserva y prepara las prendas.",
@@ -49,4 +50,6 @@ class ActualizarEstadoReserva:
         )
         self.db.commit()
         self.db.refresh(reserva)
+        # CU15: cada cambio de estado se le avisa al cliente por correo.
+        notificar_reserva(self.db, reserva, note or None)
         return reserva

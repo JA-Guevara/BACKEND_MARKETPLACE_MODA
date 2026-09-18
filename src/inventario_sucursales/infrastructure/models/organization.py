@@ -47,6 +47,8 @@ class BranchModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     city_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cities.id", ondelete="RESTRICT"), nullable=False, index=True)
     address: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(30))
+    # Casilla de la sucursal para los avisos de reserva (RF11).
+    notification_email: Mapped[str | None] = mapped_column(String(320))
     latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     opening_hours: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB, "postgresql"))

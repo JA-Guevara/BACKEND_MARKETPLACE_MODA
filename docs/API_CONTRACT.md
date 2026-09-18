@@ -515,6 +515,170 @@ Los objetos `*Update` tienen los mismos campos opcionales. Una categoría no pue
 
 Los objetos de actualización contienen los mismos campos opcionales. El código de sucursal y el de caja se normalizan a mayúsculas.
 
+## Carrito y pedidos
+
+El carrito vive en el servidor, asociado al usuario: se conserva entre dispositivos y no depende del navegador. Los precios y totales **siempre** los calcula el backend a partir del catálogo; el cliente solo manda identidades y cantidades.
+
+| Método y ruta | Acceso | Entrada / parámetros | Salida `data` |
+|---|---|---|---|
+| `GET /commerce/branches` | Público | Sin parámetros | `{id, name, address}[]` activas |
+| `GET /commerce/recommendations` | Público, mejora con sesión | `limit=8` | `RecommendedProduct[]` |
+| `PATCH /commerce/profile` | Autenticado | `ProfileUpdate` | Datos personales del cliente |
+| `GET /commerce/cart` | Autenticado | `branch_id` opcional | `Cart` |
+| `PUT /commerce/cart/items/{variant_id}` | Autenticado | `{quantity: 1..99}` | `null` |
+| `DELETE /commerce/cart/items/{variant_id}` | Autenticado | Sin body | `null` |
+| `POST /commerce/orders` | Autenticado | `CheckoutOrder` | `Order` (201) |
+| `GET /commerce/orders` | Autenticado | `limit=100`, `offset=0` | `Order[]` propios |
+| `GET /commerce/orders/{order_id}` | Autenticado, dueño | UUID en ruta | `Order` |
+| `POST /commerce/orders/{order_id}/cancel` | Autenticado, dueño | Sin body | `Order` |
+
+`Cart` contiene `items`, `total` y `currency`. Cada ítem trae `variant_id`, `product_id`, `name`, `sku`, `size`, `color`, `image_url`, `unit_price`, `quantity`, `available` y `line_total`.
+
+`Order` contiene `id`, `number`, `customer_email`, `status`, `payment_status`, `payment_method`, `payment_reference`, `total`, `currency`, `address`, `items`, `tracking`, `carrier`, `tracking_number`, `paid_at` y `created_at`. **Nunca** expone `stripe_session_id` ni `stripe_url`: se entregan solo en la respuesta del checkout.
+
+Estados de `status`: `pending_payment → paid → processing → shipped → delivered`, más `cancelled` y `expired` como salidas. Las transiciones administrativas permitidas están en `src/ventas_pagos/domain/states.py` y el backend rechaza cualquier otra con `409`.
+
+**Efecto sobre existencias**: crear el pedido **descuenta** las unidades de la sucursal en el mismo momento, con movimiento `web_order_hold`. Cancelar o vencer las devuelve con `web_order_release`. Un pedido nunca queda apartado a medias: si falla una prenda, se revierten todas.
+
+Solo se puede cancelar un pedido en `pending_payment`; en otro estado responde `409`.
+
+## Pagos
+
+| Método y ruta | Acceso | Entrada | Salida `data` |
+|---|---|---|---|
+| `POST /commerce/orders/{order_id}/checkout` | Autenticado, dueño | Sin body | `{session_id, url}` o `{status, url: null}` si ya estaba pagado |
+| `POST /commerce/orders/{order_id}/payment-status` | Autenticado, dueño | Sin body | `Order` reconciliado |
+| `POST /commerce/admin/orders/{order_id}/payment-status` | `commerce.write` | Sin body | `Order` reconciliado |
+| `POST /commerce/admin/orders/{order_id}/payment` | `commerce.write` | `ManualPayment` | `Order` |
+| `PATCH /commerce/admin/orders/{order_id}/tracking` | `commerce.write` | `TrackingUpdate` | `Order` |
+| `GET /commerce/admin/orders` | `commerce.read` | `limit`, `offset`, `status`, `branch_id`, `channel` (`web`/`pos`), `q` (número o correo) | `Order[]` con `has_open_return` |
+| `GET /commerce/admin/orders/{order_id}/receipt` | `commerce.write` | UUID en ruta | Comprobante imprimible |
+| `POST /commerce/stripe/webhook` | Firma de Stripe | Evento firmado | `{received: true}` |
+
+`POST .../payment-status` es la **red de seguridad** del pago: consulta Stripe desde el servidor y acredita el pedido si el cobro se completó, o lo vence si la sesión expiró. Existe porque volver del checkout en el navegador no prueba nada, y porque un webhook puede llegar tarde. Es también lo que usa la app móvil al regresar del navegador. No acredita dos veces: comparte la misma transición que el webhook.
+
+`TrackingUpdate` exige `carrier` y `tracking_number` cuando el nuevo estado es `shipped`.
+
+El webhook verifica la firma de Stripe y descarta eventos repetidos por `event_id`; un reintento de Stripe no vuelve a mover el pedido ni reenvía el aviso al cliente.
+
+## Venta presencial y existencias
+
+| Método y ruta | Permiso | Entrada / parámetros | Salida `data` |
+|---|---|---|---|
+| `GET /commerce/admin/cash-points` | `commerce.write` | `branch_id` | Cajas activas de la sucursal |
+| `POST /commerce/admin/pos/sales` | `commerce.write` | `POSSale` | `Order` ya entregado y pagado (201) |
+| `GET /commerce/admin/pos/orders` | `commerce.write` | `number` de la venta | `{order, can_request, reason, units, returns}` |
+| `POST /commerce/admin/pos/returns` | `commerce.write` | `CounterReturn` | `OrderReturn` ya cerrada (201) |
+| `GET /commerce/admin/pos/stock` | `commerce.write` | `branch_id`, `search` | Existencias para la pantalla de caja |
+| `GET /commerce/admin/stock` | `stock.read` | `branch_id`, `search`, paginación | Existencias por variante y sucursal |
+| `PUT /commerce/admin/stock/{variant_id}` | `stock.write` | `StockQuantity` | Existencia ajustada |
+| `GET /commerce/admin/stock/movements` | `stock.read` | `branch_id`, `variant_id`, `kind`, fechas | Movimientos con actor |
+| `POST /commerce/admin/stock/{variant_id}/movements` | `stock.write` | `StockEntry` | Movimiento registrado (201) |
+
+`POSSale.payment_method` admite `cash`, `qr`, `card` y `transfer` (RF18). Solo el efectivo da vuelto; los otros tres se cobran por el importe exacto y la referencia guarda el rastro del cobro: el identificador de la transacción del QR, el voucher del terminal o el número de comprobante. `ManualPayment` admite los mismos cuatro, porque el pago de un pedido web también se puede recibir en el local.
+
+`POSSale` lleva `client_request_id`: la misma clave con los mismos datos devuelve la venta ya registrada en vez de cobrar dos veces; con datos distintos responde `409`. El servidor toma los precios del catálogo, nunca del cliente.
+
+Cada cambio de existencias deja un movimiento con saldo anterior, saldo posterior, motivo y quién lo hizo. Los tipos son `web_order_hold`, `web_order_release`, `pos_sale`, `reservation_hold`, `reservation_release`, `return_received`, `receipt`, `issue` y `adjustment`.
+
+`CounterReturn` = `{order_id, reason, items, note?, client_request_id}`. Es la devolución del mostrador: nace en `completed` y reintegra el stock en el acto, porque el cliente entrega la prenda y cobra en el momento. La clave idempotente evita reintegrar dos veces ante un doble clic.
+
+## Devoluciones (CU19)
+
+Se devuelve un pedido **entregado y pagado**, dentro de los 15 días desde la entrega, y solo las unidades que no estén ya en otra devolución vigente.
+
+| Método y ruta | Acceso | Entrada / parámetros | Salida `data` |
+|---|---|---|---|
+| `GET /commerce/orders/{order_id}/returns` | Autenticado, dueño | UUID en ruta | `{can_request, reason, units, returns}` |
+| `POST /commerce/orders/{order_id}/returns` | Autenticado, dueño | `ReturnRequest` | `OrderReturn` (201) |
+| `GET /commerce/returns` | Autenticado | `limit=100`, `offset=0` | `OrderReturn[]` propias |
+| `GET /commerce/admin/returns` | `commerce.read` | `status`, `branch_id`, `q` (número de pedido), `limit`, `offset` | `OrderReturn[]` con contexto del pedido |
+| `PATCH /commerce/admin/returns/{return_id}` | `commerce.write` | `ReturnResolution` | `OrderReturn` |
+
+`ReturnRequest` = `{reason (5..500), items: [{variant_id, quantity}], client_request_id?}`. La clave idempotente evita abrir dos devoluciones si el formulario se reenvía.
+
+`ReturnResolution` = `{status: approved|rejected|completed, note?}`. **Rechazar exige nota**: es lo que el cliente lee como explicación.
+
+En la bandeja de administración cada devolución llega además con `order_number`, `customer_name`, `customer_email`, `branch_name` y `sales_channel`: una devolución sin esos datos no se puede resolver sin ir a buscar el pedido por UUID. `has_open_return` en el listado de pedidos evita abrirlos uno por uno para ver cuáles tienen una devolución sin resolver.
+
+`OrderReturn` contiene `id`, `order_id`, `branch_id`, `status`, `reason`, `items` (copia con el precio al momento de la compra), `refund_amount`, `currency`, `resolution_note`, `resolved_at` y `created_at`.
+
+Circuito: `requested → approved → completed`, con `rejected` posible desde los dos primeros. **Aprobar no devuelve stock**: las unidades vuelven al inventario recién en `completed`, con movimiento `return_received`, porque es cuando las prendas están físicamente de nuevo en la sucursal. Un rechazo libera las unidades comprometidas y el cliente puede volver a pedirlas.
+
+`units` de la consulta indica cuántas unidades quedan por devolver de cada variante; el servidor vuelve a validarlo al recibir la solicitud.
+
+## Reservas de probador
+
+| Método y ruta | Acceso | Entrada / parámetros | Salida `data` |
+|---|---|---|---|
+| `POST /reservations` | Autenticado | `CrearReservaRequest` | `Reservation` (201) |
+| `GET /reservations/availability` | Autenticado | `branch_id`, `variant_id` (repetible), `quantity` (repetible) | Disponibilidad por variante |
+| `GET /reservations` | Autenticado | Paginación | `Page<Reservation>` propias |
+| `GET /reservations/{reservation_id}` | Autenticado, dueño | UUID en ruta | `Reservation` |
+| `POST /reservations/{reservation_id}/cancel` | Autenticado, dueño | Sin body | `Reservation` |
+| `GET /reservations/admin/all` | `reservations.read` | `status`, `branch_id`, fechas, paginación | `Page<Reservation>` |
+| `PATCH /reservations/admin/{reservation_id}/status` | `reservations.write` | `{status, note?}` | `Reservation` |
+
+`availability` se declara **antes** que `/{reservation_id}` en el router: al revés, FastAPI intentaría interpretar la palabra `availability` como un UUID y respondería `422`.
+
+`CrearReservaRequest` = `{branch_id, scheduled_at, items: [{variant_id, quantity 1..10}], notes?, client_key?}`. Hasta 20 variantes distintas tras agrupar repetidas (RF09). El horario se valida contra la agenda de atención.
+
+Estados: `pending → confirmed → ready → attended`, más `cancelled`. Crear la reserva **aparta** las unidades (`reservation_hold`); cancelar o atender las libera (`reservation_release`). Una reserva anterior a la migración de inventario no aparta nada y tampoco devuelve nada: el campo `inventory_held` lo distingue.
+
+Si la sucursal no tiene la talla pedida, la creación responde `422` nombrando la prenda y la talla, en vez de hacer viajar al cliente.
+
+`client_key` hace la creación idempotente: la misma clave con el mismo detalle devuelve la reserva ya registrada; con detalle distinto avisa en vez de devolver en silencio la anterior.
+
+## Probador virtual
+
+| Método y ruta | Acceso | Entrada | Salida `data` |
+|---|---|---|---|
+| `POST /vestidor/sessions` | Autenticado | `{product_id, color_id?, variant_id?}` | Recurso y anclajes de la prenda |
+| `GET /vestidor/admin/products/{product_id}/assets` | `catalog.read` | UUID en ruta | Recursos preparados del producto |
+| `POST /vestidor/admin/products/{product_id}/assets` | `catalog.write` | `{color_id}` | Recurso preparado |
+| `PATCH /vestidor/admin/assets/{asset_id}` | `catalog.write` | Corrección manual de anclajes | Recurso ajustado |
+
+La preparación recorta el fondo de la foto y calcula los puntos de anclaje (hombros, cadera, largo) una sola vez por producto y color, no por talla: la foto cambia con el color, no con el talle. Si el fondo no es liso, conserva la foto original en vez de romper la silueta, y el ajuste manual permite corregir lo que el análisis propuso.
+
+Un color sin recurso preparado avisa explícitamente en lugar de usar el de otro color.
+
+## Reportes y asistente de IA
+
+| Método y ruta | Permiso | Entrada / parámetros | Salida `data` |
+|---|---|---|---|
+| `GET /analytics/dashboard` | `dashboard.read` | Filtros de fecha y sucursal | KPIs y series |
+| `POST /analytics/insights` | `dashboard.read` | `InsightsRequest` | Lectura en lenguaje natural |
+| `POST /analytics/assistant/interpret` | `dashboard.read` | `InterpretRequest` | Intención detectada |
+| `POST /analytics/assistant/explain` | `dashboard.read` | `ExplainRequest` | Explicación de las métricas |
+| `POST /analytics/assistant/execute` | `dashboard.read` | `AssistantToolRequest` | Resultado de la herramienta |
+| `GET /analytics/reports/export` | `dashboard.read` | `type`, filtros, `format` | Archivo CSV/XLSX/PDF |
+| `POST /analytics/reports/export-multiple` | `dashboard.read` | `MultiExportRequest` | Archivo combinado |
+| `POST /commerce/assistant` | Autenticado | `{message, context?}` | `{available, reply}` |
+
+El asistente ejecuta únicamente herramientas de una lista cerrada y valida sus parámetros; una herramienta no autorizada se rechaza. Cada operación queda en bitácora con el correo del actor y no se audita dos veces por el mismo `request_id`.
+
+Sin `AI_API_KEY` configurada, `/commerce/assistant` responde `{available: false}` con un mensaje útil en lugar de fallar.
+
+## Avisos por correo
+
+No son endpoints: son efectos de las operaciones anteriores (CU15 y RF11).
+
+| Operación | A quién avisa |
+|---|---|
+| Crear pedido, confirmar pago, preparar, despachar, entregar, cancelar, vencer | Cliente |
+| Venta en caja con correo cargado | Cliente (comprobante) |
+| Crear pedido web | Cliente **y** sucursal (tiene prendas apartadas por preparar) |
+| Crear reserva | Cliente **y** sucursal (RF11) |
+| Solicitar una devolución | Cliente **y** gestión (alguien tiene que resolverla) |
+| Confirmar, preparar, atender o cancelar una reserva | Cliente |
+| Solicitar, aprobar, rechazar o cerrar una devolución | Cliente |
+
+Cada aviso viaja en dos versiones (HTML con el diseño de la tienda y texto plano). La venta en caja recibe el **comprobante** de la compra, no un aviso de estado, y la devolución cerrada informa el importe reembolsado y por qué medio vuelve.
+
+El envío es "lo mejor posible": si el servidor de correo está caído o sin configurar, la operación igual se registra y en bitácora queda `notificaciones.email_enviado` o `notificaciones.email_fallido` con el destinatario. Un correo nunca revierte una venta.
+
+El destinatario del aviso a la sucursal es su campo `notification_email`; si está vacío, se usa `OPERATIONS_EMAIL`.
+
 ## Bitácora
 
 | Método y ruta | Permiso | Parámetros | Salida `data` |

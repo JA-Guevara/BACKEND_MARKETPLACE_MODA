@@ -4,7 +4,7 @@
 
 FashionStore es el backend de una plataforma de comercio electrónico de ropa con catálogo público como página principal. El acceso no comienza en una pantalla de login: cualquier visitante puede consultar productos, categorías, tallas, colores, temporadas, colecciones y sucursales. La autenticación se solicita cuando una operación es personal o administrativa.
 
-Esta entrega deja implementado el ciclo I descrito en la documentación funcional:
+El **ciclo I** de la documentación funcional quedó así:
 
 | Caso de uso | Cobertura en el backend |
 |---|---|
@@ -17,7 +17,25 @@ Esta entrega deja implementado el ciclo I descrito en la documentación funciona
 | CU07 Consultar catálogo | Rutas públicas, detalle por `slug`, paginación y filtros combinables |
 | CU08 Gestionar ciudades, sucursales y cajas | CRUD, estados, borrado lógico, ubicación, horarios y cajas por sucursal |
 
-Los módulos de inventario por sucursal, reservas, probador virtual, ventas, pagos, pedidos, envíos, reseñas e IA pertenecen a los ciclos posteriores. Sus carpetas existentes son una referencia de expansión, pero no se publican rutas incompletas.
+Del ciclo II quedan implementados:
+
+| Caso de uso | Cobertura en el backend |
+|---|---|
+| CU09 Consultar disponibilidad por sucursal | Existencias por variante y sucursal, con consulta previa antes de reservar |
+| CU10 Armar una reserva con varias prendas | Hasta 20 variantes distintas por reserva, agrupando repetidas (RF09) |
+| CU11 Registrar y gestionar reservas | Alta idempotente, apartado de unidades, estados y cancelación |
+| CU12 Consultar estado de la reserva | Listado propio, detalle e historial de cambios |
+| CU13 Cancelar reserva | Cancelación del cliente con devolución de las unidades apartadas |
+| CU14 Atender reserva en sucursal | Confirmar, preparar y registrar la visita atendida |
+| CU15 Notificar cambio de estado | Correo al cliente en pedidos, reservas y devoluciones; aviso a la sucursal (RF11) |
+| CU16 Utilizar el vestidor virtual | Preparación del recurso por producto y color, anclajes y sesión de prueba |
+| CU17 Comprar desde la web | Carrito en servidor, pedido con apartado de existencias y dirección de entrega |
+| CU18 Cobrar en punto de caja | Venta presencial idempotente, con precios y totales calculados por el servidor |
+| CU19 Registrar devolución | Solicitud del cliente, resolución administrativa y reingreso al inventario |
+
+También están operativos el pago con Stripe y su conciliación, el kardex de movimientos, el tablero de reportes con exportaciones y el asistente de IA.
+
+Un diseño inicial había dejado ocho carpetas de módulo vacías (`compras`, `dashboard`, `envios`, `pagos`, `pedidos`, `productos`, `resenas`, `tiendas`) cuya función terminó viviendo en los módulos grandes. Se eliminaron junto con los envoltorios que nadie usaba: `src/` pasó de 254 a 109 archivos sin cambiar una sola ruta.
 
 ## 2. Organización del código
 
@@ -34,12 +52,16 @@ Los límites funcionales activos son:
 - `src/usuarios_catalogo`: punto de entrada consolidado para usuarios, roles, permisos y catálogo.
 - `src/inventario_sucursales`: ciudades, sucursales, puntos de caja y proveedores; será el límite natural para existencias y movimientos.
 - `src/bitacora`: registro y consulta inmutable de eventos.
+- `src/ventas_pagos`: carrito, pedidos, pagos con Stripe, venta en caja, existencias, movimientos, devoluciones y reportes. Es el módulo más grande del proyecto.
+- `src/reservas`: agenda de visitas para probarse tallas, con apartado de unidades.
+- `src/probador_virtual`: preparación del recurso de la prenda, anclajes y sesión de prueba.
+- `src/notificaciones`: avisos por correo de pedidos, reservas y devoluciones.
 - `src/shared`: respuestas, paginación y excepciones comunes.
 - `src/config/routes.py`: composición única de rutas del API.
 
 `src/usuarios` y `src/roles` continúan como componentes internos ya estables y se exponen desde `usuarios_catalogo`. Esto conserva compatibilidad sin duplicar lógica.
 
-## 3. Modelo de datos del ciclo I
+## 3. Modelo de datos
 
 ### Seguridad y clientes
 
@@ -69,6 +91,22 @@ Los límites funcionales activos son:
 - `branches`: sucursal, ciudad, dirección, coordenadas y horarios en JSON.
 - `cash_points`: puntos de caja pertenecientes a una sucursal.
 - `suppliers`: datos fiscales y de contacto del proveedor.
+
+`branches.notification_email` es la casilla que recibe los avisos de reserva de esa sucursal (RF11). Si está vacía, el aviso va a `OPERATIONS_EMAIL`.
+
+### Comercio, existencias y devoluciones
+
+- `commerce_stock`: unidades por variante y sucursal. Es la **única** fuente de existencias: reservas, pedidos web y caja consultan y modifican esta tabla.
+- `commerce_stock_movements`: kardex. Cada cambio deja saldo anterior, saldo posterior, motivo, referencia y actor. Dos restricciones de base impiden saldos negativos y movimientos descuadrados.
+- `commerce_cart_items`: carrito del cliente, en el servidor.
+- `commerce_orders`: pedidos web y ventas de caja en la misma tabla, distinguidas por `sales_channel`. Guardan copia de las prendas y de la dirección, más el historial `tracking`.
+- `commerce_order_returns`: devoluciones (CU19), con copia del detalle y el importe a reintegrar.
+- `commerce_webhook_events`: eventos de Stripe ya procesados, para descartar reintentos.
+
+### Reservas y probador
+
+- `reservations`: visita agendada, sucursal, horario, prendas apartadas e historial de estados. `inventory_held` distingue las reservas anteriores a la migración de inventario, que no apartaron nada.
+- `virtual_tryon_assets`: recurso preparado del probador, único por producto y color.
 
 Las eliminaciones de usuarios, productos, proveedores, sucursales y cajas son lógicas. Los catálogos maestros y ciudades sólo se eliminan físicamente cuando no tienen asociaciones. Esto evita perder historial o romper referencias.
 
@@ -114,8 +152,10 @@ Requisitos: Python 3.12 y PostgreSQL 15 o superior.
 py -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-Copy-Item .env.example .env
 ```
+
+El archivo `.env` se crea a mano en la raíz del backend; no se versiona y no hay plantilla en el
+repositorio para no arrastrar valores de ejemplo a producción.
 
 Variables importantes:
 
@@ -129,9 +169,16 @@ Variables importantes:
 | `ACCOUNT_LOCK_MINUTES` | Duración del bloqueo temporal |
 | `FRONTEND_URL` | Base de los enlaces enviados por correo |
 | `CORS_ORIGINS` | Orígenes web autorizados |
-| `SMTP_*` | Servidor de correo para verificación y recuperación |
+| `SMTP_*` | Servidor de correo para verificación, recuperación y avisos de estado |
+| `OPERATIONS_EMAIL` | Casilla que recibe los avisos de reserva cuando la sucursal no tiene correo propio (RF11) |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Pasarela de pago y verificación de la firma del webhook |
+| `COMMERCE_CURRENCY` | Moneda de los pedidos |
+| `MEDIA_PUBLIC_BASE_URL` | Base **absoluta** de las imágenes servidas. Tiene que ser una dirección alcanzable desde el cliente: con `localhost` las fotos no cargan en un emulador ni en un teléfono |
+| `AI_API_KEY`, `AI_MODEL` | Asistente y lectura de reportes |
 
-Si SMTP no está configurado, el usuario se registra, pero no se envía el correo. En producción deben configurarse SMTP, HTTPS, una clave JWT real y orígenes CORS exactos.
+Si SMTP no está configurado, el usuario se registra y las operaciones se completan, pero no sale ningún correo: el envío es "lo mejor posible" y su resultado queda en bitácora. En producción deben configurarse SMTP, HTTPS, una clave JWT real y orígenes CORS exactos.
+
+Ninguna credencial va en el código ni en el repositorio. Si una clave se expuso alguna vez en un chat, un log o una captura, hay que rotarla.
 
 ## 7. Migraciones y primer arranque
 
@@ -139,6 +186,18 @@ Alembic tiene una cadena lineal:
 
 1. `20260903_0001`: autenticación, usuarios, roles, permisos, direcciones y bitácora.
 2. `20260905_0002`: catálogo, proveedores, ciudades, sucursales, cajas y nuevos permisos.
+3. `20260910_0003`: existencias, carrito, pedidos y eventos de Stripe.
+4. `20260912_0004`: código postal y país en las direcciones del cliente.
+5. `20260912_0005`: reservas de probador.
+6. `20260916_0006`: clave idempotente de reservas.
+7. `20260916_0007`: fecha de acreditación del pago.
+8. `20260917_0008`: venta en caja y kardex de movimientos.
+9. `20260917_0009`: apartado de inventario en reservas.
+10. `20260917_0010`: recursos preparados del probador virtual.
+11. `20260918_0011`: correo de aviso de la sucursal (RF11).
+12. `20260918_0012`: devoluciones de pedidos (CU19).
+
+Todas las migraciones son aditivas y reversibles. Las dos últimas todavía no están aplicadas en la base compartida: hasta correr `alembic upgrade head`, las rutas de devolución responden error.
 
 Aplicar todo:
 
@@ -153,13 +212,10 @@ Consultar el estado:
 .venv\Scripts\alembic.exe heads
 ```
 
-Crear el primer superadministrador después de migrar:
-
-```powershell
-.venv\Scripts\python.exe scripts/create_superadmin.py --email admin@example.com --password "UnaClaveSegura!2026" --first-name Admin --last-name Principal
-```
-
-El script no debe ejecutarse con una contraseña de ejemplo en un entorno real.
+**Primer administrador.** No hay un script para crearlo: se inserta la fila en `users` con la
+contraseña ya cifrada —el backend usa el mismo algoritmo que en el registro— y se la asocia al rol
+`superadmin` en `user_roles`. Conviene hacerlo una sola vez y con una contraseña real, nunca una de
+ejemplo.
 
 ## 8. Ejecución y documentación interactiva
 
@@ -201,6 +257,12 @@ El contrato exacto, ejemplos de objetos y tabla de endpoints están en `docs/API
 - Al desactivar o eliminar una sucursal se desactivan sus cajas.
 - No se puede activar una caja si su sucursal está inactiva.
 - No se puede eliminar una ciudad con sucursales asociadas.
+- Crear un pedido o una reserva **aparta** las unidades en el acto; si falla una sola prenda se revierte la operación entera. Nunca queda un apartado a medias.
+- Cancelar o vencer un pedido, y cancelar o atender una reserva, devuelven exactamente las unidades que se habían apartado.
+- Las ventas de caja y las reservas usan una clave idempotente: reintentar con los mismos datos devuelve lo ya registrado; con datos distintos responde `409`.
+- Un pago se acredita una sola vez: el webhook de Stripe y la conciliación por consulta comparten la misma transición y descartan eventos repetidos.
+- Una devolución aprobada **no** devuelve stock; las unidades reingresan al cerrarla, que es cuando las prendas volvieron físicamente.
+- Un aviso por correo nunca revierte la operación que lo originó: se envía después de confirmar y su resultado queda en bitácora.
 
 ## 11. Pruebas y control antes de entregar
 
@@ -218,6 +280,10 @@ Prueba completa, incluida la base configurada en `.env`:
 
 La prueba de conexión externa requiere acceso de red y una `DATABASE_URL` válida. No se deben imprimir ni adjuntar archivos `.env`, tokens o contraseñas en reportes.
 
-## 12. Siguiente ciclo sugerido
+## 12. Qué falta para cerrar el alcance
 
-El próximo bloque debería construir inventario por variante y sucursal, movimientos/kardex y disponibilidad. Reservas, carrito, pedidos y ventas deben consumir esa única fuente de existencias para evitar dobles reservas o sobreventa. Después pueden conectarse pagos, envíos, probador virtual, recomendaciones y reportes.
+1. **Aplicar las migraciones `0011` y `0012`** en la base compartida.
+2. **Configurar SMTP real** (`SMTP_HOST` y siguientes, más `OPERATIONS_EMAIL`). Sin eso no sale ningún correo, y tampoco falla nada.
+3. **App móvil Flutter** (`mobile_marketplace_moda`): es lo único con RF sin cumplir —RF07 móvil, RF13 y RF16—. No requiere endpoints nuevos; el detalle está en la guía de ese proyecto.
+4. **Prueba punta a punta** contra la base real, con una cuenta de cliente y una de administración.
+5. Opcional: notificaciones push, que sí exigirían backend nuevo (registro de dispositivos y envío). Ningún RF lo pide.

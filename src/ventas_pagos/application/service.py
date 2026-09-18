@@ -15,6 +15,7 @@ from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.domain.states import TRANSITIONS
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.ventas_pagos.application.stock_service import StockService
+from src.notificaciones.application.use_cases.send_notification import notificar_pedido
 
 
 class CommerceService:
@@ -125,6 +126,10 @@ class CommerceService:
             self.db.execute(delete(CartItemModel).where(CartItemModel.user_id == user.id))
             self.db.commit()
             self.db.refresh(order)
+            # CU15: el cliente recibe el aviso recien cuando el pedido quedo
+            # guardado; un fallo de correo no debe deshacer la compra. La
+            # sucursal tambien, porque ya tiene prendas apartadas por preparar.
+            notificar_pedido(self.db, order, avisar_sucursal=True)
             return order
         except Exception:
             self.db.rollback()
@@ -151,6 +156,7 @@ class CommerceService:
         self.release(order, "cancelled")
         self.audit(order, "order_cancelled", "Pedido cancelado; existencias liberadas.")
         self.db.commit()
+        notificar_pedido(self.db, order)
         return order
 
     def checkout(self, order):
@@ -206,10 +212,12 @@ class CommerceService:
             self.confirm_stripe_payment(order, session, "Pago confirmado mediante consulta segura a Stripe.")
             self.audit(order, "payment_reconciled", "Pago confirmado consultando Stripe desde el backend.")
             self.db.commit()
+            notificar_pedido(self.db, order)
         elif session.get("status") == "expired":
             self.release(order, "expired")
             self.audit(order, "payment_expired", "Sesion de Stripe expirada; existencias liberadas.")
             self.db.commit()
+            notificar_pedido(self.db, order)
         return order
 
     def manual_payment(self, order, data):
@@ -221,6 +229,7 @@ class CommerceService:
         self.track(order, "Pago presencial/transferencia confirmado por administracion.")
         self.audit(order, "payment_confirmed", "Pago manual confirmado por administracion.")
         self.db.commit()
+        notificar_pedido(self.db, order)
         return order
 
     def pos_sale(self, actor, data):
@@ -280,6 +289,8 @@ class CommerceService:
             self.audit(order, "pos_sale_created", "Venta presencial registrada, cobrada y entregada.")
             self.db.commit()
             self.db.refresh(order)
+            # Solo sale si el cajero cargo un correo; la venta presencial no lo exige.
+            notificar_pedido(self.db, order, "Comprobante de tu compra en caja.")
             return order, False
         except Exception:
             self.db.rollback()
@@ -296,6 +307,7 @@ class CommerceService:
         self.track(order, data.note or "Estado actualizado por administracion.")
         self.audit(order, "tracking_updated", "Seguimiento del pedido actualizado.")
         self.db.commit()
+        notificar_pedido(self.db, order, data.note)
         return order
 
     def webhook(self, event):
@@ -308,6 +320,7 @@ class CommerceService:
             raise ConflictError("Sesion pendiente de asociacion; Stripe debe reintentar.")
         if self.db.scalar(select(WebhookEventModel.id).where(WebhookEventModel.event_id == event["id"])):
             return {"received": True, "duplicate": True}
+        estado_previo = order.status
         if order.status == "pending_payment":
             if event["type"] == "checkout.session.expired":
                 self.release(order, "expired")
@@ -317,4 +330,8 @@ class CommerceService:
         self.db.add(WebhookEventModel(event_id=event["id"]))
         self.audit(order, "stripe_event", "Evento de Stripe de prueba verificado.")
         self.db.commit()
+        # Solo se avisa si el evento movio el pedido: Stripe reintenta y el
+        # cliente no deberia recibir el mismo correo dos veces.
+        if order.status != estado_previo:
+            notificar_pedido(self.db, order)
         return {"received": True}

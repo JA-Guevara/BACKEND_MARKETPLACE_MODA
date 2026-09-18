@@ -83,6 +83,8 @@ class BranchCreate(BaseModel):
     city_id: uuid.UUID
     address: str = Field(min_length=5, max_length=255)
     phone: str | None = Field(default=None, max_length=30)
+    # Casilla que recibe los avisos de reserva de esta sucursal (RF11).
+    notification_email: EmailStr | None = None
     latitude: Decimal | None = Field(default=None, ge=-90, le=90)
     longitude: Decimal | None = Field(default=None, ge=-180, le=180)
     opening_hours: dict | None = None
@@ -99,6 +101,8 @@ class BranchUpdate(BaseModel):
     city_id: uuid.UUID | None = None
     address: str | None = Field(default=None, min_length=5, max_length=255)
     phone: str | None = Field(default=None, max_length=30)
+    # Casilla que recibe los avisos de reserva de esta sucursal (RF11).
+    notification_email: EmailStr | None = None
     latitude: Decimal | None = Field(default=None, ge=-90, le=90)
     longitude: Decimal | None = Field(default=None, ge=-180, le=180)
     opening_hours: dict | None = None
@@ -114,6 +118,7 @@ class BranchResponse(BaseModel):
     city: CityResponse
     address: str
     phone: str | None
+    notification_email: str | None = None
     latitude: Decimal | None
     longitude: Decimal | None
     opening_hours: dict | None
