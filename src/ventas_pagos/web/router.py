@@ -23,6 +23,7 @@ from src.ventas_pagos.infrastructure.gateways import verify_event
 from src.ventas_pagos.application.service import CommerceService
 from src.ventas_pagos.application.stock_service import StockService
 from src.ventas_pagos.application.returns_service import ReturnsService
+from src.ventas_pagos.application.comprobante import comprobante_de_venta
 from src.ventas_pagos.application.reports_service import ReportsService
 from src.ventas_pagos.application.reports_ai import ReportsAI
 from src.ventas_pagos.application import exporter
@@ -318,35 +319,20 @@ def pos_sale(data: POSSale, user: Writer, db: Session = Depends(get_db)):
 
 @router.get("/admin/orders/{order_id}/receipt")
 def pos_receipt(order_id: uuid.UUID, user: Writer, db: Session = Depends(get_db)):
+    """Comprobante imprimible de una venta.
+
+    Lo puede reimprimir cualquiera con permiso de escritura comercial, no solo
+    el cajero que la hizo: un comprobante perdido lo reclama el cliente en el
+    mostrador y quien atiende puede no ser la misma persona del turno anterior.
+    """
     order = CommerceService(db).order(order_id)
-    if order.sales_channel != "pos" or order.cashier_user_id != user.id:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=403, detail="No tiene permiso para descargar este comprobante.")
-    from io import BytesIO
-    from reportlab.lib.pagesizes import A5
-    from reportlab.pdfgen import canvas
-    stream = BytesIO()
-    pdf = canvas.Canvas(stream, pagesize=A5)
-    width, height = A5
-    y = height - 42
-    for line in ["FashionStore", "COMPROBANTE DE VENTA", f"N.º {order.number}",
-                 f"Cliente: {order.address.get('recipient', 'Consumidor final')}",
-                 f"Pago: {order.payment_method} · Ref. {order.payment_reference}"]:
-        pdf.drawString(38, y, line[:96])
-        y -= 18
-    y -= 8
-    for item in order.items:
-        pdf.drawString(38, y, f"{item['quantity']} × {item['name']} ({item['sku']})"[:80])
-        pdf.drawRightString(width - 38, y, f"{item['line_total']} {order.currency}")
-        y -= 16
-        if y < 58:
-            pdf.showPage(); y = height - 42
-    y -= 10
-    pdf.setFont("Helvetica-Bold", 12)
-    pdf.drawRightString(width - 38, y, f"TOTAL: {order.total} {order.currency}")
-    pdf.save()
-    stream.seek(0)
-    return StreamingResponse(stream, media_type="application/pdf", headers={
+    RecordAuditEvent(db).execute(
+        action="commerce.receipt_printed", entity_type="order", entity_id=str(order.id),
+        description="Comprobante de venta reimpreso.", actor_user_id=user.id,
+        metadata={"number": order.number},
+    )
+    db.commit()
+    return StreamingResponse(comprobante_de_venta(order), media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="comprobante_{order.number}.pdf"'
     })
 

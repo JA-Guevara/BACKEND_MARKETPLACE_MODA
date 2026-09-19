@@ -125,6 +125,20 @@ En el mostrador el circuito de tres pasos del canal web no aplica: el cliente en
 cobra en el momento, así que la devolución nace en `completed` y las unidades vuelven al stock
 enseguida, con movimiento `return_received`.
 
+## Comprobante de venta
+
+`GET /commerce/admin/orders/{id}/receipt` devuelve el comprobante en PDF, con la misma identidad
+visual que el correo: si el cliente recibe uno por correo y se lleva el impreso, tienen que parecer
+de la misma tienda. El armado está en `src/ventas_pagos/application/comprobante.py`.
+
+Lo puede reimprimir cualquiera con `commerce.write`, no solo el cajero que hizo la venta: un
+comprobante perdido lo reclama el cliente en el mostrador y quien atiende puede ser otra persona.
+Cada reimpresión queda en bitácora.
+
+El detalle de un pedido es una copia en JSON hecha al momento de la venta, así que el comprobante
+lee cada campo con un valor por defecto: un pedido viejo sin alguna clave se sigue pudiendo
+reimprimir en vez de fallar.
+
 ## Devoluciones (CU19)
 
 Se puede devolver un pedido entregado y pagado dentro de los 15 días desde la entrega, y solo las

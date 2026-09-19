@@ -659,6 +659,18 @@ El asistente ejecuta únicamente herramientas de una lista cerrada y valida sus 
 
 Sin `AI_API_KEY` configurada, `/commerce/assistant` responde `{available: false}` con un mensaje útil en lugar de fallar.
 
+## Avisos del cliente (campanita)
+
+| Método y ruta | Acceso | Parámetros | Salida `data` |
+|---|---|---|---|
+| `GET /notifications` | Autenticado | `limit=20` (1..50) | `Aviso[]`, del más reciente al más viejo |
+
+`Aviso` = `{id, tipo: pedido|reserva|devolucion, estado, titulo, detalle, fecha, enlace, referencia}`.
+
+No hay tabla de notificaciones: el feed se **deriva** del historial que ya guardan los pedidos, las reservas y las devoluciones. Eso evita una migración y una segunda fuente de verdad que se pueda desincronizar. Los textos salen de las mismas plantillas que los correos, así que la campanita y el buzón cuentan la misma historia.
+
+Lo leído no se guarda en el servidor: el cliente recuerda la fecha del último aviso visto. El punto rojo es por dispositivo, que para una campanita alcanza.
+
 ## Avisos por correo
 
 No son endpoints: son efectos de las operaciones anteriores (CU15 y RF11).
