@@ -73,12 +73,15 @@ class PrepararPrenda:
         if local.is_file():
             return local.read_bytes()
         if not url.lower().startswith(("http://", "https://")):
-            # Ruta relativa servida por el frontend (por ejemplo /demo/x.webp).
+            # Ruta relativa: la sirve el frontend (por ejemplo /demo/x.webp).
+            # Antes solo se buscaba en carpetas del backend, que no existen, y
+            # la preparacion moria con 400 para TODO el catalogo sembrado.
             publico = Path(settings.media_storage_dir).resolve().parent.parent
             candidato = publico / ruta.lstrip("/")
             if candidato.is_file():
                 return candidato.read_bytes()
-            raise ValidationError("No se pudo leer la imagen de la prenda.")
+            # Si no esta en disco, se pide al frontend, que es quien la publica.
+            url = settings.frontend_url.rstrip("/") + "/" + ruta.lstrip("/")
         try:
             respuesta = httpx.get(url, timeout=20, follow_redirects=True)
             respuesta.raise_for_status()
@@ -165,15 +168,28 @@ class PrepararPrenda:
             recurso.garment_type = tipo
             recurso.body_region = region
             recurso.anchor_points = anclajes.calcular_anclajes(recorte.mascara, region)
-            recurso.ai_status = ESTADO_LISTO
-            recurso.ai_error = None
+            # Un recorte fallido devuelve la foto CON su fondo. Darlo por listo
+            # es lo que producia el rectangulo con fondo sobre la camara: se
+            # marca como fallido y el probador cae al dibujo, que siempre sirve.
+            recurso.ai_status = ESTADO_LISTO if recorte.logrado else ESTADO_FALLIDO
+            recurso.ai_error = None if recorte.logrado else (
+                "No se pudo separar la prenda del fondo: la foto tiene fondo con textura, "
+                "un modelo puesto, o la prenda es del mismo color que el fondo. "
+                "Cargue una foto sobre fondo liso o ajuste el recurso a mano."
+            )
             recurso.ai_metadata = {
                 **metadatos,
                 "coverage": round(recorte.cobertura, 4),
                 "output": {"width": ancho, "height": alto},
                 "segmentation": "pillow_floodfill",
+                "tolerance": recorte.tolerancia,
+                "cutout_ok": recorte.logrado,
             }
-            mensaje = "Recurso de probador preparado desde la foto del producto."
+            mensaje = (
+                "Recurso de probador preparado desde la foto del producto."
+                if recorte.logrado
+                else "No se pudo recortar el fondo de la foto; el recurso quedo pendiente de revision."
+            )
         except ValidationError:
             raise
         except Exception as error:  # noqa: BLE001 - se registra y queda visible en el panel

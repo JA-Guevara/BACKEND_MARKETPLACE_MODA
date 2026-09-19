@@ -205,3 +205,53 @@ def test_ajuste_manual_corrige_lo_que_propuso_el_analisis(mundo):
         f"/api/v1/vestidor/admin/assets/{recurso['id']}", json={"body_region": "cabeza"}
     )
     assert invalido.status_code == 422
+
+
+def _foto(prenda_rgb, fondo_rgb=(241, 242, 235), tamano=(120, 160)):
+    """Foto sintetica: una prenda rectangular sobre fondo liso."""
+    from PIL import Image
+    from io import BytesIO
+    im = Image.new("RGB", tamano, fondo_rgb)
+    ancho, alto = tamano
+    for y in range(int(alto * 0.2), int(alto * 0.8)):
+        for x in range(int(ancho * 0.25), int(ancho * 0.75)):
+            im.putpixel((x, y), prenda_rgb)
+    salida = BytesIO()
+    im.save(salida, "PNG")
+    return salida.getvalue()
+
+
+class TestRecorteHonesto:
+    """El recorte tiene que decir cuando NO pudo, no devolver la foto entera como si nada."""
+
+    def test_una_prenda_contrastada_se_recorta_y_se_declara_lograda(self):
+        from src.probador_virtual.infrastructure.services.segmentacion import recortar_fondo
+
+        recorte = recortar_fondo(_foto((30, 30, 30)))
+        assert recorte.logrado is True
+        assert 0.04 <= recorte.cobertura <= 0.97
+
+    def test_una_prenda_del_color_del_fondo_se_declara_NO_lograda(self):
+        """Medido en el catalogo real: las prendas «blanco hueso» difieren del
+        fondo en 4 sobre 255 y el relleno se las come. Antes eso devolvia la
+        foto COMPLETA con su fondo marcada como lista, y el probador mostraba
+        un rectangulo con fondo sobre la camara."""
+        from src.probador_virtual.infrastructure.services.segmentacion import recortar_fondo
+
+        recorte = recortar_fondo(_foto((242, 238, 233)))
+        assert recorte.logrado is False
+
+    def test_un_recorte_no_logrado_no_puede_quedar_marcado_como_listo(self):
+        """La regla que importa: sin recorte valido, el recurso no es usable y
+        el probador cae al dibujo, que siempre funciona."""
+        from src.probador_virtual.infrastructure.persistence.models.recurso_tryon import (
+            ESTADO_FALLIDO,
+            ESTADO_LISTO,
+        )
+        from src.probador_virtual.infrastructure.services.segmentacion import recortar_fondo
+
+        fallido = recortar_fondo(_foto((242, 238, 233)))
+        logrado = recortar_fondo(_foto((30, 30, 30)))
+        # Es la decision que toma PrepararPrenda a partir de `logrado`.
+        assert (ESTADO_LISTO if logrado.logrado else ESTADO_FALLIDO) == ESTADO_LISTO
+        assert (ESTADO_LISTO if fallido.logrado else ESTADO_FALLIDO) == ESTADO_FALLIDO

@@ -21,6 +21,14 @@ from PIL import Image, ImageDraw, ImageFilter
 CENTINELA = (255, 0, 255)
 # Tolerancia del relleno: cuánto puede variar el fondo (sombras, degradado).
 TOLERANCIA = 38
+# NOTA MEDIDA, no teorica: se probo bajar la tolerancia cuando el recorte falla
+# (38 -> 24 -> 16 ...) y tambien un relleno que compara contra el pixel VECINO en
+# vez de contra la esquina. Ninguna de las dos sirve cuando la prenda es del
+# mismo color que su fondo: en el catalogo actual las prendas «blanco hueso»
+# difieren del fondo en 4 sobre 255. Bajar la tolerancia deja la prenda DENTRO
+# de un bloque de fondo y ese recorte pasaba por bueno, que es peor que fallar.
+# Por eso se conserva una sola tolerancia y esos casos se marcan como no
+# logrados: el probador cae al dibujo, que siempre funciona.
 # Debajo de esta proporción de píxeles opacos se considera que la segmentación
 # falló (por ejemplo, fondo con estampado que se comió toda la prenda).
 MINIMO_PRENDA = 0.04
@@ -37,6 +45,15 @@ class PrendaRecortada:
     """Máscara en escala de grises del mismo tamaño que `imagen`."""
     cobertura: float
     """Proporción de la foto original ocupada por la prenda."""
+    logrado: bool = True
+    """Si se pudo separar la prenda del fondo.
+
+    En `False` la imagen es la foto original **con** su fondo: sirve para que el
+    administrador vea qué pasó, pero no se puede mostrar sobre la cámara. Quien
+    prepara el recurso debe marcarlo como fallido, no como listo.
+    """
+    tolerancia: int = TOLERANCIA
+    """Tolerancia con la que se logró el recorte, para diagnóstico."""
 
 
 def _fondo_probable(imagen: Image.Image) -> tuple[int, int, int]:
@@ -56,6 +73,22 @@ def _centinela_libre(imagen: Image.Image) -> tuple[int, int, int]:
     return CENTINELA
 
 
+def _intento(imagen: Image.Image, centinela, tolerancia: int) -> tuple[Image.Image, float]:
+    """Marca el fondo con una tolerancia dada y devuelve la máscara y su cobertura."""
+    ancho, alto = imagen.size
+    lienzo = imagen.copy()
+    # El fondo se propaga desde las cuatro esquinas: así un fondo liso se marca
+    # completo aunque la prenda toque un borde.
+    for punto in ((0, 0), (ancho - 1, 0), (0, alto - 1), (ancho - 1, alto - 1)):
+        ImageDraw.floodfill(lienzo, punto, centinela, thresh=tolerancia)
+
+    # Máscara: 255 donde quedó prenda, 0 donde se marcó fondo.
+    mascara = Image.new("L", (ancho, alto), 255)
+    mascara.putdata([0 if pixel == centinela else 255 for pixel in lienzo.getdata()])
+    opacos = sum(1 for valor in mascara.getdata() if valor)
+    return mascara, opacos / float(ancho * alto)
+
+
 def recortar_fondo(datos: bytes) -> PrendaRecortada:
     """Deja la prenda sobre fondo transparente, recortada a su contorno."""
     with Image.open(BytesIO(datos)) as original:
@@ -64,21 +97,17 @@ def recortar_fondo(datos: bytes) -> PrendaRecortada:
 
     ancho, alto = imagen.size
     centinela = _centinela_libre(imagen)
-    lienzo = imagen.copy()
-    # El fondo se propaga desde las cuatro esquinas: así un fondo liso se marca
-    # completo aunque la prenda toque un borde.
-    for punto in ((0, 0), (ancho - 1, 0), (0, alto - 1), (ancho - 1, alto - 1)):
-        ImageDraw.floodfill(lienzo, punto, centinela, thresh=TOLERANCIA)
 
-    # Máscara: 255 donde quedó prenda, 0 donde se marcó fondo.
-    mascara = Image.new("L", (ancho, alto), 255)
-    mascara.putdata([0 if pixel == centinela else 255 for pixel in lienzo.getdata()])
-
-    opacos = sum(1 for valor in mascara.getdata() if valor)
-    cobertura = opacos / float(ancho * alto)
-    if not MINIMO_PRENDA <= cobertura <= MAXIMO_PRENDA:
-        # El fondo no era liso: se conserva la foto completa antes que devolver
-        # una silueta rota, y el administrador lo verá en la vista previa.
+    candidata, proporcion = _intento(imagen, centinela, TOLERANCIA)
+    logrado = MINIMO_PRENDA <= proporcion <= MAXIMO_PRENDA
+    mascara = candidata if logrado else None
+    cobertura = proporcion if logrado else 0.0
+    usada = TOLERANCIA
+    if not logrado:
+        # Ninguna tolerancia dejó una silueta creíble: fondo con estampado, o
+        # foto sobre un modelo. Se devuelve la foto completa para que el
+        # administrador vea qué pasó, pero marcada como no lograda: mostrarla
+        # sobre la cámara sería el rectángulo con fondo que este módulo evita.
         mascara = Image.new("L", (ancho, alto), 255)
         cobertura = 1.0
     else:
@@ -97,7 +126,9 @@ def recortar_fondo(datos: bytes) -> PrendaRecortada:
     if caja:
         prenda = prenda.crop(caja)
         mascara = mascara.crop(caja)
-    return PrendaRecortada(imagen=prenda, mascara=mascara, cobertura=cobertura)
+    return PrendaRecortada(
+        imagen=prenda, mascara=mascara, cobertura=cobertura, logrado=logrado, tolerancia=usada
+    )
 
 
 def a_webp(imagen: Image.Image) -> bytes:

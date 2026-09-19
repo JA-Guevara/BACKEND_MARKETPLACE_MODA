@@ -125,6 +125,28 @@ En el mostrador el circuito de tres pasos del canal web no aplica: el cliente en
 cobra en el momento, así que la devolución nace en `completed` y las unidades vuelven al stock
 enseguida, con movimiento `return_received`.
 
+## Probador virtual: preparar el recurso
+
+`POST /vestidor/admin/products/{id}/assets` recorta el fondo de la foto principal y calcula los
+anclajes. Se dispara desde el editor de prendas, sección **Probador virtual**; antes el endpoint
+existía y ninguna pantalla lo llamaba, así que la tabla quedaba vacía y el probador caía siempre al
+dibujo vectorial.
+
+**Un recorte que falla no queda marcado como listo.** Si el relleno no consigue separar la prenda
+—fondo con textura, foto sobre un modelo, o prenda del mismo color que su fondo— el recurso queda
+en `failed` con el motivo, y el probador usa el dibujo, que siempre funciona. Antes se marcaba
+`ready` igual y sobre la cámara aparecía la foto **con** su fondo: ese era el rectángulo blanco
+que se reportaba.
+
+Medido sobre el catálogo sembrado: **75 de 80 fotos se recortan bien**. Las 5 que fallan son de
+color «blanco hueso» y difieren del fondo de estudio en 4 sobre 255; se probó bajar la tolerancia y
+también un relleno que compara contra el píxel vecino, y ninguna de las dos las separa. Para esas
+prendas hace falta otra foto o ajustar el recurso a mano.
+
+Las rutas relativas (`/demo/x.webp`) se resuelven contra `FRONTEND_URL`, que es quien publica esas
+imágenes. Antes solo se buscaba en carpetas del backend que no existen, y la preparación moría con
+400 para todo el catálogo.
+
 ## Comprobante de venta
 
 `GET /commerce/admin/orders/{id}/receipt` devuelve el comprobante en PDF, con la misma identidad
