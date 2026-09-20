@@ -59,6 +59,19 @@ def test_recorte_deja_fondo_transparente_y_recorta_al_contorno():
     assert 0.05 < recorte.cobertura < 0.6
 
 
+def test_respeta_un_png_que_ya_tiene_transparencia():
+    """Una imagen preparada a mano no debe perder su alfa durante el proceso."""
+    imagen = Image.new("RGBA", (160, 200), (255, 255, 255, 0))
+    ImageDraw.Draw(imagen).rectangle((40, 30, 120, 180), fill=(35, 62, 118, 255))
+    datos = BytesIO()
+    imagen.save(datos, "PNG")
+    recorte = segmentacion.recortar_fondo(datos.getvalue())
+    assert recorte.logrado is True
+    assert recorte.tolerancia == 0
+    assert recorte.imagen.getpixel((0, 0))[3] == 255  # ya está recortada a la silueta
+    assert recorte.imagen.size == (81, 151)
+
+
 def test_fondo_no_liso_conserva_la_foto_en_lugar_de_romper_la_silueta():
     lienzo = Image.new("RGB", (200, 200))
     dibujo = ImageDraw.Draw(lienzo)

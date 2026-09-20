@@ -92,8 +92,27 @@ def _intento(imagen: Image.Image, centinela, tolerancia: int) -> tuple[Image.Ima
 def recortar_fondo(datos: bytes) -> PrendaRecortada:
     """Deja la prenda sobre fondo transparente, recortada a su contorno."""
     with Image.open(BytesIO(datos)) as original:
+        original.load()
+        # Si el administrador ya subió PNG/WebP con alfa, ese recorte es más
+        # fiable que inferir nuevamente el fondo. Antes se convertía a RGB y
+        # se perdía esa transparencia, por lo que un recurso correctamente
+        # preparado volvía a aparecer con un rectángulo blanco.
+        if "A" in original.getbands():
+            preparada = original.convert("RGBA")
+            mascara_existente = preparada.getchannel("A")
+            ancho, alto = preparada.size
+            opacos = sum(1 for valor in mascara_existente.getdata() if valor > 8)
+            cobertura_existente = opacos / float(ancho * alto)
+            caja_existente = mascara_existente.point(lambda v: 255 if v > 8 else 0).getbbox()
+            if caja_existente and MINIMO_PRENDA <= cobertura_existente <= MAXIMO_PRENDA:
+                return PrendaRecortada(
+                    imagen=preparada.crop(caja_existente),
+                    mascara=mascara_existente.crop(caja_existente),
+                    cobertura=cobertura_existente,
+                    logrado=True,
+                    tolerancia=0,
+                )
         imagen = original.convert("RGB")
-        imagen.load()
 
     ancho, alto = imagen.size
     centinela = _centinela_libre(imagen)
