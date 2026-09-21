@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     media_storage_dir: str = "uploads/images"
     media_public_base_url: str = "http://localhost:8000/api/v1/media/files"
     media_max_upload_mb: int = 5
+    # Foto IA realista del probador (Fase 3). `tryon_provider` puede ser
+    # "none" (no configurado), "mock" (composición local, sin red) o "fashn".
+    tryon_provider: str = "none"
+    tryon_api_key: str = ""
+    tryon_max_active_jobs: int = 3
+    tryon_result_expiration_hours: int = 48
 
     @field_validator("api_v1_prefix")
     @classmethod

@@ -9,6 +9,7 @@ from src.usuarios_catalogo.web.routers.media_router import router as media_route
 from src.ventas_pagos.web.router import router as commerce_router, analytics_router
 from src.reservas.web.router import router as reservations_router
 from src.probador_virtual.web.router import router as vestidor_router
+from src.tryon_ai_jobs.web.router import router as tryon_ai_router
 from src.notificaciones.web.router import router as notifications_router
 
 
@@ -23,4 +24,5 @@ api_router.include_router(commerce_router)
 api_router.include_router(analytics_router)
 api_router.include_router(reservations_router)
 api_router.include_router(vestidor_router)
+api_router.include_router(tryon_ai_router)
 api_router.include_router(notifications_router)

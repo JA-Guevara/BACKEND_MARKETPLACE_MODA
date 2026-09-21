@@ -7,7 +7,7 @@ no disponible para ese color en lugar de mostrar otro.
 """
 import uuid
 
-from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +19,9 @@ MODO_3D = "3d"
 
 # Estado de la preparación asistida por IA.
 ESTADO_PENDIENTE = "pending"
+ESTADO_PROCESANDO = "processing"
 ESTADO_LISTO = "ready"
+ESTADO_REVISION = "review"
 ESTADO_FALLIDO = "failed"
 ESTADO_MANUAL = "manual"
 
@@ -55,6 +57,17 @@ class TryOnAssetModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         "ai_metadata", JSON().with_variant(JSONB, "postgresql")
     )
     ai_error: Mapped[str | None] = mapped_column(Text)
+
+    # Calidad del resultado automático y su revisión (plan de evolución, Fase 1).
+    # El puntaje y la razón permiten decidir qué se publica solo y qué necesita
+    # aprobación: una silueta dudosa no aparece sobre la cámara hasta que el
+    # administrador la confirma o la descarta.
+    quality_score: Mapped[int | None] = mapped_column(Integer)
+    quality_reason: Mapped[str | None] = mapped_column(String(120))
+    preview_url: Mapped[str | None] = mapped_column(String(1000))
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
 
     color: Mapped["ColorModel"] = relationship(lazy="joined")
 

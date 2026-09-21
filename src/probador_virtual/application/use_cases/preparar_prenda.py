@@ -25,10 +25,11 @@ from src.infrastructure.config.settings import settings
 from src.probador_virtual.infrastructure.persistence.models.recurso_tryon import (
     ESTADO_FALLIDO,
     ESTADO_LISTO,
+    ESTADO_REVISION,
     MODO_2_5D,
     TryOnAssetModel,
 )
-from src.probador_virtual.infrastructure.services import anclajes, segmentacion
+from src.probador_virtual.infrastructure.services import anclajes, calidad, segmentacion
 from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
 from src.usuarios_catalogo.infrastructure.media_storage import store_image
 from src.usuarios_catalogo.infrastructure.models.catalog import ColorModel, ProductModel
@@ -165,31 +166,56 @@ class PrepararPrenda:
 
             recurso.transparent_url = f"{base}/{nombre_prenda}"
             recurso.mask_url = f"{base}/{nombre_mascara}"
+            recurso.preview_url = recurso.transparent_url
             recurso.garment_type = tipo
             recurso.body_region = region
             recurso.anchor_points = anclajes.calcular_anclajes(recorte.mascara, region)
+            recurso.reviewed_by = None  # una nueva preparación vuelve a esperar revisión
             # Un recorte fallido devuelve la foto CON su fondo. Darlo por listo
             # es lo que producia el rectangulo con fondo sobre la camara: se
             # marca como fallido y el probador cae al dibujo, que siempre sirve.
-            recurso.ai_status = ESTADO_LISTO if recorte.logrado else ESTADO_FALLIDO
-            recurso.ai_error = None if recorte.logrado else (
-                "No se pudo separar la prenda del fondo: la foto tiene fondo con textura, "
-                "un modelo puesto, o la prenda es del mismo color que el fondo. "
-                "Cargue una foto sobre fondo liso o ajuste el recurso a mano."
-            )
+            if recorte.logrado:
+                puntaje, razon = calidad.puntuar(
+                    recorte.mascara, recorte.cobertura, region
+                )
+                recurso.quality_score = puntaje
+                recurso.quality_reason = razon
+                recurso.ai_status = (
+                    ESTADO_LISTO
+                    if puntaje >= calidad.UMBRAL_PUBLICAR
+                    else ESTADO_REVISION
+                )
+                recurso.ai_error = None
+            else:
+                puntaje, _ = calidad.puntuar(recorte.mascara, recorte.cobertura, region)
+                recurso.quality_score = puntaje
+                recurso.quality_reason = "segmentacion_no_lograda"
+                recurso.ai_status = ESTADO_FALLIDO
+                recurso.ai_error = (
+                    "No se pudo separar la prenda del fondo: la foto tiene fondo con textura, "
+                    "un modelo puesto, o la prenda es del mismo color que el fondo. "
+                    "Cargue una foto sobre fondo liso o ajuste el recurso a mano."
+                )
             recurso.ai_metadata = {
                 **metadatos,
                 "coverage": round(recorte.cobertura, 4),
+                "fill_ratio": round(calidad.relleno_en_recorte(recorte.mascara), 4),
+                "quality_score": recurso.quality_score,
+                "quality_reason": recurso.quality_reason,
                 "output": {"width": ancho, "height": alto},
                 "segmentation": "pillow_floodfill",
                 "tolerance": recorte.tolerancia,
                 "cutout_ok": recorte.logrado,
             }
-            mensaje = (
-                "Recurso de probador preparado desde la foto del producto."
-                if recorte.logrado
-                else "No se pudo recortar el fondo de la foto; el recurso quedo pendiente de revision."
-            )
+            if recurso.ai_status == ESTADO_LISTO:
+                mensaje = "Recurso de probador preparado desde la foto del producto."
+            elif recurso.ai_status == ESTADO_REVISION:
+                mensaje = (
+                    "Recorte logrado pero de calidad dudosa; el recurso espera revisión "
+                    "antes de publicarse."
+                )
+            else:
+                mensaje = "No se pudo recortar el fondo de la foto; el recurso quedo pendiente de revision."
         except ValidationError:
             raise
         except Exception as error:  # noqa: BLE001 - se registra y queda visible en el panel
