@@ -16,6 +16,7 @@ from src.infrastructure.security.authorization import require_permissions
 from src.shared.exceptions.domain_exception import NotFoundError
 from src.shared.responses.api_response import ApiResponse
 from src.shared.responses.pagination import Page
+from src.probador_virtual.application.use_cases.preparacion_masiva import PreparacionMasiva
 from src.usuarios_catalogo.application.services.catalog_service import CatalogService
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, CollectionModel, ColorModel, ProductModel, SeasonModel, SizeModel
 from src.usuarios_catalogo.infrastructure.repositories.catalog_repository import CatalogRepository
@@ -209,7 +210,14 @@ def delete_product(product_id: uuid.UUID, actor: CatalogWriter, db: Session = De
 
 @router.post("/admin/products/{product_id}/variants", response_model=ApiResponse[ProductResponse])
 def add_variant(product_id: uuid.UUID, data: VariantCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Variante agregada.", data=CatalogService(db).add_variant(product_id, data, actor))
+    producto = CatalogService(db).add_variant(product_id, data, actor)
+    # Si la foto principal ya existe, el color nuevo no necesita que alguien
+    # vuelva a «configurar» el probador: se prepara automáticamente.
+    try:
+        PreparacionMasiva(db).execute([product_id], True, actor)
+    except Exception:  # la variante se guarda aunque la foto necesite revisión
+        pass
+    return ApiResponse(message="Variante agregada.", data=producto)
 
 
 @router.patch("/admin/products/{product_id}/variants/{variant_id}", response_model=ApiResponse[ProductResponse])
@@ -224,7 +232,18 @@ def delete_variant(product_id: uuid.UUID, variant_id: uuid.UUID, actor: CatalogW
 
 @router.post("/admin/products/{product_id}/images", response_model=ApiResponse[ProductResponse])
 def add_image(product_id: uuid.UUID, data: ImageCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Imagen agregada.", data=CatalogService(db).add_image(product_id, data, actor))
+    producto = CatalogService(db).add_image(product_id, data, actor)
+    if data.is_primary:
+        # La imagen principal es la referencia única del probador. Al cambiarla
+        # se vuelven a preparar todos los colores para no mantener un recorte de
+        # una foto anterior.
+        try:
+            PreparacionMasiva(db).execute([product_id], False, actor)
+        except Exception:
+            # La preparación registra el fallo por color para revisarlo desde
+            # la bandeja; subir la imagen nunca debe perderse por ese motivo.
+            pass
+    return ApiResponse(message="Imagen agregada.", data=producto)
 
 
 @router.delete("/admin/products/{product_id}/images/{image_id}", response_model=ApiResponse[ProductResponse])
