@@ -11,6 +11,7 @@ from src.reservas.web.router import router as reservations_router
 from src.probador_virtual.web.router import router as vestidor_router
 from src.tryon_ai_jobs.web.router import router as tryon_ai_router
 from src.notificaciones.web.router import router as notifications_router
+from src.ventas_pagos.web.engagement_router import router as engagement_router
 
 
 api_router = APIRouter()
@@ -26,3 +27,4 @@ api_router.include_router(reservations_router)
 api_router.include_router(vestidor_router)
 api_router.include_router(tryon_ai_router)
 api_router.include_router(notifications_router)
+api_router.include_router(engagement_router)

@@ -29,6 +29,7 @@ from src.ventas_pagos.application.reports_ai import ReportsAI
 from src.ventas_pagos.application import exporter
 from src.ventas_pagos.application.multi_export_service import MultiExportService
 from src.ventas_pagos.application.assistant_tools import AssistantTools, UnknownToolError
+from src.ventas_pagos.application.favorite_alerts import FavoriteAlerts
 from src.ventas_pagos.web.schemas import Quantity, StockQuantity, StockEntry, POSSale, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, ReturnRequest, ReturnResolution, CounterReturn, REPORT_TYPES
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
@@ -55,6 +56,8 @@ def return_data(devolucion):
 def order_data(order):
     data = {column.name: getattr(order, column.name) for column in OrderModel.__table__.columns if column.name not in {"stripe_url", "stripe_session_id"}}
     data["total"] = str(order.total)
+    data["subtotal"] = str(order.subtotal)
+    data["discount_total"] = str(order.discount_total)
     return data
 
 
@@ -124,8 +127,8 @@ def profile(data: ProfileUpdate, user: User, db: Session = Depends(get_db)):
 
 
 @router.get("/cart")
-def cart(user: User, branch_id: uuid.UUID | None = None, db: Session = Depends(get_db)):
-    return response(CommerceService(db).cart(user, branch_id))
+def cart(user: User, branch_id: uuid.UUID | None = None, coupon_code: str | None = Query(None, max_length=50), db: Session = Depends(get_db)):
+    return response(CommerceService(db).cart(user, branch_id, coupon_code))
 
 
 @router.put("/cart/items/{variant_id}")
@@ -370,6 +373,7 @@ def update_stock(variant_id: uuid.UUID, data: StockQuantity, user: StockWriter, 
     StockService(db).change(variant_id, data.branch_id, data.quantity - previous, "adjustment", data.reason, actor_id=user.id)
     RecordAuditEvent(db).execute(action="commerce.stock_adjusted", entity_type="stock", entity_id=str(variant_id), description="Existencias ajustadas por sucursal.", actor_user_id=user.id, metadata={"branch_id":str(data.branch_id),"previous":previous,"quantity":data.quantity})
     db.commit()
+    FavoriteAlerts(db).restocked(service.variant(variant_id).product, previous, data.quantity)
     return response({"variant_id": variant_id, **data.model_dump()})
 
 
@@ -401,6 +405,7 @@ def register_stock_movement(variant_id: uuid.UUID, data: StockEntry, user: Stock
         description=f"Movimiento de inventario: {data.kind}.", actor_user_id=user.id,
         metadata={"branch_id": str(data.branch_id), "delta": delta, "quantity": row.quantity, "reason": data.reason})
     db.commit()
+    FavoriteAlerts(db).restocked(service.variant(variant_id).product, row.quantity - delta, row.quantity)
     return response({"variant_id": variant_id, "branch_id": data.branch_id, "quantity": row.quantity})
 
 

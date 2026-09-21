@@ -158,6 +158,7 @@ class CatalogService:
 
     def update_product(self, entity_id: uuid.UUID, data: ProductUpdate, actor: UserModel) -> ProductModel:
         product = self.require_product(entity_id)
+        old_price = product.base_price
         changes = data.model_dump(exclude_unset=True)
         changes.pop("images", None)
         if data.images is not None:
@@ -183,6 +184,11 @@ class CatalogService:
             source = changes.get("slug") or product.slug
             changes["slug"] = self._unique_slug(source, ProductModel, product.id)
         product = self._save_updated(product, changes, actor, "catalog.product_updated", "Producto actualizado.")
+        # La alerta se evalúa después de guardar: la prenda ya muestra el nuevo
+        # precio cuando el cliente abre el enlace del correo.
+        if "base_price" in changes:
+            from src.ventas_pagos.application.favorite_alerts import FavoriteAlerts
+            FavoriteAlerts(self.db).price_dropped(product, old_price)
         return self.repository.get_product(product.id) or product
 
     def set_product_active(self, entity_id: uuid.UUID, active: bool, actor: UserModel) -> ProductModel:

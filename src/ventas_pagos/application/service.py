@@ -15,6 +15,7 @@ from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.domain.states import TRANSITIONS
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.ventas_pagos.application.stock_service import StockService
+from src.ventas_pagos.application.promotions import PromotionService
 from src.notificaciones.application.use_cases.send_notification import notificar_pedido
 
 
@@ -42,11 +43,12 @@ class CommerceService:
         price = variant.price_override if variant.price_override is not None else variant.product.base_price
         return {"variant_id": str(variant.id), "product_id": str(variant.product_id), "name": variant.product.name,
             "sku": variant.sku, "size": variant.size.name, "color": variant.color.name,
+            "category_id": str(variant.product.category_id),
             "image_url": variant.product.images[0].url if variant.product.images else None,
             "unit_price": str(price), "quantity": quantity, "available": stock.quantity if stock else 0,
             "line_total": str(price * quantity)}
 
-    def cart(self, user, branch_id=None):
+    def cart(self, user, branch_id=None, coupon_code=None):
         rows = self.db.scalars(select(CartItemModel).where(CartItemModel.user_id == user.id)).all()
         items = []
         for row in rows:
@@ -57,7 +59,8 @@ class CommerceService:
             if not variant.is_active or not variant.product.is_active or variant.product.deleted_at:
                 item["available"] = 0
             items.append(item)
-        return {"items": items, "total": str(sum((Decimal(item["line_total"]) for item in items), Decimal(0))), "currency": settings.commerce_currency}
+        quote = PromotionService(self.db).quote(user, items, coupon_code)
+        return {"items": items, "currency": settings.commerce_currency, **quote}
 
     def recommendations(self, user, limit: int = 8):
         """RF25/CU23: recomendador simple y determinista (sin depender de un
@@ -107,7 +110,11 @@ class CommerceService:
     def create_order(self, user, data):
         self.branch(data.branch_id)
         self.db.execute(select(UserModel.id).where(UserModel.id == user.id).with_for_update())
-        cart = self.cart(user, data.branch_id)
+        # Se calcula nuevamente con bloqueo: no se confía ni en el total ni en
+        # un cupón que pudo caducar entre la pantalla de carrito y el pago.
+        cart = self.cart(user, data.branch_id, data.coupon_code)
+        quote = PromotionService(self.db).quote(user, cart["items"], data.coupon_code, lock=True)
+        cart.update(quote)
         if not cart["items"]:
             raise ValidationError("El carrito esta vacio.")
         try:
@@ -118,10 +125,13 @@ class CommerceService:
                     reference="nuevo-pedido", actor_id=user.id)
             order = OrderModel(number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=user.id,
                 branch_id=data.branch_id, customer_email=user.email, payment_method=data.payment_method,
-                total=Decimal(cart["total"]), currency=cart["currency"], address=data.address.model_dump(), items=cart["items"],
+                total=Decimal(cart["total"]), subtotal=Decimal(cart["subtotal"]),
+                discount_total=Decimal(cart["discount_total"]), discounts=cart["discounts"],
+                coupon_code=cart["coupon_code"], currency=cart["currency"], address=data.address.model_dump(), items=cart["items"],
                 tracking=[{"status": "pending_payment", "note": "Pedido creado; existencias reservadas.", "date": datetime.now(timezone.utc).isoformat()}])
             self.db.add(order)
             self.db.flush()
+            PromotionService(self.db).record_uses(user, order, quote)
             self.audit(order, "order_created", "Pedido creado con reserva de existencias.")
             self.db.execute(delete(CartItemModel).where(CartItemModel.user_id == user.id))
             self.db.commit()
