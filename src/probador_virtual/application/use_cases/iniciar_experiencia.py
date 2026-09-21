@@ -17,15 +17,21 @@ class IniciarExperiencia:
         self.service = VirtualFittingService(db)
 
     def execute(
-        self, product_id: uuid.UUID, user: UserModel, color_id: uuid.UUID | None = None
+        self, product_id: uuid.UUID, user: UserModel | None, color_id: uuid.UUID | None = None
     ) -> ExperienciaVirtual:
         experiencia = self.service.resolve_asset(product_id, color_id)
         RecordAuditEvent(self.db).execute(
             action="probador_virtual.session_started",
             entity_type="product",
             entity_id=str(product_id),
-            description="Cliente abrio el vestidor virtual para una prenda.",
-            actor_user_id=user.id,
+            description=(
+                "Cliente abrio el vestidor virtual para una prenda."
+                if user else "Visitante abrio el vestidor virtual para una prenda."
+            ),
+            # Ver una prenda del catálogo no requiere cuenta. Si inició sesión
+            # conservamos su correo en bitácora; de lo contrario queda un evento
+            # sin actor, nunca una falsa identidad.
+            actor_user_id=user.id if user else None,
             metadata={
                 "asset_type": experiencia.asset_type,
                 "body_region": experiencia.body_region,

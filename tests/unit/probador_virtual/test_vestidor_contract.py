@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from src.main import create_app
-from src.auth.web.dependencies import get_current_user
+from src.auth.web.dependencies import get_current_user, get_optional_user
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.infrastructure.persistence.models.evento_bitacora import AuditEventModel
 from src.infrastructure.database.base import Base
@@ -40,6 +40,7 @@ def world():
         app = create_app()
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: user
+        app.dependency_overrides[get_optional_user] = lambda: user
         with TestClient(app) as client:
             yield client, db, product, user, app
     engine.dispose()
@@ -80,8 +81,14 @@ def test_prenda_inactiva_o_inexistente_no_se_prueba(world):
     assert not list(db.scalars(select(AuditEventModel)))
 
 
-def test_bitacora_requiere_sesion_y_id_valido(world):
-    client, _, product, _, app = world
+def test_bitacora_conserva_actor_si_hay_sesion_y_permite_visita_publica(world):
+    client, db, product, _, app = world
     assert client.post('/api/v1/vestidor/sessions', json={'product_id': 'invalid'}).status_code == 422
-    del app.dependency_overrides[get_current_user]
-    assert client.post('/api/v1/vestidor/sessions', json={'product_id': str(product.id)}).status_code == 401
+    del app.dependency_overrides[get_optional_user]
+    response = client.post('/api/v1/vestidor/sessions', json={'product_id': str(product.id)})
+    assert response.status_code == 200
+    db.expire_all()
+    event = db.scalars(select(AuditEventModel).where(
+        AuditEventModel.action == 'probador_virtual.session_started'
+    )).first()
+    assert event is not None and event.actor_user_id is None

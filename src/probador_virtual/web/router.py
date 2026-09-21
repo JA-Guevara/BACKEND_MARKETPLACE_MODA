@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
-from src.auth.web.dependencies import get_current_user
+from src.auth.web.dependencies import get_current_user, get_optional_user
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
@@ -34,14 +34,21 @@ from src.shared.responses.api_response import ApiResponse
 
 router = APIRouter(prefix="/vestidor", tags=["vestidor virtual"])
 User = Annotated[UserModel, Depends(get_current_user)]
+OptionalUser = Annotated[UserModel | None, Depends(get_optional_user)]
 # La preparación es gestión de catálogo: se apoya en el permiso existente.
 CatalogWriter = Annotated[UserModel, Depends(require_permissions("catalog.write"))]
 CatalogReader = Annotated[UserModel, Depends(require_permissions("catalog.read"))]
 
 
 @router.post("/sessions", response_model=ApiResponse[ExperienciaVirtualResponse])
-def start_session(data: IniciarExperienciaRequest, user: User, db: Session = Depends(get_db)):
-    """Abre el probador para una prenda y color, devolviendo el recurso listo."""
+def start_session(data: IniciarExperienciaRequest, user: OptionalUser, db: Session = Depends(get_db)):
+    """Devuelve el recurso público preparado para la cámara.
+
+    El catálogo ya permite abrir el vestidor antes de registrarse. Exigir un
+    token aquí hacía que toda visita anónima cayera silenciosamente al dibujo
+    gris, aunque la prenda tuviera un recorte listo. No se exponen fotos del
+    cliente ni datos privados: solo el recurso público de la prenda.
+    """
     experiencia = IniciarExperiencia(db).execute(data.product_id, user, data.color_id)
     return ApiResponse(message="Vestidor virtual listo.", data=experiencia)
 
