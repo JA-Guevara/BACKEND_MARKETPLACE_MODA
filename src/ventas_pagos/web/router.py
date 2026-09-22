@@ -147,7 +147,6 @@ async def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
                 data={
                     "model": model,
                     "language": "es",
-                    "prompt": "Conversación en español de FashionStore sobre prendas, reservas, pedidos, reportes y ventas.",
                     "response_format": "json",
                 },
                 files={"file": (audio.filename or "consulta.webm", content, audio.content_type or "audio/webm")},
@@ -155,7 +154,12 @@ async def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
             )
             result.raise_for_status()
             text = str(result.json().get("text", "")).strip()
-            if text:
+            # Un modelo puede repetir una instrucción interna cuando el audio
+            # es silencioso o llega incompleto. Nunca se debe convertir ese
+            # texto técnico en un mensaje de la persona.
+            normalized = " ".join(text.casefold().split())
+            is_internal_echo = "conversación en español de fashionstore" in normalized or "conversacion en espanol de fashionstore" in normalized
+            if text and not is_internal_echo:
                 return response({"available": True, "text": text})
         except (httpx.HTTPError, ValueError, TypeError):
             # Probar el respaldo sin revelar detalles del proveedor al cliente.
