@@ -15,6 +15,7 @@ from src.inventario_sucursales.application.services.organization_service import 
 from src.inventario_sucursales.web.schemas.organization import BranchCreate, CityCreate
 from src.reservas.application.use_cases.create_reserva import CrearReserva
 from src.reservas.infrastructure.http.schemas import CrearReservaRequest, ReservaItemInput
+from src.reservas.web.router import reserva_data
 from src.shared.exceptions.domain_exception import ValidationError
 from src.usuarios_catalogo.application.services.catalog_service import CatalogService
 from src.usuarios_catalogo.web.schemas.catalog import CategoryCreate, ColorCreate, ProductCreate, SizeCreate, VariantCreate
@@ -98,3 +99,25 @@ def test_reserva_aparta_y_luego_libera_unidades_al_ser_atendida():
     states.execute(reserva, "attended", user)
     db.refresh(stock)
     assert not reserva.inventory_held and stock.quantity == 20
+
+
+def test_respuesta_de_reserva_muestra_sucursal_y_recupera_snapshot_historico():
+    db, world = make_world()
+    user, branch, variant = world["actor"], world["branch"], world["variant"]
+    reserva = CrearReserva(db).execute(user, request(branch.id, variant.id, str(uuid.uuid4())))
+
+    # Simula una reserva creada antes de que se guardaran snapshots completos.
+    reserva.items = [{"variant_id": str(variant.id), "quantity": 1}]
+    data = reserva_data(reserva, db)
+
+    assert data["branch_name"] == "Sucursal Central"
+    assert data["items"] == [{
+        "variant_id": str(variant.id),
+        "quantity": 1,
+        "product_id": str(variant.product_id),
+        "name": "Vestido primavera",
+        "sku": "VES-001",
+        "size": "Mediana",
+        "color": "Rojo",
+        "image_url": None,
+    }]

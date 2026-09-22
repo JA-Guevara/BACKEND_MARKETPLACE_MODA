@@ -11,6 +11,7 @@ from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
 from src.reservas.application.use_cases.cancel_reserva import CancelarReserva
 from src.reservas.application.use_cases.confirm_reserva import ActualizarEstadoReserva
 from src.reservas.application.use_cases.consultar_disponibilidad import ConsultarDisponibilidad
@@ -28,19 +29,51 @@ Reader = Annotated[UserModel, Depends(require_permissions("reservations.read"))]
 Writer = Annotated[UserModel, Depends(require_permissions("reservations.write"))]
 
 
-def reserva_data(reserva: ReservationModel) -> dict:
+def _items_visibles(db: Session, reserva: ReservationModel) -> list[dict]:
+    """Completa reservas históricas que solo guardaban el identificador.
+
+    Las reservas actuales ya contienen el snapshot de cada prenda. Las más
+    antiguas solo guardaban ``variant_id`` y el cliente veía una cantidad sin
+    nombre, talla ni color. Esto completa la respuesta sin alterar el historial
+    persistido de la reserva.
+    """
+    result = []
+    for original in reserva.items or []:
+        item = dict(original) if isinstance(original, dict) else {}
+        variant_id = item.get("variant_id")
+        if variant_id and not item.get("name"):
+            try:
+                variant = db.get(ProductVariantModel, uuid.UUID(str(variant_id)))
+            except (TypeError, ValueError):
+                variant = None
+            if variant and variant.product:
+                item.update({
+                    "product_id": str(variant.product_id),
+                    "name": variant.product.name,
+                    "sku": variant.sku,
+                    "size": variant.size.name if variant.size else "",
+                    "color": variant.color.name if variant.color else "",
+                    "image_url": variant.product.images[0].url if variant.product.images else None,
+                })
+        result.append(item)
+    return result
+
+
+def reserva_data(reserva: ReservationModel, db: Session, branch: BranchModel | None = None) -> dict:
+    branch = branch or db.get(BranchModel, reserva.branch_id)
     return {
         "id": reserva.id,
         "user_id": reserva.user_id,
         "branch_id": reserva.branch_id,
         "status": reserva.status,
         "scheduled_at": reserva.scheduled_at,
-        "items": reserva.items,
+        "items": _items_visibles(db, reserva),
         "notes": reserva.notes,
         "tracking": reserva.tracking,
         "created_at": reserva.created_at,
         "updated_at": reserva.updated_at,
         "inventory_held": reserva.inventory_held,
+        "branch_name": branch.name if branch else None,
     }
 
 
@@ -60,7 +93,7 @@ def create_reservation(data: CrearReservaRequest, user: User, db: Session = Depe
     branch = db.get(BranchModel, reserva.branch_id)
     return ApiResponse(
         message="Reserva registrada.",
-        data={**reserva_data(reserva), "branch_name": branch.name if branch else None},
+        data=reserva_data(reserva, db, branch),
     )
 
 
@@ -88,21 +121,28 @@ def list_my_reservations(
     status: str | None = None,
 ):
     items, total = ListarReservas(db).execute(page=page, page_size=page_size, user_id=user.id, status=status)
-    result = Page(items=[reserva_data(r) for r in items], total=total, page=page, page_size=page_size, pages=ceil(total / page_size) if total else 0)
+    branches = {b.id: b for b in db.query(BranchModel).filter(BranchModel.id.in_({r.branch_id for r in items})).all()} if items else {}
+    result = Page(
+        items=[reserva_data(r, db, branches.get(r.branch_id)) for r in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=ceil(total / page_size) if total else 0,
+    )
     return ApiResponse(message="Reservas obtenidas.", data=result)
 
 
 @router.get("/{reservation_id}")
 def get_reservation(reservation_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
     reserva = ObtenerReserva(db).execute(reservation_id, user_id=user.id)
-    return ApiResponse(message="Reserva obtenida.", data=reserva_data(reserva))
+    return ApiResponse(message="Reserva obtenida.", data=reserva_data(reserva, db))
 
 
 @router.post("/{reservation_id}/cancel")
 def cancel_reservation(reservation_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
     reserva = ObtenerReserva(db).execute(reservation_id, user_id=user.id)
     reserva = CancelarReserva(db).execute(reserva, user)
-    return ApiResponse(message="Reserva cancelada.", data=reserva_data(reserva))
+    return ApiResponse(message="Reserva cancelada.", data=reserva_data(reserva, db))
 
 
 @router.get("/admin/all", response_model=ApiResponse[Page[dict]])
@@ -135,8 +175,7 @@ def list_all_reservations(
     result = Page(
         items=[
             {
-                **reserva_data(r),
-                "branch_name": branches.get(r.branch_id).name if r.branch_id in branches else None,
+                **reserva_data(r, db, branches.get(r.branch_id)),
                 **_user_data(users, r),
             }
             for r in items
@@ -153,5 +192,5 @@ def list_all_reservations(
 def update_reservation_status(reservation_id: uuid.UUID, data: EstadoReservaUpdate, user: Writer, db: Session = Depends(get_db)):
     reserva = ObtenerReserva(db).execute(reservation_id)
     reserva = ActualizarEstadoReserva(db).execute(reserva, data.status, user, data.note)
-    return ApiResponse(message="Estado de la reserva actualizado.", data=reserva_data(reserva))
+    return ApiResponse(message="Estado de la reserva actualizado.", data=reserva_data(reserva, db))
 

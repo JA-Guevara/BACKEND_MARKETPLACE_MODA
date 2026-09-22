@@ -619,6 +619,12 @@ Circuito: `requested → approved → completed`, con `rejected` posible desde l
 | `GET /reservations/admin/all` | `reservations.read` | `status`, `branch_id`, fechas, paginación | `Page<Reservation>` |
 | `PATCH /reservations/admin/{reservation_id}/status` | `reservations.write` | `{status, note?}` | `Reservation` |
 
+La respuesta `Reservation` siempre incluye `branch_name` y el snapshot de cada
+prenda (`name`, `sku`, `size`, `color`, `image_url`, `quantity`). Para reservas
+históricas que solo conservaron `variant_id`, la API completa esos datos al
+leerlas; el cliente puede mostrar la visita sin tener que consultar cada
+prenda por separado.
+
 `availability` se declara **antes** que `/{reservation_id}` en el router: al revés, FastAPI intentaría interpretar la palabra `availability` como un UUID y respondería `422`.
 
 `CrearReservaRequest` = `{branch_id, scheduled_at, items: [{variant_id, quantity 1..10}], notes?, client_key?}`. Hasta 20 variantes distintas tras agrupar repetidas (RF09). El horario se valida contra la agenda de atención.
