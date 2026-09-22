@@ -660,7 +660,7 @@ El asistente ejecuta únicamente herramientas de una lista cerrada y valida sus 
 
 Sin `AI_API_KEY` configurada, `/commerce/assistant` responde `{available: false}` con un mensaje útil en lugar de fallar.
 
-El dictado graba una nota de voz desde el navegador y la envía sólo para transcribirla; el backend no la guarda. El frontend toma el texto devuelto y lo procesa como si se hubiera escrito en el asistente, por lo que conserva permisos, validación y acciones disponibles.
+El dictado graba una nota de voz desde el navegador y la envía sólo para transcribirla; el backend no la guarda. El frontend toma el texto devuelto y lo procesa como si se hubiera escrito en el asistente, por lo que conserva permisos, validación y acciones disponibles. Se intenta `AI_TRANSCRIPTION_MODEL` y, si ese modelo no está disponible para la clave, `whisper-1` como respaldo.
 
 ## Avisos del cliente (campanita)
 

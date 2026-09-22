@@ -135,21 +135,32 @@ async def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="No recibimos ningún audio para transcribir.")
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="El audio supera el límite de 10 MB.")
-    try:
-        result = httpx.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": "Bearer " + settings.ai_api_key},
-            data={"model": settings.ai_transcription_model, "language": "es", "response_format": "json"},
-            files={"file": (audio.filename or "consulta.webm", content, audio.content_type or "audio/webm")},
-            timeout=settings.ai_timeout,
-        )
-        result.raise_for_status()
-        text = str(result.json().get("text", "")).strip()
-        if not text:
-            return response({"available": False, "text": "", "message": "No pude reconocer palabras en ese audio. Probá hablar más cerca del micrófono."})
-        return response({"available": True, "text": text})
-    except (httpx.HTTPError, ValueError, TypeError):
-        return response({"available": False, "text": "", "message": "No pude transcribir el audio en este momento. Podés intentar nuevamente o escribir el mensaje."})
+    # `whisper-1` queda como respaldo: algunas claves tienen acceso a chat
+    # pero no a un modelo de transcripción reciente. Se intenta una sola vez
+    # cada modelo y se conserva el mismo audio en memoria, sin persistirlo.
+    models = list(dict.fromkeys([settings.ai_transcription_model, "whisper-1"]))
+    for model in models:
+        try:
+            result = httpx.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": "Bearer " + settings.ai_api_key},
+                data={
+                    "model": model,
+                    "language": "es",
+                    "prompt": "Conversación en español de FashionStore sobre prendas, reservas, pedidos, reportes y ventas.",
+                    "response_format": "json",
+                },
+                files={"file": (audio.filename or "consulta.webm", content, audio.content_type or "audio/webm")},
+                timeout=settings.ai_timeout,
+            )
+            result.raise_for_status()
+            text = str(result.json().get("text", "")).strip()
+            if text:
+                return response({"available": True, "text": text})
+        except (httpx.HTTPError, ValueError, TypeError):
+            # Probar el respaldo sin revelar detalles del proveedor al cliente.
+            continue
+    return response({"available": False, "text": "", "message": "No pude reconocer palabras en ese audio. Verificá que el navegador esté usando el micrófono correcto y hablá durante unos segundos antes de enviarlo."})
 
 
 @router.patch("/profile")
