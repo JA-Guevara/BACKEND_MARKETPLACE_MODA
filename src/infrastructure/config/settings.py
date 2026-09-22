@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     commerce_currency: str = "bob"
     ai_api_key: str = ""
     ai_model: str = "gpt-4.1-mini"
+    # Modelo separado para convertir audios breves del asistente a texto.
+    # Se puede reemplazar desde `AI_TRANSCRIPTION_MODEL` sin tocar el código.
+    ai_transcription_model: str = "gpt-4o-mini-transcribe"
     ai_timeout: int = 30
     ai_max_tokens: int = 600
     report_export_max_rows: int = 10000

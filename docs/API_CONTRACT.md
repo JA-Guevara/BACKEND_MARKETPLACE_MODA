@@ -654,10 +654,13 @@ Un color sin recurso preparado avisa explícitamente en lugar de usar el de otro
 | `GET /analytics/reports/export` | `dashboard.read` | `type`, filtros, `format` | Archivo CSV/XLSX/PDF |
 | `POST /analytics/reports/export-multiple` | `dashboard.read` | `MultiExportRequest` | Archivo combinado |
 | `POST /commerce/assistant` | Autenticado | `{message, context?}` | `{available, reply}` |
+| `POST /commerce/assistant/transcribe` | Autenticado | `multipart/form-data`, campo `audio` (máx. 10 MB) | `{available, text, message?}` |
 
 El asistente ejecuta únicamente herramientas de una lista cerrada y valida sus parámetros; una herramienta no autorizada se rechaza. Cada operación queda en bitácora con el correo del actor y no se audita dos veces por el mismo `request_id`.
 
 Sin `AI_API_KEY` configurada, `/commerce/assistant` responde `{available: false}` con un mensaje útil en lugar de fallar.
+
+El dictado graba una nota de voz desde el navegador y la envía sólo para transcribirla; el backend no la guarda. El frontend toma el texto devuelto y lo procesa como si se hubiera escrito en el asistente, por lo que conserva permisos, validación y acciones disponibles.
 
 ## Avisos del cliente (campanita)
 

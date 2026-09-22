@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 import httpx
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, delete
@@ -115,6 +115,41 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
         return response({"available": True, "reply": result.json()["choices"][0]["message"]["content"]})
     except (httpx.HTTPError, KeyError, ValueError, IndexError):
         return response({"available": False, "reply": "No pude responder en este momento. Intenta de nuevo en unos minutos."})
+
+
+@router.post("/assistant/transcribe")
+async def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
+    """Convierte una nota de voz corta del asistente a texto.
+
+    El navegador graba el audio tras el permiso explícito de la persona. El
+    archivo no se persiste: se reenvía a la transcripción y se descarta al
+    terminar la petición. El texto vuelve al frontend, que lo procesa con las
+    mismas acciones autorizadas del chat (exportar, filtrar o preparar alta).
+    """
+    if not settings.ai_api_key:
+        return response({"available": False, "text": "", "message": "El dictado por voz requiere configurar AI_API_KEY."})
+    if audio.content_type and not (audio.content_type.startswith("audio/") or audio.content_type.startswith("video/")):
+        raise HTTPException(status_code=415, detail="El audio debe ser WEBM, OGG, MP4 o WAV.")
+    content = await audio.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="No recibimos ningún audio para transcribir.")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="El audio supera el límite de 10 MB.")
+    try:
+        result = httpx.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": "Bearer " + settings.ai_api_key},
+            data={"model": settings.ai_transcription_model, "language": "es", "response_format": "json"},
+            files={"file": (audio.filename or "consulta.webm", content, audio.content_type or "audio/webm")},
+            timeout=settings.ai_timeout,
+        )
+        result.raise_for_status()
+        text = str(result.json().get("text", "")).strip()
+        if not text:
+            return response({"available": False, "text": "", "message": "No pude reconocer palabras en ese audio. Probá hablar más cerca del micrófono."})
+        return response({"available": True, "text": text})
+    except (httpx.HTTPError, ValueError, TypeError):
+        return response({"available": False, "text": "", "message": "No pude transcribir el audio en este momento. Podés intentar nuevamente o escribir el mensaje."})
 
 
 @router.patch("/profile")
