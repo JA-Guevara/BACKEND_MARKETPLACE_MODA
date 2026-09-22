@@ -662,6 +662,21 @@ Sin `AI_API_KEY` configurada, `/commerce/assistant` responde `{available: false}
 
 El dictado graba una nota de voz desde el navegador y la envía sólo para transcribirla; el backend no la guarda. El frontend toma el texto devuelto y lo procesa como si se hubiera escrito en el asistente, por lo que conserva permisos, validación y acciones disponibles. Se intenta `AI_TRANSCRIPTION_MODEL` y, si ese modelo no está disponible para la clave, `whisper-1` como respaldo.
 
+## Dictado por voz del asistente
+
+`POST /commerce/assistant/transcribe` recibe una nota de voz corta y devuelve su texto. El audio no
+se persiste: se reenvía a la transcripción y se descarta al terminar la petición.
+
+**Lo que devuelve el modelo ante silencio no es vacío: es una frase inventada.** Los modelos de voz
+a texto completan con material frecuente de su entrenamiento, y como buena parte son vídeos
+subtitulados, lo que sale es el crédito del subtítulo —en español, casi siempre
+«Subtítulos realizados por la comunidad de Amara.org»—. Si eso llega al asistente, responde a un
+mensaje que nadie dijo y la acción que se quería pedir nunca se ejecuta.
+
+`src/ventas_pagos/domain/transcripcion.py` decide qué texto es invención del modelo. Es una función
+pura, se prueba sin red ni micrófono, y ante una alucinación el endpoint responde
+`{available: false, text: "", message: ...}` para que el frontend avise en lugar de enviar basura.
+
 ## Avisos del cliente (campanita)
 
 | Método y ruta | Acceso | Parámetros | Salida `data` |

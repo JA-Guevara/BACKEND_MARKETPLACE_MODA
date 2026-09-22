@@ -23,6 +23,7 @@ from src.ventas_pagos.infrastructure.gateways import verify_event
 from src.ventas_pagos.application.service import CommerceService
 from src.ventas_pagos.application.stock_service import StockService
 from src.ventas_pagos.application.returns_service import ReturnsService
+from src.ventas_pagos.domain import transcripcion
 from src.ventas_pagos.application.comprobante import comprobante_de_venta
 from src.ventas_pagos.application.reports_service import ReportsService
 from src.ventas_pagos.application.reports_ai import ReportsAI
@@ -154,17 +155,24 @@ async def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
             )
             result.raise_for_status()
             text = str(result.json().get("text", "")).strip()
-            # Un modelo puede repetir una instrucción interna cuando el audio
-            # es silencioso o llega incompleto. Nunca se debe convertir ese
-            # texto técnico en un mensaje de la persona.
-            normalized = " ".join(text.casefold().split())
-            is_internal_echo = "conversación en español de fashionstore" in normalized or "conversacion en espanol de fashionstore" in normalized
-            if text and not is_internal_echo:
-                return response({"available": True, "text": text})
+            # Ante silencio el modelo NO devuelve vacío: inventa una frase de
+            # sus datos de entrenamiento, casi siempre el crédito de un
+            # subtítulo. Mandar eso al asistente hace que responda a un mensaje
+            # que nadie dijo. Ver `domain/transcripcion.py`.
+            utilizable = transcripcion.texto_utilizable(text)
+            if utilizable:
+                return response({"available": True, "text": utilizable})
         except (httpx.HTTPError, ValueError, TypeError):
             # Probar el respaldo sin revelar detalles del proveedor al cliente.
             continue
-    return response({"available": False, "text": "", "message": "No pude reconocer palabras en ese audio. Verificá que el navegador esté usando el micrófono correcto y hablá durante unos segundos antes de enviarlo."})
+    return response({
+        "available": False,
+        "text": "",
+        "message": (
+            "No se escuchó nada en ese audio. Revisá que el navegador esté usando el micrófono "
+            "correcto, acercate un poco y hablá unos segundos antes de soltar el botón."
+        ),
+    })
 
 
 @router.patch("/profile")
