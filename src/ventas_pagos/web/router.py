@@ -203,6 +203,20 @@ def delete_cart(variant_id: uuid.UUID, user: User, db: Session = Depends(get_db)
     return response()
 
 
+@router.delete("/cart")
+def clear_cart(user: User, db: Session = Depends(get_db)):
+    """Vacía el carrito autenticado.
+
+    El cliente móvil permite quitar todas las prendas desde un único botón.
+    Se bloquea la fila del usuario por el mismo motivo que al cambiar una
+    cantidad: una actualización simultánea no puede dejar líneas a medias.
+    """
+    db.execute(select(UserModel.id).where(UserModel.id == user.id).with_for_update())
+    db.execute(delete(CartItemModel).where(CartItemModel.user_id == user.id))
+    db.commit()
+    return response()
+
+
 @router.post("/orders", status_code=201)
 def create_order(data: CheckoutOrder, user: User, db: Session = Depends(get_db)):
     return response(order_data(CommerceService(db).create_order(user, data)))
@@ -626,6 +640,5 @@ def export_reports_multiple(data: MultiExportRequest, user: Analyst, db: Session
     }
     return StreamingResponse(iter([payload.getvalue()] if hasattr(payload, "getvalue") else [payload]),
                              media_type=media_type, headers=headers)
-
 
 

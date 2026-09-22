@@ -16,4 +16,5 @@ def test_swagger_exposes_the_five_exam_packages():
     assert "PAQ-02 · Inventario y sucursales" in schema["paths"]["/api/v1/public/branches"]["get"]["tags"]
     assert "PAQ-03 · Reservas y vestidor virtual" in schema["paths"]["/api/v1/reservations"]["get"]["tags"]
     assert "PAQ-04 · Ventas y pagos" in schema["paths"]["/api/v1/commerce/cart"]["get"]["tags"]
+    assert "delete" in schema["paths"]["/api/v1/commerce/cart"]
     assert "PAQ-05 · Inteligencia artificial y reportes" in schema["paths"]["/api/v1/analytics/dashboard"]["get"]["tags"]
