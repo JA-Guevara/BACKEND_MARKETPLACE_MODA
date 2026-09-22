@@ -22,7 +22,7 @@ from src.reservas.infrastructure.persistence.models.reserva import ReservationMo
 from src.shared.responses.api_response import ApiResponse
 from src.shared.responses.pagination import Page
 
-router = APIRouter(prefix="/reservations", tags=["reservations"])
+router = APIRouter(prefix="/reservations", tags=['PAQ-03 · Reservas y vestidor virtual'])
 User = Annotated[UserModel, Depends(get_current_user)]
 Reader = Annotated[UserModel, Depends(require_permissions("reservations.read"))]
 Writer = Annotated[UserModel, Depends(require_permissions("reservations.write"))]
@@ -154,3 +154,4 @@ def update_reservation_status(reservation_id: uuid.UUID, data: EstadoReservaUpda
     reserva = ObtenerReserva(db).execute(reservation_id)
     reserva = ActualizarEstadoReserva(db).execute(reserva, data.status, user, data.note)
     return ApiResponse(message="Estado de la reserva actualizado.", data=reserva_data(reserva))
+

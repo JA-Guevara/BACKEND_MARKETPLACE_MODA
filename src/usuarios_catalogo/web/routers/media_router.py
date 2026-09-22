@@ -14,7 +14,7 @@ from src.shared.exceptions.domain_exception import NotFoundError, ValidationErro
 from src.shared.responses.api_response import ApiResponse
 from src.usuarios_catalogo.infrastructure.media_storage import store_image
 
-router = APIRouter(prefix='/media', tags=['Product images'])
+router = APIRouter(prefix='/media', tags=['PAQ-01 · Usuarios y catálogo'])
 
 @router.post('/images', status_code=201)
 async def upload_image(request: Request, actor: Annotated[UserModel, Depends(require_permissions('catalog.write'))], file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -41,3 +41,4 @@ def media_file(name: str):
     if not path.is_file():
         raise NotFoundError('Imagen no encontrada.')
     return FileResponse(path, media_type='image/webp', headers={'X-Content-Type-Options':'nosniff','Cache-Control':'public, max-age=31536000, immutable'})
+

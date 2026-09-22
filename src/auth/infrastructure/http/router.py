@@ -21,7 +21,7 @@ from src.infrastructure.database.session import get_db
 from src.shared.responses.api_response import ApiResponse
 
 
-router = APIRouter(prefix="/auth", tags=["authentication"])
+router = APIRouter(prefix="/auth", tags=['PAQ-01 · Usuarios y catálogo'])
 
 
 def request_context(request: Request) -> tuple[str | None, str | None]:
@@ -94,3 +94,4 @@ def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
 def resend_verification(data: ResendVerificationRequest, db: Session = Depends(get_db)):
     AuthService(db).resend_verification(str(data.email))
     return ApiResponse(message="Si corresponde, se envio un nuevo enlace de verificacion.")
+

@@ -22,7 +22,7 @@ from src.shared.responses.api_response import ApiResponse
 from src.shared.exceptions.domain_exception import NotFoundError
 
 
-router = APIRouter(prefix="/roles", tags=["roles and permissions"])
+router = APIRouter(prefix="/roles", tags=['PAQ-01 · Usuarios y catálogo'])
 RoleReader = Annotated[UserModel, Depends(require_permissions("roles.read"))]
 RoleWriter = Annotated[UserModel, Depends(require_permissions("roles.write"))]
 
@@ -100,3 +100,4 @@ def activate_permission(permission_id: uuid.UUID, actor: RoleWriter, db: Session
 def delete_permission(permission_id: uuid.UUID, actor: RoleWriter, db: Session = Depends(get_db)):
     RoleService(db).delete_permission(permission_id, actor)
     return ApiResponse(message="Permiso eliminado.")
+

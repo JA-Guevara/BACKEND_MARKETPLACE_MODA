@@ -32,8 +32,8 @@ from src.ventas_pagos.application.assistant_tools import AssistantTools, Unknown
 from src.ventas_pagos.application.favorite_alerts import FavoriteAlerts
 from src.ventas_pagos.web.schemas import Quantity, StockQuantity, StockEntry, POSSale, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, ReturnRequest, ReturnResolution, CounterReturn, REPORT_TYPES
 
-router = APIRouter(prefix="/commerce", tags=["commerce"])
-analytics_router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(prefix="/commerce", tags=['PAQ-04 · Ventas y pagos'])
+analytics_router = APIRouter(prefix="/analytics", tags=['PAQ-05 · Inteligencia artificial y reportes'])
 User = Annotated[UserModel, Depends(get_current_user)]
 OptionalUser = Annotated[UserModel | None, Depends(get_optional_user)]
 Reader = Annotated[UserModel, Depends(require_permissions("commerce.read"))]
@@ -440,7 +440,7 @@ def insights(user: Analyst, data: InsightsRequest | None = None, db: Session = D
         return response({"available": False, "message": "El servicio de IA no respondio. Puede continuar usando las metricas reales."})
 
 
-@analytics_router.post("/assistant/interpret", tags=["analytics"])
+@analytics_router.post("/assistant/interpret", tags=['PAQ-05 · Inteligencia artificial y reportes'])
 def interpret(data: InterpretRequest, user: Analyst, db: Session = Depends(get_db)):
     """Funcion A del asistente de reportes: consulta en lenguaje natural a una
     estructura validada (vista, filtros, agrupacion, metrica, comparacion).
@@ -455,7 +455,7 @@ def interpret(data: InterpretRequest, user: Analyst, db: Session = Depends(get_d
     return response(result)
 
 
-@analytics_router.post("/assistant/explain", tags=["analytics"])
+@analytics_router.post("/assistant/explain", tags=['PAQ-05 · Inteligencia artificial y reportes'])
 def explain(data: ExplainRequest, user: Analyst, db: Session = Depends(get_db)):
     """Funcion B del asistente de reportes: explica metricas agregadas usando
     el contexto de filtros visible. El servidor recalcula las metricas; no
@@ -463,7 +463,7 @@ def explain(data: ExplainRequest, user: Analyst, db: Session = Depends(get_db)):
     return response(ReportsAI(db).explain(data.question, data.filters or ReportFilters()))
 
 
-@analytics_router.post("/assistant/execute", tags=["analytics"])
+@analytics_router.post("/assistant/execute", tags=['PAQ-05 · Inteligencia artificial y reportes'])
 def execute_tool(data: AssistantToolRequest, user: Analyst, db: Session = Depends(get_db)):
     """Ejecuta una herramienta tipada del asistente (hoy export_report) con
     parametros validados en esta capa y datos autorizados. Deja bitacora con el
@@ -491,7 +491,7 @@ def execute_tool(data: AssistantToolRequest, user: Analyst, db: Session = Depend
     )
 
 
-@analytics_router.get("/reports/export", tags=["analytics"])
+@analytics_router.get("/reports/export", tags=['PAQ-05 · Inteligencia artificial y reportes'])
 def export_reports(user: Analyst, db: Session = Depends(get_db), report: str = Query(default="ventas"),
                    format: str = Query(default="xlsx"), date_from: datetime | None = None, date_to: datetime | None = None,
                    branch_id: uuid.UUID | None = None, category_id: uuid.UUID | None = None,
@@ -528,7 +528,7 @@ def export_reports(user: Analyst, db: Session = Depends(get_db), report: str = Q
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
-@analytics_router.post("/reports/export-multiple", tags=["analytics"])
+@analytics_router.post("/reports/export-multiple", tags=['PAQ-05 · Inteligencia artificial y reportes'])
 def export_reports_multiple(data: MultiExportRequest, user: Analyst, db: Session = Depends(get_db)):
     """Exportacion multiple (NUEVO): varios reportes en una sola operacion.
 
@@ -568,3 +568,6 @@ def export_reports_multiple(data: MultiExportRequest, user: Analyst, db: Session
     }
     return StreamingResponse(iter([payload.getvalue()] if hasattr(payload, "getvalue") else [payload]),
                              media_type=media_type, headers=headers)
+
+
+

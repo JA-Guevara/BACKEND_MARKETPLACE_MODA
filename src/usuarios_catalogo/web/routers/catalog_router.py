@@ -23,12 +23,12 @@ from src.usuarios_catalogo.infrastructure.repositories.catalog_repository import
 from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, ARAssetUpdate, CategoryCreate, CategoryResponse, CategoryUpdate, CollectionCreate, CollectionResponse, CollectionUpdate, ColorCreate, ColorResponse, ColorUpdate, ImageCreate, ProductCreate, ProductDraftRequest, ProductResponse, ProductUpdate, PublicProductResponse, SeasonCreate, SeasonResponse, SeasonUpdate, SetProductSuppliersRequest, SizeCreate, SizeResponse, SizeUpdate, VariantCreate, VariantUpdate
 
 
-router = APIRouter(prefix="/catalog", tags=["catalog"])
+router = APIRouter(prefix="/catalog", tags=['PAQ-01 · Usuarios y catálogo'])
 CatalogReader = Annotated[UserModel, Depends(require_permissions("catalog.read"))]
 CatalogWriter = Annotated[UserModel, Depends(require_permissions("catalog.write"))]
 
 
-@router.get("/products", response_model=ApiResponse[Page[PublicProductResponse]], tags=["public catalog"])
+@router.get("/products", response_model=ApiResponse[Page[PublicProductResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_products(
     db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(24, ge=1, le=100),
     search: str | None = None, category_id: uuid.UUID | None = None, season_id: uuid.UUID | None = None,
@@ -44,7 +44,7 @@ def public_products(
     return ApiResponse(message="Catalogo obtenido.", data=result)
 
 
-@router.get("/products/{slug}", response_model=ApiResponse[PublicProductResponse], tags=["public catalog"])
+@router.get("/products/{slug}", response_model=ApiResponse[PublicProductResponse], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_product(slug: str, db: Session = Depends(get_db)):
     product = CatalogRepository(db).get_product_by_slug(slug)
     if not product:
@@ -52,27 +52,27 @@ def public_product(slug: str, db: Session = Depends(get_db)):
     return ApiResponse(message="Producto obtenido.", data=CatalogService.to_public(product))
 
 
-@router.get("/categories", response_model=ApiResponse[list[CategoryResponse]], tags=["public catalog"])
+@router.get("/categories", response_model=ApiResponse[list[CategoryResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_categories(db: Session = Depends(get_db)):
     return ApiResponse(message="Categorias obtenidas.", data=CatalogRepository(db).list_reference(CategoryModel))
 
 
-@router.get("/sizes", response_model=ApiResponse[list[SizeResponse]], tags=["public catalog"])
+@router.get("/sizes", response_model=ApiResponse[list[SizeResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_sizes(db: Session = Depends(get_db)):
     return ApiResponse(message="Tallas obtenidas.", data=CatalogRepository(db).list_reference(SizeModel))
 
 
-@router.get("/colors", response_model=ApiResponse[list[ColorResponse]], tags=["public catalog"])
+@router.get("/colors", response_model=ApiResponse[list[ColorResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_colors(db: Session = Depends(get_db)):
     return ApiResponse(message="Colores obtenidos.", data=CatalogRepository(db).list_reference(ColorModel))
 
 
-@router.get("/seasons", response_model=ApiResponse[list[SeasonResponse]], tags=["public catalog"])
+@router.get("/seasons", response_model=ApiResponse[list[SeasonResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_seasons(db: Session = Depends(get_db)):
     return ApiResponse(message="Temporadas obtenidas.", data=CatalogRepository(db).list_reference(SeasonModel))
 
 
-@router.get("/collections", response_model=ApiResponse[list[CollectionResponse]], tags=["public catalog"])
+@router.get("/collections", response_model=ApiResponse[list[CollectionResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_collections(db: Session = Depends(get_db)):
     return ApiResponse(message="Colecciones obtenidas.", data=CatalogRepository(db).list_reference(CollectionModel))
 
@@ -126,7 +126,7 @@ def _draft_unavailable(message: str) -> ApiResponse:
     })
 
 
-@router.post("/admin/products/draft", tags=["catalog"])
+@router.post("/admin/products/draft", tags=['PAQ-01 · Usuarios y catálogo'])
 def draft_product(data: ProductDraftRequest, actor: CatalogWriter, db: Session = Depends(get_db)):
     """Extrae, con IA, los campos de una prenda nueva a partir de un pedido en
     lenguaje natural (ej.: "registrame una campera de cuero a 450 bolivianos").
@@ -370,3 +370,4 @@ _register_reference_state_routes("sizes", SizeModel, SizeResponse)
 _register_reference_state_routes("colors", ColorModel, ColorResponse)
 _register_reference_state_routes("seasons", SeasonModel, SeasonResponse)
 _register_reference_state_routes("collections", CollectionModel, CollectionResponse)
+

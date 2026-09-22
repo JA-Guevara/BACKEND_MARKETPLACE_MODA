@@ -22,7 +22,7 @@ from src.usuarios.infrastructure.http.schemas import (
 )
 
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(prefix="/users", tags=['PAQ-01 · Usuarios y catálogo'])
 UserReader = Annotated[UserModel, Depends(require_permissions("users.read"))]
 UserWriter = Annotated[UserModel, Depends(require_permissions("users.write"))]
 
@@ -114,3 +114,4 @@ def update_my_address(address_id: uuid.UUID, data: AddressUpdate, user: UserMode
 def delete_my_address(address_id: uuid.UUID, user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
     UserService(db).delete_address(user.id, address_id, user)
     return ApiResponse(message="Direccion eliminada.")
+

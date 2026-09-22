@@ -13,14 +13,14 @@ from src.inventario_sucursales.web.schemas.organization import BranchCreate, Bra
 from src.shared.responses.api_response import ApiResponse
 
 
-router = APIRouter(tags=["organization"])
+router = APIRouter(tags=['PAQ-02 · Inventario y sucursales'])
 BranchReader = Annotated[UserModel, Depends(require_permissions("branches.read"))]
 BranchWriter = Annotated[UserModel, Depends(require_permissions("branches.write"))]
 SupplierReader = Annotated[UserModel, Depends(require_permissions("suppliers.read"))]
 SupplierWriter = Annotated[UserModel, Depends(require_permissions("suppliers.write"))]
 
 
-@router.get("/public/branches", response_model=ApiResponse[list[BranchResponse]], tags=["public catalog"])
+@router.get("/public/branches", response_model=ApiResponse[list[BranchResponse]], tags=['PAQ-02 · Inventario y sucursales'])
 def public_branches(db: Session = Depends(get_db)):
     return ApiResponse(message="Sucursales obtenidas.", data=OrganizationRepository(db).list_branches(False, False))
 
@@ -167,3 +167,4 @@ def deactivate_cash_point(entity_id: uuid.UUID, actor: BranchWriter, db: Session
 def delete_cash_point(entity_id: uuid.UUID, actor: BranchWriter, db: Session = Depends(get_db)):
     OrganizationService(db).delete_cash_point(entity_id, actor)
     return ApiResponse(message="Punto de caja eliminado.")
+

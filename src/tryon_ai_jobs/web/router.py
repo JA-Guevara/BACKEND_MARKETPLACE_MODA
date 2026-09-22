@@ -25,7 +25,7 @@ from src.tryon_ai_jobs.infrastructure.http.schemas import TryOnJobResponse
 from src.shared.exceptions.domain_exception import ValidationError
 from src.shared.responses.api_response import ApiResponse
 
-router = APIRouter(prefix="/tryon-ai", tags=["foto IA del probador"])
+router = APIRouter(prefix="/tryon-ai", tags=['PAQ-03 · Reservas y vestidor virtual'])
 User = UserModel
 Authenticated = Annotated[User, Depends(get_current_user)]
 

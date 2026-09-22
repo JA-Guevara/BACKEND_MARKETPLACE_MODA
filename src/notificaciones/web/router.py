@@ -11,7 +11,7 @@ from src.infrastructure.database.session import get_db
 from src.notificaciones.application.use_cases.consultar_avisos import ConsultarAvisos
 from src.shared.responses.api_response import ApiResponse
 
-router = APIRouter(prefix="/notifications", tags=["notifications"])
+router = APIRouter(prefix="/notifications", tags=['PAQ-03 · Reservas y vestidor virtual'])
 User = Annotated[UserModel, Depends(get_current_user)]
 
 
@@ -26,3 +26,4 @@ def avisos(user: User, db: Session = Depends(get_db), limit: int = Query(20, ge=
         message="Operacion completada.",
         data=jsonable_encoder(ConsultarAvisos(db).execute(user, limit)),
     )
+

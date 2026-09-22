@@ -32,7 +32,7 @@ from src.probador_virtual.infrastructure.persistence.models.recurso_tryon import
 from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
 from src.shared.responses.api_response import ApiResponse
 
-router = APIRouter(prefix="/vestidor", tags=["vestidor virtual"])
+router = APIRouter(prefix="/vestidor", tags=['PAQ-03 · Reservas y vestidor virtual'])
 User = Annotated[UserModel, Depends(get_current_user)]
 OptionalUser = Annotated[UserModel | None, Depends(get_optional_user)]
 # La preparación es gestión de catálogo: se apoya en el permiso existente.
@@ -224,3 +224,4 @@ def adjust_asset(
     db.commit()
     db.refresh(recurso)
     return ApiResponse(message="Recurso actualizado.", data=recurso)
+

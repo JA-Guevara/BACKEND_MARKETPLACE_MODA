@@ -18,7 +18,7 @@ from src.shared.responses.api_response import ApiResponse
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductModel
 from src.ventas_pagos.infrastructure.engagement_models import FavoriteModel, PromotionModel
 
-router = APIRouter(prefix="/commerce", tags=["promotions and favorites"])
+router = APIRouter(prefix="/commerce", tags=['PAQ-04 · Ventas y pagos'])
 User = Annotated[UserModel, Depends(get_current_user)]
 PromotionReader = Annotated[UserModel, Depends(require_permissions("commerce.read"))]
 PromotionWriter = Annotated[UserModel, Depends(require_permissions("commerce.write"))]
@@ -153,3 +153,4 @@ def delete_favorite(product_id: uuid.UUID, user: User, db: Session = Depends(get
     row = db.scalar(select(FavoriteModel).where(FavoriteModel.user_id == user.id, FavoriteModel.product_id == product_id))
     if row: db.delete(row); db.commit()
     return ApiResponse(message="Prenda eliminada de favoritos.", data={"is_favorite": False})
+

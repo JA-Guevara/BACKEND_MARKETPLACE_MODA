@@ -12,6 +12,15 @@ from src.shared.context.audit_context import reset_audit_context, set_audit_cont
 from src.shared.exceptions.base_exception import AppException
 
 
+OPENAPI_PACKAGE_TAGS = [
+    {"name": "PAQ-01 · Usuarios y catálogo", "description": "CU-01 a CU-07: identidad, roles, catálogo, temporadas y proveedores."},
+    {"name": "PAQ-02 · Inventario y sucursales", "description": "CU-08 a CU-11: sucursales, disponibilidad, movimientos y actualización de existencias."},
+    {"name": "PAQ-03 · Reservas y vestidor virtual", "description": "CU-12 a CU-16: reservas, avisos, recursos del vestidor y foto IA."},
+    {"name": "PAQ-04 · Ventas y pagos", "description": "CU-17 a CU-22, CU-26 y CU-27: carrito, compra, pagos, devoluciones, promociones y favoritos."},
+    {"name": "PAQ-05 · Inteligencia artificial y reportes", "description": "CU-23 a CU-25: recomendaciones, asistente, indicadores y exportaciones."},
+]
+
+
 class AuditContextMiddleware:
     """Captura IP y user-agent de cada request HTTP para que la bitacora
     pueda registrarlos automaticamente, sin que cada servicio tenga que
@@ -39,7 +48,12 @@ class AuditContextMiddleware:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name, debug=settings.debug, version="1.0.0")
+    app = FastAPI(
+        title=settings.app_name,
+        debug=settings.debug,
+        version="1.0.0",
+        openapi_tags=OPENAPI_PACKAGE_TAGS,
+    )
     configure_cors(app)
     app.add_middleware(AuditContextMiddleware)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
