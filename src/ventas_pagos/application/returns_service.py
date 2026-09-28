@@ -6,7 +6,7 @@ movimiento de inventario, igual que cualquier otra entrada.
 """
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,9 +15,11 @@ from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.notificaciones.application.use_cases.send_notification import notificar_devolucion
 from src.shared.exceptions.domain_exception import ConflictError, NotFoundError, ValidationError
 from src.ventas_pagos.application.stock_service import StockService
+from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.domain import returns
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
-from src.ventas_pagos.infrastructure.models import OrderModel, OrderReturnModel
+from src.ventas_pagos.infrastructure.models import OrderModel, OrderReturnModel, StockModel
+from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel, ProductModel
 
 
 class ReturnsService:
@@ -114,6 +116,106 @@ class ReturnsService:
             "units": disponibles,
         }
 
+    @staticmethod
+    def es_cambio(devolucion: OrderReturnModel) -> bool:
+        return bool(devolucion.items and devolucion.items[0].get("replacement_variant_id"))
+
+    def monto_a_reintegrar(self, order: OrderModel, detalle: list[dict]) -> Decimal:
+        """Distribuye el descuento pagado y nunca reintegra más que el total cobrado."""
+        bruto = sum((Decimal(row["line_total"]) for row in detalle), Decimal(0))
+        subtotal = Decimal(order.subtotal or 0)
+        if subtotal <= 0:
+            subtotal = sum((Decimal(str(row["line_total"])) for row in order.items), Decimal(0))
+        total = Decimal(order.total)
+        if subtotal <= 0 or total <= 0:
+            return Decimal("0.00")
+        importe = (bruto * total / subtotal).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        comprometido = sum((
+            Decimal(row.refund_amount) for row in self.del_pedido(order.id)
+            if row.status in returns.VIGENTES and not self.es_cambio(row)
+        ), Decimal(0))
+        return max(Decimal("0.00"), min(importe, total - comprometido))
+
+    def opciones_cambio(self, order: OrderModel, variant_id) -> list[dict]:
+        """Opciones de igual precio con existencias en la sucursal del pedido."""
+        original = next((i for i in order.items if str(i["variant_id"]) == str(variant_id)), None)
+        if not original:
+            raise ValidationError("La prenda no pertenece al pedido.")
+        precio = Decimal(str(original["unit_price"]))
+        rows = self.db.execute(select(ProductVariantModel, StockModel.quantity).join(
+            StockModel, StockModel.variant_id == ProductVariantModel.id
+        ).join(ProductModel, ProductModel.id == ProductVariantModel.product_id).where(
+            StockModel.branch_id == order.branch_id, StockModel.quantity > 0,
+            ProductVariantModel.is_active.is_(True), ProductModel.is_active.is_(True),
+            ProductModel.deleted_at.is_(None), ProductVariantModel.id != variant_id,
+        )).all()
+        return [{
+            "variant_id": str(variant.id), "product_name": variant.product.name,
+            "size": variant.size.name, "color": variant.color.name,
+            "available": quantity, "price": str(precio),
+        } for variant, quantity in rows if
+            (variant.price_override if variant.price_override is not None else variant.product.base_price) == precio]
+
+    def solicitar_cambio(self, user, order: OrderModel, data) -> OrderReturnModel:
+        existente = self.db.scalar(select(OrderReturnModel).where(
+            OrderReturnModel.client_request_id == data.client_request_id
+        ))
+        if existente:
+            if existente.order_id != order.id or not self.es_cambio(existente):
+                raise ConflictError("Esa clave ya corresponde a otra solicitud.")
+            item = existente.items[0]
+            if (item["variant_id"] != str(data.variant_id)
+                    or item["replacement_variant_id"] != str(data.replacement_variant_id)
+                    or int(item["quantity"]) != data.quantity
+                    or existente.reason != data.reason.strip()):
+                raise ConflictError("La clave ya fue usada para otro cambio.")
+            return existente
+        motivo = returns.motivo_para_rechazar(order)
+        if motivo:
+            raise ConflictError(motivo)
+        if data.variant_id == data.replacement_variant_id:
+            raise ValidationError("Elegí una prenda o talla diferente.")
+        try:
+            detalle = returns.armar_detalle(
+                order, self.del_pedido(order.id), [(str(data.variant_id), data.quantity)]
+            )
+        except ValueError as error:
+            raise ValidationError(str(error)) from error
+        opciones = {row["variant_id"]: row for row in self.opciones_cambio(order, data.variant_id)}
+        opcion = opciones.get(str(data.replacement_variant_id))
+        if not opcion:
+            raise ConflictError("La prenda elegida ya no está disponible al mismo precio en esta sucursal.")
+        detalle[0]["replacement_variant_id"] = str(data.replacement_variant_id)
+        detalle[0]["replacement_name"] = opcion["product_name"]
+        detalle[0]["replacement_size"] = opcion["size"]
+        detalle[0]["replacement_color"] = opcion["color"]
+        cambio = OrderReturnModel(
+            order_id=order.id, user_id=order.user_id or user.id, branch_id=order.branch_id,
+            status="requested", reason=data.reason.strip(), items=detalle,
+            refund_amount=Decimal(0), currency=order.currency,
+            client_request_id=data.client_request_id,
+        )
+        try:
+            StockService(self.db).change(
+                data.replacement_variant_id, order.branch_id, -data.quantity,
+                "exchange_hold", "Prenda apartada para un cambio solicitado.",
+                reference=order.number, actor_id=user.id,
+            )
+            self.db.add(cambio)
+            self.db.flush()
+            RecordAuditEvent(self.db).execute(
+                action="commerce.exchange_requested", entity_type="order_return",
+                entity_id=str(cambio.id), description="Cambio solicitado por el cliente.",
+                actor_user_id=user.id, metadata={"order": order.number},
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        self.db.refresh(cambio)
+        notificar_devolucion(self.db, cambio, order, avisar_gestion=True)
+        return cambio
+
     # --- Alta ------------------------------------------------------------
 
     def solicitar(self, user, order: OrderModel, data) -> OrderReturnModel:
@@ -138,7 +240,7 @@ class ReturnsService:
         devolucion = OrderReturnModel(
             order_id=order.id, user_id=order.user_id or (user.id if user else None),
             branch_id=order.branch_id, status="requested", reason=data.reason.strip(),
-            items=detalle, refund_amount=Decimal(returns.monto(detalle)), currency=order.currency,
+            items=detalle, refund_amount=self.monto_a_reintegrar(order, detalle), currency=order.currency,
             client_request_id=data.client_request_id,
         )
         self.db.add(devolucion)
@@ -186,7 +288,7 @@ class ReturnsService:
         devolucion = OrderReturnModel(
             order_id=order.id, user_id=order.user_id, branch_id=order.branch_id,
             status="completed", reason=data.reason.strip(), items=detalle,
-            refund_amount=Decimal(returns.monto(detalle)), currency=order.currency,
+            refund_amount=self.monto_a_reintegrar(order, detalle), currency=order.currency,
             resolution_note=(data.note or "").strip() or "Devolución atendida en caja.",
             resolved_at=ahora, resolved_by=actor.id, client_request_id=data.client_request_id,
         )
@@ -221,13 +323,29 @@ class ReturnsService:
     # --- Resolución ------------------------------------------------------
 
     def resolver(self, actor, devolucion: OrderReturnModel, data) -> OrderReturnModel:
+        devolucion = self.db.scalar(select(OrderReturnModel).where(
+            OrderReturnModel.id == devolucion.id
+        ).with_for_update().execution_options(populate_existing=True))
         if data.status not in returns.TRANSICIONES.get(devolucion.status, set()):
             raise ConflictError(
                 f"No se puede pasar una devolucion de '{devolucion.status}' a '{data.status}'."
             )
         order = self.db.get(OrderModel, devolucion.order_id)
         try:
+            if data.status == "rejected" and self.es_cambio(devolucion):
+                item = devolucion.items[0]
+                StockService(self.db).change(
+                    uuid.UUID(item["replacement_variant_id"]), devolucion.branch_id,
+                    int(item["quantity"]), "exchange_release",
+                    "Prenda liberada por cambio rechazado.",
+                    reference=order.number if order else str(devolucion.order_id),
+                    actor_id=actor.id,
+                )
             if data.status == "completed":
+                if (order and order.payment_method == "stripe"
+                        and not self.es_cambio(devolucion)
+                        and devolucion.refund_amount > 0):
+                    gateways.refund_order_return(order, devolucion)
                 # Las prendas vuelven recién cuando se reciben físicamente.
                 inventario = StockService(self.db)
                 for item in sorted(devolucion.items, key=lambda row: str(row["variant_id"])):

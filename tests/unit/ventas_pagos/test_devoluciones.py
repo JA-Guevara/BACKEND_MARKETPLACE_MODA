@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from src.shared.exceptions.domain_exception import ConflictError, ValidationErro
 from src.usuarios_catalogo.application.services.catalog_service import CatalogService
 from src.usuarios_catalogo.web.schemas.catalog import CategoryCreate, ColorCreate, ProductCreate, SizeCreate, VariantCreate
 from src.ventas_pagos.application.returns_service import ReturnsService
+from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.domain import returns
 from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
 from src.ventas_pagos.web.schemas import CounterReturn, ReturnItemInput, ReturnRequest, ReturnResolution
@@ -104,6 +106,53 @@ class TestReglas:
 
 
 class TestCircuito:
+    def test_stripe_reembolsa_antes_de_reponer_stock(self, monkeypatch):
+        db, world = make_world()
+        order = make_order(db, world)
+        order.payment_method = "stripe"
+        order.payment_reference = "pi_test"
+        db.commit()
+        service = ReturnsService(db)
+        devolucion = service.solicitar(world["cliente"], order, solicitud(world["variant"].id, 1))
+        service.resolver(world["admin"], devolucion, ReturnResolution(status="approved"))
+        llamadas = []
+        monkeypatch.setattr(gateways, "refund_order_return", lambda pedido, row: llamadas.append(row.id))
+        service.resolver(world["admin"], devolucion, ReturnResolution(status="completed"))
+        assert llamadas == [devolucion.id]
+        stock = db.scalar(select(StockModel).where(StockModel.variant_id == world["variant"].id))
+        assert stock.quantity == 6
+
+    def test_fallo_en_reembolso_stripe_no_cierra_la_devolucion(self, monkeypatch):
+        db, world = make_world()
+        order = make_order(db, world)
+        order.payment_method = "stripe"
+        order.payment_reference = "pi_test"
+        db.commit()
+        service = ReturnsService(db)
+        devolucion = service.solicitar(world["cliente"], order, solicitud(world["variant"].id, 1))
+        service.resolver(world["admin"], devolucion, ReturnResolution(status="approved"))
+        monkeypatch.setattr(gateways, "refund_order_return", lambda *_: (_ for _ in ()).throw(HTTPException(502)))
+        with pytest.raises(HTTPException):
+            service.resolver(world["admin"], devolucion, ReturnResolution(status="completed"))
+        db.refresh(devolucion)
+        assert devolucion.status == "approved"
+        stock = db.scalar(select(StockModel).where(StockModel.variant_id == world["variant"].id))
+        assert stock.quantity == 5
+
+    def test_reembolso_parcial_respeta_el_descuento_y_no_supera_lo_pagado(self):
+        db, world = make_world()
+        order = make_order(db, world, cantidad=2)
+        order.subtotal = Decimal("200.00")
+        order.discount_total = Decimal("40.00")
+        order.total = Decimal("160.00")
+        db.commit()
+        service = ReturnsService(db)
+        primero = service.solicitar(world["cliente"], order, solicitud(world["variant"].id, 1))
+        segundo = service.solicitar(world["cliente"], order, solicitud(world["variant"].id, 1))
+        assert primero.refund_amount == Decimal("80.00")
+        assert segundo.refund_amount == Decimal("80.00")
+        assert primero.refund_amount + segundo.refund_amount == order.total
+
     def test_solicitud_registra_detalle_e_importe(self):
         db, world = make_world()
         order = make_order(db, world, cantidad=2)

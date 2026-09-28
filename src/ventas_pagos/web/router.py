@@ -31,7 +31,7 @@ from src.ventas_pagos.application import exporter
 from src.ventas_pagos.application.multi_export_service import MultiExportService
 from src.ventas_pagos.application.assistant_tools import AssistantTools, UnknownToolError
 from src.ventas_pagos.application.favorite_alerts import FavoriteAlerts
-from src.ventas_pagos.web.schemas import Quantity, StockQuantity, StockEntry, POSSale, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, ReturnRequest, ReturnResolution, CounterReturn, REPORT_TYPES
+from src.ventas_pagos.web.schemas import Quantity, StockQuantity, StockEntry, POSSale, CheckoutOrder, TrackingUpdate, ManualPayment, ProfileUpdate, AssistantMessage, ReportFilters, InterpretRequest, ExplainRequest, InsightsRequest, MultiExportRequest, AssistantToolRequest, ReturnRequest, ReturnResolution, CounterReturn, ExchangeRequest, REPORT_TYPES
 
 router = APIRouter(prefix="/commerce", tags=['PAQ-04 · Ventas y pagos'])
 analytics_router = APIRouter(prefix="/analytics", tags=['PAQ-05 · Inteligencia artificial y reportes'])
@@ -51,6 +51,7 @@ def response(data=None):
 def return_data(devolucion):
     data = {column.name: getattr(devolucion, column.name) for column in OrderReturnModel.__table__.columns}
     data["refund_amount"] = str(devolucion.refund_amount)
+    data["kind"] = "exchange" if ReturnsService.es_cambio(devolucion) else "return"
     return data
 
 
@@ -68,8 +69,13 @@ def branches(db: Session = Depends(get_db)):
 
 
 @router.get("/recommendations")
-def recommendations(user: OptionalUser, db: Session = Depends(get_db)):
-    return response(CommerceService(db).recommendations(user))
+def recommendations(user: OptionalUser, db: Session = Depends(get_db),
+                    branch_id: uuid.UUID | None = None, size_id: uuid.UUID | None = None,
+                    season_id: uuid.UUID | None = None, product_id: uuid.UUID | None = None):
+    return response(CommerceService(db).recommendations(
+        user, branch_id=branch_id, size_id=size_id, season_id=season_id,
+        product_id=product_id,
+    ))
 
 
 ASSISTANT_SYSTEM_PROMPT = """Sos el asistente virtual de FashionStore, una tienda de ropa con venta presencial \
@@ -259,6 +265,24 @@ def order_returns(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)
 def request_return(order_id: uuid.UUID, data: ReturnRequest, user: User, db: Session = Depends(get_db)):
     order = CommerceService(db).order(order_id, user)
     return response(return_data(ReturnsService(db).solicitar(user, order, data)))
+
+
+@router.get("/orders/{order_id}/exchange-options")
+def exchange_options(order_id: uuid.UUID, variant_id: uuid.UUID, user: User,
+                     db: Session = Depends(get_db)):
+    order = CommerceService(db).order(order_id, user)
+    service = ReturnsService(db)
+    state = service.devolvible(order)
+    if not state["can_request"] or not state["units"].get(str(variant_id)):
+        raise NotFoundError("La prenda no está disponible para cambio.")
+    return response(service.opciones_cambio(order, variant_id))
+
+
+@router.post("/orders/{order_id}/exchanges", status_code=201)
+def request_exchange(order_id: uuid.UUID, data: ExchangeRequest, user: User,
+                     db: Session = Depends(get_db)):
+    order = CommerceService(db).order(order_id, user)
+    return response(return_data(ReturnsService(db).solicitar_cambio(user, order, data)))
 
 
 @router.get("/returns")

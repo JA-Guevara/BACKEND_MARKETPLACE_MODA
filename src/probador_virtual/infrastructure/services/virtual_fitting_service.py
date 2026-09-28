@@ -1,4 +1,7 @@
 import uuid
+from pathlib import Path
+from urllib.parse import urlparse
+import re
 
 from sqlalchemy.orm import Session
 
@@ -6,6 +9,7 @@ from src.probador_virtual.domain.entities.experiencia_virtual import Experiencia
 from src.probador_virtual.domain.exceptions import SinRecursoARError
 from src.probador_virtual.infrastructure.persistence.models.recurso_tryon import TryOnAssetModel
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel
+from src.infrastructure.config.settings import settings
 
 
 class VirtualFittingService:
@@ -36,6 +40,21 @@ class VirtualFittingService:
             consulta = consulta.filter(TryOnAssetModel.color_id == color_id)
         recurso = next((r for r in consulta.all() if r.usable), None)
         if recurso:
+            # La fila puede sobrevivir a un despliegue de Railway aunque el
+            # archivo local no lo haga. No anunciar una imagen como lista si
+            # el endpoint de medios respondería 404.
+            if recurso.transparent_url:
+                ruta = urlparse(recurso.transparent_url).path
+                prefijo = f"{settings.api_v1_prefix}/media/files/"
+                if ruta.startswith(prefijo):
+                    nombre = ruta.removeprefix(prefijo)
+                    if re.fullmatch(r"[0-9a-f]{32}\.webp", nombre) and not Path(
+                        settings.media_storage_dir, nombre
+                    ).is_file():
+                        raise SinRecursoARError(
+                            "La imagen preparada ya no está disponible en el servidor. "
+                            "Reprocesá la prenda y verificá el almacenamiento persistente."
+                        )
             return ExperienciaVirtual(
                 product_id=producto.id,
                 color_id=recurso.color_id,

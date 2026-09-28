@@ -323,30 +323,34 @@ def devolucion_para_gestion(
     monto: str | None = None,
     moneda: str = "BOB",
     enlace: str | None = None,
+    cambio: bool = False,
 ) -> Mensaje:
     """Aviso interno: hay una devolución esperando resolución (CU19).
 
     Una solicitud sin revisar es un cliente esperando y unas unidades que no se
     pueden vender ni dar por perdidas.
     """
-    titulo = "Nueva devolución por revisar"
-    explicacion = f"Un cliente pidió devolver prendas del pedido {numero_pedido}."
+    titulo = "Nuevo cambio por revisar" if cambio else "Nueva devolución por revisar"
+    explicacion = f"Un cliente pidió {'cambiar' if cambio else 'devolver'} prendas del pedido {numero_pedido}."
     filas = [
-        ("Devolución", codigo),
+        ("Cambio" if cambio else "Devolución", codigo),
         ("Pedido", numero_pedido),
         ("Cliente", cliente),
         ("Sucursal", sucursal),
     ]
     cuerpo = diseno.datos(filas) + diseno.prendas(items or [], moneda)
-    if monto:
+    if monto and not cambio:
         cuerpo += diseno.total("Importe a reintegrar", monto, moneda)
+    if cambio and items:
+        item = items[0]
+        cuerpo += diseno.nota(f"Prenda apartada: {item.get('replacement_name')} · {item.get('replacement_size')} · {item.get('replacement_color')}.")
     cuerpo += diseno.nota(f"Motivo del cliente: {motivo}")
     if enlace:
-        cuerpo += diseno.boton("Resolver la devolución", enlace)
+        cuerpo += diseno.boton("Resolver el cambio" if cambio else "Resolver la devolución", enlace)
     return Mensaje(
-        asunto=f"Devolución {codigo} por revisar · Pedido {numero_pedido}",
+        asunto=f"{'Cambio' if cambio else 'Devolución'} {codigo} por revisar · Pedido {numero_pedido}",
         texto=_texto(titulo, explicacion, filas, items,
-                     [f"\nImporte: {monto} {moneda}" if monto else "",
+                     [f"\nImporte: {monto} {moneda}" if monto and not cambio else "",
                       f"\nMotivo: {motivo}", f"\nResolvela acá: {enlace}" if enlace else ""]),
         html=diseno.envolver(titulo=titulo, distintivo="Por revisar", tono="espera",
                              entrada=explicacion, contenido=cuerpo),
@@ -455,36 +459,46 @@ def devolucion_estado(
     nota: str | None = None,
     enlace: str | None = None,
     metodo_reembolso: str | None = None,
+    cambio: bool = False,
 ) -> Mensaje:
     """Aviso al cliente sobre su devolución y su reembolso (CU19)."""
     titulo, distintivo, explicacion, tono = ESTADOS_DEVOLUCION.get(
         estado,
         ("Actualizamos tu devolución", "Actualizada", "La devolución cambió de estado.", "neutro"),
     )
-    filas = [("Devolución", codigo), ("Pedido", numero_pedido)]
-    if estado == "completed" and metodo_reembolso:
+    if cambio:
+        titulo = {"requested": "Recibimos tu cambio", "approved": "Aprobamos tu cambio",
+                  "rejected": "No pudimos aprobar tu cambio", "completed": "Completamos tu cambio"}.get(estado, "Actualizamos tu cambio")
+        explicacion = "Tu solicitud de cambio se actualizó."
+    filas = [("Cambio" if cambio else "Devolución", codigo), ("Pedido", numero_pedido)]
+    if estado == "completed" and metodo_reembolso and not cambio:
         filas.append(("Reembolso por", MEDIOS_PAGO.get(metodo_reembolso, metodo_reembolso)))
 
     cuerpo = diseno.datos(filas) + diseno.prendas(items or [], moneda)
-    if monto:
+    if monto and not cambio:
         etiqueta = "Importe reembolsado" if estado == "completed" else "Importe a reintegrar"
         cuerpo += diseno.total(etiqueta, monto, moneda)
+    if cambio and items:
+        item = items[0]
+        cuerpo += diseno.nota(f"Prenda apartada: {item.get('replacement_name')} · {item.get('replacement_size')} · {item.get('replacement_color')}.")
     if nota:
         cuerpo += diseno.nota(nota)
     if estado == "approved":
         cuerpo += diseno.nota(
+            "Llevá la prenda original a la sucursal para recibir el cambio."
+            if cambio else
             "Llevá las prendas a la sucursal con este correo. El reintegro se procesa "
             "cuando las recibimos y verificamos su estado."
         )
     if enlace:
-        cuerpo += diseno.boton("Ver mi devolución", enlace)
+        cuerpo += diseno.boton("Ver mi cambio" if cambio else "Ver mi devolución", enlace)
 
     return Mensaje(
         asunto=f"{titulo} · Pedido {numero_pedido}",
         texto=_texto(
             titulo, explicacion, filas, items,
-            [f"\nImporte: {monto} {moneda}" if monto else "", f"\n{nota}" if nota else "",
-             f"\nSeguí tu devolución acá: {enlace}" if enlace else ""],
+            [f"\nImporte: {monto} {moneda}" if monto and not cambio else "", f"\n{nota}" if nota else "",
+             f"\nSeguí tu {'cambio' if cambio else 'devolución'} acá: {enlace}" if enlace else ""],
         ),
         html=diseno.envolver(
             titulo=titulo, distintivo=distintivo, tono=tono, entrada=explicacion, contenido=cuerpo

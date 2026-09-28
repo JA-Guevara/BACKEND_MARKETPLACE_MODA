@@ -135,3 +135,17 @@ def test_return_urls_identify_order_without_auth_tokens(world, monkeypatch):
     assert f'pedido={order.id}' in captured['success_url']
     assert f'pedido={order.id}' in captured['cancel_url']
     assert 'token' not in captured['success_url']
+
+
+def test_stripe_cobra_total_con_descuento_y_no_subtotal(world, monkeypatch):
+    _, _, order, *_ = world
+    order.subtotal = Decimal('100.00')
+    order.discount_total = Decimal('20.00')
+    order.total = Decimal('80.00')
+    captured = {}
+    def capture(method, path, data, key):
+        captured.update(data)
+        return {'id': 'cs_test', 'url': 'https://checkout.stripe.com/test'}
+    monkeypatch.setattr(gateways, 'stripe_request', capture)
+    gateways.create_session(order)
+    assert captured['line_items[0][price_data][unit_amount]'] == '8000'

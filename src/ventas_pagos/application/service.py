@@ -1,7 +1,7 @@
 import uuid
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from sqlalchemy import select, update, delete
 from sqlalchemy.orm import Session
@@ -62,27 +62,85 @@ class CommerceService:
         quote = PromotionService(self.db).quote(user, items, coupon_code)
         return {"items": items, "currency": settings.commerce_currency, **quote}
 
-    def recommendations(self, user, limit: int = 8):
-        """RF25/CU23: recomendador simple y determinista (sin depender de un
-        servicio externo en vivo). Si el cliente tiene compras pagadas previas,
-        prioriza las mismas categorias; si no, muestra destacados."""
-        query = select(ProductModel).where(ProductModel.is_active.is_(True), ProductModel.deleted_at.is_(None))
-        category_ids: list = []
-        exclude_ids: set = set()
+    def recommendations(self, user, limit: int = 8, *, branch_id=None, size_id=None,
+                        season_id=None, product_id=None):
+        """RF25/CU23: ordena prendas disponibles según cliente y contexto.
+
+        El stock se consulta de nuevo en cada petición. Es una sugerencia, no
+        una reserva: el checkout vuelve a comprobarlo con bloqueo.
+        """
+        disponibles = select(ProductVariantModel.product_id).join(
+            StockModel, StockModel.variant_id == ProductVariantModel.id
+        ).where(ProductVariantModel.is_active.is_(True), StockModel.quantity > 0)
+        if branch_id:
+            disponibles = disponibles.where(StockModel.branch_id == branch_id)
+        if size_id:
+            disponibles = disponibles.where(ProductVariantModel.size_id == size_id)
+        query = select(ProductModel).where(
+            ProductModel.is_active.is_(True), ProductModel.deleted_at.is_(None),
+            ProductModel.id.in_(disponibles),
+        )
+        if season_id:
+            query = query.where(ProductModel.season_id == season_id)
+        if product_id:
+            query = query.where(ProductModel.id != product_id)
+
+        purchased_ids: set[uuid.UUID] = set()
+        preferred_categories: set[uuid.UUID] = set()
+        preferred_size_products: set[uuid.UUID] = set()
         if user is not None:
-            paid_orders = self.db.scalars(select(OrderModel).where(OrderModel.user_id == user.id, OrderModel.payment_status == "paid")).all()
-            product_ids = {uuid.UUID(item["product_id"]) for order in paid_orders for item in order.items}
-            if product_ids:
-                exclude_ids = product_ids
-                category_ids = list(self.db.scalars(select(ProductModel.category_id).where(ProductModel.id.in_(product_ids)).distinct()))
-        if category_ids:
-            products = list(self.db.scalars(query.where(ProductModel.category_id.in_(category_ids), ProductModel.id.notin_(exclude_ids)).order_by(ProductModel.created_at.desc()).limit(limit)))
-        else:
-            products = list(self.db.scalars(query.where(ProductModel.is_featured.is_(True)).order_by(ProductModel.created_at.desc()).limit(limit)))
-        if len(products) < limit:
-            have = {p.id for p in products} | exclude_ids
-            filler = self.db.scalars(query.where(ProductModel.id.notin_(have)).order_by(ProductModel.is_featured.desc(), ProductModel.created_at.desc()).limit(limit - len(products)))
-            products = [*products, *filler]
+            paid_orders = self.db.scalars(select(OrderModel).where(
+                OrderModel.user_id == user.id, OrderModel.payment_status == "paid"
+            )).all()
+            purchased_ids = {
+                uuid.UUID(item["product_id"]) for order in paid_orders
+                for item in order.items if item.get("product_id")
+            }
+            purchased_variants = {
+                uuid.UUID(item["variant_id"]) for order in paid_orders
+                for item in order.items if item.get("variant_id")
+            }
+            if purchased_variants and not size_id:
+                preferred_sizes = set(self.db.scalars(
+                    select(ProductVariantModel.size_id).where(
+                        ProductVariantModel.id.in_(purchased_variants)
+                    )
+                ))
+                size_query = select(ProductVariantModel.product_id).join(
+                    StockModel, StockModel.variant_id == ProductVariantModel.id
+                ).where(
+                    ProductVariantModel.size_id.in_(preferred_sizes),
+                    ProductVariantModel.is_active.is_(True), StockModel.quantity > 0,
+                )
+                if branch_id:
+                    size_query = size_query.where(StockModel.branch_id == branch_id)
+                preferred_size_products = set(self.db.scalars(size_query))
+            if purchased_ids:
+                preferred_categories = set(self.db.scalars(
+                    select(ProductModel.category_id).where(ProductModel.id.in_(purchased_ids))
+                ))
+                query = query.where(ProductModel.id.notin_(purchased_ids))
+        context = self.db.get(ProductModel, product_id) if product_id else None
+        today = date.today()
+
+        def score(product):
+            season = product.season
+            current_season = bool(
+                season and season.is_active
+                and (season.start_date is None or season.start_date <= today)
+                and (season.end_date is None or season.end_date >= today)
+            )
+            return (
+                int(bool(context and product.category_id == context.category_id)) * 4
+                + int(product.category_id in preferred_categories) * 3
+                + int(product.id in preferred_size_products) * 2
+                + int(bool(context and context.season_id and product.season_id == context.season_id)) * 2
+                + int(current_season) * 2
+                + int(product.is_featured),
+                product.created_at.isoformat() if product.created_at else "",
+            )
+
+        products = sorted(self.db.scalars(query).all(), key=score, reverse=True)[:limit]
         return [{
             "id": str(p.id), "slug": p.slug, "name": p.name, "base_price": str(p.base_price),
             "image_url": p.images[0].url if p.images else None, "category": p.category.name,
@@ -129,6 +187,11 @@ class CommerceService:
                 discount_total=Decimal(cart["discount_total"]), discounts=cart["discounts"],
                 coupon_code=cart["coupon_code"], currency=cart["currency"], address=data.address.model_dump(), items=cart["items"],
                 tracking=[{"status": "pending_payment", "note": "Pedido creado; existencias reservadas.", "date": datetime.now(timezone.utc).isoformat()}])
+            if order.total == 0:
+                order.status = "paid"
+                order.payment_status = "paid"
+                order.paid_at = datetime.now(timezone.utc)
+                self.track(order, "Pedido cubierto íntegramente por descuentos; no requiere cobro.")
             self.db.add(order)
             self.db.flush()
             PromotionService(self.db).record_uses(user, order, quote)

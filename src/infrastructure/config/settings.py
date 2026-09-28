@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -64,6 +65,14 @@ class Settings(BaseSettings):
     def validate_production_secret(self) -> "Settings":
         if self.app_env.lower() == "production" and self.jwt_secret_key.startswith("development-only"):
             raise ValueError("JWT_SECRET_KEY must be replaced in production.")
+        # Railway proporciona el dominio público del servicio. Si no se
+        # configuró una base propia, las imágenes nuevas deben apuntar a ese
+        # dominio, nunca al localhost guardado como valor local por defecto.
+        railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        if railway_domain and self.media_public_base_url == "http://localhost:8000/api/v1/media/files":
+            self.media_public_base_url = (
+                f"https://{railway_domain}{self.api_v1_prefix}/media/files"
+            )
         return self
 
 

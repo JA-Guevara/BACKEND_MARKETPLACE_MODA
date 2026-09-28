@@ -111,6 +111,7 @@ class ServicioNotificaciones:
             nota=nota or devolucion.resolution_note,
             enlace=f"{settings.frontend_url}/mi-cuenta/pedidos",
             metodo_reembolso=order.payment_method,
+            cambio=bool(devolucion.items and devolucion.items[0].get("replacement_variant_id")),
         )
         return self.correo.execute(
             destinatario=order.customer_email,
@@ -170,6 +171,7 @@ class ServicioNotificaciones:
             monto=f"{devolucion.refund_amount}",
             moneda=devolucion.currency,
             enlace=f"{settings.frontend_url}/admin/devoluciones",
+            cambio=bool(devolucion.items and devolucion.items[0].get("replacement_variant_id")),
         )
         return self.correo.execute(
             destinatario=self._casilla_sucursal(sucursal),

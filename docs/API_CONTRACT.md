@@ -555,6 +555,11 @@ Solo se puede cancelar un pedido en `pending_payment`; en otro estado responde `
 | `GET /commerce/admin/orders/{order_id}/receipt` | `commerce.write` | UUID en ruta | Comprobante imprimible |
 | `POST /commerce/stripe/webhook` | Firma de Stripe | Evento firmado | `{received: true}` |
 
+**El webhook solo llega si Stripe puede alcanzar al backend por internet.** Contra un backend local
+nunca llega, así que un pago ya cobrado se queda en «pendiente» hasta que alguien lo concilie. Por
+eso «Mis pedidos» consulta sola el estado de los pedidos con tarjeta sin acreditar al abrirse, y no
+depende del aviso automático.
+
 `POST .../payment-status` es la **red de seguridad** del pago: consulta Stripe desde el servidor y acredita el pedido si el cobro se completó, o lo vence si la sesión expiró. Existe porque volver del checkout en el navegador no prueba nada, y porque un webhook puede llegar tarde. Es también lo que usa la app móvil al regresar del navegador. No acredita dos veces: comparte la misma transición que el webhook.
 
 `TrackingUpdate` exige `carrier` y `tracking_number` cuando el nuevo estado es `shipped`.

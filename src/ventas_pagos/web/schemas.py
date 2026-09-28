@@ -189,6 +189,16 @@ class ReturnRequest(BaseModel):
     client_request_id: UUID | None = None
 
 
+class ExchangeRequest(BaseModel):
+    """Cambio de una línea del pedido por otra variante de igual precio."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    reason: str = Field(min_length=5, max_length=500)
+    variant_id: UUID
+    replacement_variant_id: UUID
+    quantity: int = Field(ge=1, le=99)
+    client_request_id: UUID
+
+
 class CounterReturn(BaseModel):
     """Devolución atendida en el mostrador: se registra y reintegra de una vez."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
