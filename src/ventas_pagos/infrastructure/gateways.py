@@ -31,11 +31,22 @@ def stripe_request(method: str, path: str, data=None, key=None):
         raise HTTPException(502, "Stripe no esta disponible; vuelva a intentar.") from exc
 
 
-def create_session(order):
+def create_session(order, payment_return_url=None):
     base = settings.frontend_url.rstrip("/")
+    if order.sales_channel == "mobile":
+        payment_return = payment_return_url or (
+            settings.public_api_url.rstrip("/") + f"/commerce/payment-return/{order.id}"
+        )
+        if payment_return.startswith("http://localhost") and settings.app_env == "production":
+            raise HTTPException(503, "Configure PUBLIC_API_URL para el retorno de pagos móviles.")
+        success_url = payment_return + "?result=success"
+        cancel_url = payment_return + "?result=cancelled"
+    else:
+        success_url = base + "/mi-cuenta/pedidos?payment=success&pedido=" + str(order.id)
+        cancel_url = base + "/mi-cuenta/pedidos?payment=cancelled&pedido=" + str(order.id)
     data = {"mode": "payment", "payment_method_types[0]": "card",
-        "success_url": base + "/mi-cuenta/pedidos?payment=success&pedido=" + str(order.id),
-        "cancel_url": base + "/mi-cuenta/pedidos?payment=cancelled&pedido=" + str(order.id),
+        "success_url": success_url,
+        "cancel_url": cancel_url,
         "client_reference_id": str(order.id), "metadata[order_id]": str(order.id),
         "customer_email": order.customer_email}
     # Stripe debe cobrar el total calculado por el backend, incluidos cupones

@@ -4,7 +4,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
@@ -228,6 +228,26 @@ def create_order(data: CheckoutOrder, user: User, db: Session = Depends(get_db))
     return response(order_data(CommerceService(db).create_order(user, data)))
 
 
+@router.get("/payment-return/{order_id}", response_class=HTMLResponse)
+def mobile_payment_return(order_id: uuid.UUID, result: str = "success"):
+    """Página pública de regreso: no exige una segunda sesión en el navegador."""
+    message = ("Volvé a FashionStore para verificar el pago."
+               if result == "success" else "El pago no se completó. Volvé a FashionStore para reintentarlo.")
+    app_url = f"fashionstore://app/mi-cuenta/pedidos/{order_id}"
+    return HTMLResponse(
+        "<!doctype html><html lang='es'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Volver a FashionStore</title></head>"
+        "<body style='font:16px system-ui;max-width:32rem;margin:15vh auto;padding:1.5rem'>"
+        f"<h1>FashionStore</h1><p>{message}</p>"
+        "<p>La app consultará el estado directamente al servidor."
+        " No necesitás iniciar sesión en Chrome.</p>"
+        f"<a style='display:inline-block;padding:1rem;background:#74394e;color:white;border-radius:.5rem' href='{app_url}'>Abrir la aplicación</a>"
+        "<p>Si el botón no abre la app, volvé a ella desde las aplicaciones recientes.</p></body></html>",
+        headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"},
+    )
+
+
 @router.get("/orders")
 def orders(user: User, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     return response([order_data(o) for o in db.scalars(select(OrderModel).where(OrderModel.user_id == user.id).order_by(OrderModel.created_at.desc()).offset(offset).limit(limit))])
@@ -239,9 +259,16 @@ def get_order(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
 
 
 @router.post("/orders/{order_id}/checkout")
-def checkout(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
+def checkout(order_id: uuid.UUID, request: Request, user: User, db: Session = Depends(get_db)):
     service = CommerceService(db)
-    return response(service.checkout(service.order(order_id, user)))
+    order = service.order(order_id, user)
+    local_api = settings.public_api_url.startswith("http://localhost")
+    return_url = (
+        str(request.url_for("mobile_payment_return", order_id=order_id))
+        if order.sales_channel == "mobile" and local_api and settings.app_env != "production"
+        else None
+    )
+    return response(service.checkout(order, payment_return_url=return_url))
 
 
 @router.post("/orders/{order_id}/cancel")

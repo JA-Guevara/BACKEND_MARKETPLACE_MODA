@@ -64,6 +64,10 @@ class PrepararPrenda:
                 "La prenda no tiene imagen cargada. Subí la foto del producto antes de preparar el probador."
             )
         principal = next((i for i in producto.images if i.is_primary), producto.images[0])
+        # La polera de demostración tiene una referencia transparente preparada
+        # para el probador; la ilustración del catálogo no conserva tela ni mangas.
+        if urlparse(principal.url).path == "/demo/polera-basica-de-algodon-01.webp":
+            return "/demo/polera-basica-de-algodon-01-tryon.png"
         return principal.url
 
     def _descargar(self, url: str) -> bytes:

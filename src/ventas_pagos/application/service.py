@@ -183,6 +183,7 @@ class CommerceService:
                     reference="nuevo-pedido", actor_id=user.id)
             order = OrderModel(number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=user.id,
                 branch_id=data.branch_id, customer_email=user.email, payment_method=data.payment_method,
+                sales_channel=data.channel,
                 total=Decimal(cart["total"]), subtotal=Decimal(cart["subtotal"]),
                 discount_total=Decimal(cart["discount_total"]), discounts=cart["discounts"],
                 coupon_code=cart["coupon_code"], currency=cart["currency"], address=data.address.model_dump(), items=cart["items"],
@@ -232,7 +233,7 @@ class CommerceService:
         notificar_pedido(self.db, order)
         return order
 
-    def checkout(self, order):
+    def checkout(self, order, payment_return_url=None):
         if order.payment_method == "stripe" and order.stripe_session_id:
             self.reconcile_payment(order)
         if order.payment_status == "paid":
@@ -240,7 +241,7 @@ class CommerceService:
         if order.status != "pending_payment" or order.payment_method != "stripe":
             raise ConflictError("Pedido no disponible para pago con Stripe.")
         if not order.stripe_session_id:
-            session = gateways.create_session(order)
+            session = gateways.create_session(order, payment_return_url=payment_return_url)
             order.stripe_session_id, order.stripe_url = session["id"], session["url"]
             self.db.commit()
         return {"session_id": order.stripe_session_id, "url": order.stripe_url}

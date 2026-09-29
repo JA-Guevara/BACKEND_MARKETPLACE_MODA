@@ -137,6 +137,47 @@ def test_return_urls_identify_order_without_auth_tokens(world, monkeypatch):
     assert 'token' not in captured['success_url']
 
 
+def test_mobile_checkout_returns_to_app_without_browser_login(world, monkeypatch):
+    client, _, order, *_ = world
+    order.sales_channel = 'mobile'
+    captured = {}
+
+    def capture(method, path, data, key):
+        captured.update(data)
+        return {'id': 'cs_test', 'url': 'https://checkout.stripe.com/test'}
+
+    monkeypatch.setattr(gateways, 'stripe_request', capture)
+    gateways.create_session(order)
+    assert f'/commerce/payment-return/{order.id}' in captured['success_url']
+    assert '/mi-cuenta/' not in captured['success_url']
+    assert 'token' not in captured['success_url']
+
+    response = client.get(f'/api/v1/commerce/payment-return/{order.id}')
+    assert response.status_code == 200
+    assert f'fashionstore://app/mi-cuenta/pedidos/{order.id}' in response.text
+    assert 'No necesitás iniciar sesión en Chrome' in response.text
+
+
+def test_local_mobile_checkout_uses_the_api_host_reached_by_the_phone(world, monkeypatch):
+    client, db, order, *_ = world
+    order.sales_channel = 'mobile'
+    order.stripe_session_id = None
+    order.stripe_url = None
+    db.commit()
+    captured = {}
+
+    def capture(method, path, data, key):
+        captured.update(data)
+        return {'id': 'cs_test_local', 'url': 'https://checkout.stripe.com/test'}
+
+    monkeypatch.setattr(gateways, 'stripe_request', capture)
+    response = client.post(f'/api/v1/commerce/orders/{order.id}/checkout')
+    assert response.status_code == 200
+    assert captured['success_url'].startswith(
+        f'http://testserver/api/v1/commerce/payment-return/{order.id}'
+    )
+
+
 def test_stripe_cobra_total_con_descuento_y_no_subtotal(world, monkeypatch):
     _, _, order, *_ = world
     order.subtotal = Decimal('100.00')

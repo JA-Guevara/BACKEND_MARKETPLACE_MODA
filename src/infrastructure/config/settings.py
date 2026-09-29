@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     max_login_attempts: int = 5
     account_lock_minutes: int = 15
     frontend_url: str = "http://localhost:4200"
+    public_api_url: str = "http://localhost:8000/api/v1"
     cors_origins: list[str] = ["http://localhost:4200"]
     smtp_host: str | None = None
     smtp_port: int = 587
@@ -69,6 +70,8 @@ class Settings(BaseSettings):
         # configuró una base propia, las imágenes nuevas deben apuntar a ese
         # dominio, nunca al localhost guardado como valor local por defecto.
         railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        if railway_domain and self.public_api_url == "http://localhost:8000/api/v1":
+            self.public_api_url = f"https://{railway_domain}{self.api_v1_prefix}"
         if railway_domain and self.media_public_base_url == "http://localhost:8000/api/v1/media/files":
             self.media_public_base_url = (
                 f"https://{railway_domain}{self.api_v1_prefix}/media/files"

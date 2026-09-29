@@ -28,6 +28,7 @@ class CheckoutOrder(BaseModel):
     branch_id: UUID
     address: Address
     payment_method: Literal["stripe", "manual"]
+    channel: Literal["web", "mobile"] = "web"
     coupon_code: str | None = Field(default=None, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
 
 
