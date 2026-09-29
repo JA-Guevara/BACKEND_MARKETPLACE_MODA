@@ -3,6 +3,7 @@
 Sin cámara, sin red y sin modelo de IA: la clasificación cae al respaldo por
 nombre cuando no hay clave configurada, que es justo lo que debe pasar.
 """
+import json
 import uuid
 from decimal import Decimal
 from io import BytesIO
@@ -29,6 +30,8 @@ from src.usuarios_catalogo.infrastructure.models.catalog import (
     ColorModel,
     ProductImageModel,
     ProductModel,
+    ProductVariantModel,
+    SizeModel,
 )
 
 
@@ -197,6 +200,125 @@ def test_color_sin_recurso_avisa_en_lugar_de_usar_otro(mundo):
     )
     assert respuesta.status_code == 404, respuesta.text
     assert "color" in respuesta.json()["error"]["message"].lower()
+
+
+def _poner_dos_colores(db, producto, color):
+    otro = ColorModel(name="Rojo tinto", hex_code="#8E2B33")
+    talla = SizeModel(code="M", name="Mediano")
+    db.add_all([otro, talla])
+    db.flush()
+    producto.variants.extend([
+        ProductVariantModel(size_id=talla.id, color_id=color.id, sku="PANT-AZUL"),
+        ProductVariantModel(size_id=talla.id, color_id=otro.id, sku="PANT-ROJO"),
+    ])
+    db.commit()
+
+
+def test_varios_colores_sin_verificacion_no_publica_la_foto_principal(mundo):
+    client, db, producto, color = mundo
+    _poner_dos_colores(db, producto, color)
+
+    creado = client.post(
+        f"/api/v1/vestidor/admin/products/{producto.id}/assets",
+        json={"color_id": str(color.id)},
+    )
+    assert creado.status_code == 200, creado.text
+    recurso = creado.json()["data"]
+    assert recurso["ai_status"] == "review"
+    assert recurso["quality_reason"] == "color_sin_verificar"
+    sesion = client.post("/api/v1/vestidor/sessions", json={
+        "product_id": str(producto.id), "color_id": str(color.id),
+    })
+    assert sesion.status_code == 404
+
+
+@pytest.mark.parametrize("coincide,estado", [(True, "ready"), (False, "review")])
+def test_ia_ve_la_foto_y_evitaria_publicar_otro_color(mundo, monkeypatch, coincide, estado):
+    client, db, producto, color = mundo
+    _poner_dos_colores(db, producto, color)
+    monkeypatch.setattr(settings, "ai_api_key", "sk_test_fake", raising=False)
+    solicitudes = []
+
+    class Respuesta:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": json.dumps({
+                "garment_type": "pantalon", "body_region": "lower_body",
+                "visible_color": "azul marino" if coincide else "rojo",
+                "color_match": coincide,
+            })}}]}
+
+    def post(url, **kwargs):
+        solicitudes.append(kwargs["json"])
+        return Respuesta()
+
+    monkeypatch.setattr("src.probador_virtual.application.use_cases.preparar_prenda.httpx.post", post)
+    creado = client.post(
+        f"/api/v1/vestidor/admin/products/{producto.id}/assets",
+        json={"color_id": str(color.id)},
+    )
+    assert creado.status_code == 200, creado.text
+    recurso = creado.json()["data"]
+    assert recurso["ai_status"] == estado
+    assert recurso["ai_metadata"]["color_match"] is coincide
+    partes = solicitudes[0]["messages"][1]["content"]
+    assert partes[1]["type"] == "image_url"
+    assert partes[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    if not coincide:
+        assert recurso["quality_reason"] == "color_no_coincide"
+        sesion = client.post("/api/v1/vestidor/sessions", json={
+            "product_id": str(producto.id), "color_id": str(color.id),
+        })
+        assert sesion.status_code == 404
+
+
+def test_ia_elige_otra_foto_del_catalogo_si_la_principal_no_coincide(
+    mundo, monkeypatch, tmp_path
+):
+    client, db, producto, color = mundo
+    _poner_dos_colores(db, producto, color)
+    segunda = tmp_path / "segunda.png"
+    segunda.write_bytes(foto_de_estudio())
+    producto.images.append(ProductImageModel(
+        url=f"http://test/media/{segunda.name}", is_primary=False,
+    ))
+    db.commit()
+    monkeypatch.setattr(settings, "ai_api_key", "sk_test_fake", raising=False)
+    coincidencias = iter([False, True])
+    solicitudes = []
+
+    class Respuesta:
+        def __init__(self, coincide):
+            self.coincide = coincide
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": json.dumps({
+                "garment_type": "pantalon", "body_region": "lower_body",
+                "visible_color": "azul marino" if self.coincide else "rojo",
+                "color_match": self.coincide,
+            })}}]}
+
+    def post(url, **kwargs):
+        solicitudes.append(kwargs["json"])
+        return Respuesta(next(coincidencias))
+
+    monkeypatch.setattr(
+        "src.probador_virtual.application.use_cases.preparar_prenda.httpx.post", post
+    )
+    creado = client.post(
+        f"/api/v1/vestidor/admin/products/{producto.id}/assets",
+        json={"color_id": str(color.id)},
+    )
+    assert creado.status_code == 200, creado.text
+    recurso = creado.json()["data"]
+    assert len(solicitudes) == 2
+    assert recurso["source_image_url"] == f"http://test/media/{segunda.name}"
+    assert recurso["ai_status"] == "ready"
 
 
 def test_ajuste_manual_corrige_lo_que_propuso_el_analisis(mundo):

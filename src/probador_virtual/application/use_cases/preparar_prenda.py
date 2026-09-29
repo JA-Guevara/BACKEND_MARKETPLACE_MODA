@@ -11,12 +11,15 @@ Reparto de responsabilidades, para no atribuirle a la IA más de lo que hace:
   - Segmentación (quitar el fondo): algoritmo sobre la imagen, sin modelo.
   - Anclajes: geometría sobre la máscara resultante.
 """
+import base64
 import json
 import uuid
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from PIL import Image
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
@@ -95,15 +98,28 @@ class PrepararPrenda:
             raise ValidationError("No se pudo descargar la imagen de la prenda.") from error
 
     # ------------------------------------------------------------ clasificación
-    def _clasificar(self, producto: ProductModel) -> tuple[str | None, str, dict]:
-        """Tipo de prenda y región corporal. Usa el modelo de visión si hay
-        clave; si no, deduce por categoría y nombre, que para un catálogo de
-        ropa acierta en la mayoría de los casos."""
+    def _clasificar(
+        self, producto: ProductModel, datos: bytes, color: ColorModel
+    ) -> tuple[str | None, str, dict]:
+        """Inspecciona la foto y contrasta su color con el color del catálogo.
+
+        La IA se usa durante la preparación, nunca por fotograma de cámara.
+        Sin clave o con un fallo de red, la región se deduce del nombre.
+        """
         referencia = f"{producto.name} {producto.category.name if producto.category else ''}"
         respaldo = anclajes.region_por_defecto(referencia)
         if not settings.ai_api_key:
-            return None, respaldo, {"source": "heuristica", "reference": referencia.strip()}
+            return None, respaldo, {
+                "source": "heuristica", "reference": referencia.strip(),
+                "catalog_color": color.name, "catalog_color_hex": color.hex_code,
+            }
         try:
+            with Image.open(BytesIO(datos)) as imagen:
+                formato = imagen.format
+            mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}.get(formato)
+            if not mime:
+                raise ValueError("Formato de imagen no compatible con visión.")
+            imagen_url = f"data:{mime};base64,{base64.b64encode(datos).decode('ascii')}"
             respuesta = httpx.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": "Bearer " + settings.ai_api_key},
@@ -115,16 +131,28 @@ class PrepararPrenda:
                         {
                             "role": "system",
                             "content": (
-                                "Clasificás prendas para un probador virtual. Respondé JSON con "
+                                "Inspeccionás la foto de una prenda para un probador virtual. "
+                                "Respondé JSON con "
                                 "garment_type (uno de: " + ", ".join(TIPOS) + ") y body_region "
-                                "(uno de: upper_body, lower_body, full_body, feet)."
+                                "(uno de: upper_body, lower_body, full_body, feet), "
+                                "visible_color (nombre breve del color predominante de la prenda) "
+                                "y color_match (booleano: si la prenda fotografiada corresponde "
+                                "claramente al color de catálogo indicado; si no se puede saber, null). "
+                                "Ignorá el fondo y no confundas sombras con otro color."
                             ),
                         },
                         {
                             "role": "user",
-                            "content": f"Prenda: {producto.name}. Categoría: "
-                            f"{producto.category.name if producto.category else 'sin categoría'}. "
-                            f"Descripción: {(producto.description or '')[:300]}",
+                            "content": [
+                                {"type": "text", "text":
+                                    f"Prenda: {producto.name}. Categoría: "
+                                    f"{producto.category.name if producto.category else 'sin categoría'}. "
+                                    f"Descripción: {(producto.description or '')[:300]}. "
+                                    f"Color elegido del catálogo: {color.name} ({color.hex_code})."},
+                                {"type": "image_url", "image_url": {
+                                    "url": imagen_url, "detail": "low"
+                                }},
+                            ],
                         },
                     ],
                 },
@@ -136,9 +164,43 @@ class PrepararPrenda:
             tipo = str(contenido.get("garment_type") or "").strip() or None
             if region not in anclajes.REGIONES:
                 region = respaldo
-            return tipo, region, {"source": "modelo", "model": settings.ai_model, "raw": contenido}
+            coincide = contenido.get("color_match")
+            if not isinstance(coincide, bool):
+                coincide = None
+            return tipo, region, {
+                "source": "modelo_vision", "model": settings.ai_model,
+                "visible_color": str(contenido.get("visible_color") or "")[:80],
+                "color_match": coincide,
+                "catalog_color": color.name, "catalog_color_hex": color.hex_code,
+            }
         except Exception as error:  # noqa: BLE001 - el respaldo debe cubrir cualquier fallo
-            return None, respaldo, {"source": "heuristica", "fallback_reason": str(error)[:200]}
+            return None, respaldo, {
+                "source": "heuristica", "fallback_reason": type(error).__name__,
+                "catalog_color": color.name, "catalog_color_hex": color.hex_code,
+            }
+
+    def _elegir_fuente(
+        self, producto: ProductModel, color: ColorModel
+    ) -> tuple[str, bytes, str | None, str, dict]:
+        """Busca otra foto del catálogo si visión descarta la principal."""
+        fuente = self._imagen_fuente(producto, color)
+        datos = self._descargar(fuente)
+        tipo, region, metadatos = self._clasificar(producto, datos, color)
+        if metadatos.get("source") != "modelo_vision" or metadatos.get("color_match") is True:
+            return fuente, datos, tipo, region, metadatos
+        for imagen in producto.images:
+            if imagen.url == fuente:
+                continue
+            try:
+                otros_datos = self._descargar(imagen.url)
+            except ValidationError:
+                continue
+            otro_tipo, otra_region, otros_metadatos = self._clasificar(
+                producto, otros_datos, color
+            )
+            if otros_metadatos.get("color_match") is True:
+                return imagen.url, otros_datos, otro_tipo, otra_region, otros_metadatos
+        return fuente, datos, tipo, region, metadatos
 
     # --------------------------------------------------------------- ejecución
     def execute(
@@ -160,9 +222,9 @@ class PrepararPrenda:
         recurso.mode = MODO_2_5D
 
         try:
-            datos = self._descargar(fuente)
+            fuente, datos, tipo, region, metadatos = self._elegir_fuente(producto, color)
+            recurso.source_image_url = fuente
             recorte = segmentacion.recortar_fondo(datos)
-            tipo, region, metadatos = self._clasificar(producto)
             directorio = Path(settings.media_storage_dir).resolve()
             nombre_prenda, ancho, alto = store_image(segmentacion.a_webp(recorte.imagen), directorio)
             nombre_mascara, _, _ = store_image(segmentacion.a_png_mascara(recorte.mascara), directorio)
@@ -175,6 +237,14 @@ class PrepararPrenda:
             recurso.body_region = region
             recurso.anchor_points = anclajes.calcular_anclajes(recorte.mascara, region)
             recurso.reviewed_by = None  # una nueva preparación vuelve a esperar revisión
+            colores_activos = {v.color_id for v in producto.variants if v.is_active}
+            # Una misma foto principal sirve de fuente para todos los colores.
+            # Si el producto tiene varios, publicar sin verificar la foto
+            # mostraría fácilmente la prenda de otro color en la cámara.
+            color_sin_verificar = (
+                len(colores_activos) > 1
+                and metadatos.get("color_match") is not True
+            )
             # Un recorte fallido devuelve la foto CON su fondo. Darlo por listo
             # es lo que producia el rectangulo con fondo sobre la camara: se
             # marca como fallido y el probador cae al dibujo, que siempre sirve.
@@ -187,8 +257,14 @@ class PrepararPrenda:
                 recurso.ai_status = (
                     ESTADO_LISTO
                     if puntaje >= calidad.UMBRAL_PUBLICAR
+                    and metadatos.get("color_match") is not False
+                    and not color_sin_verificar
                     else ESTADO_REVISION
                 )
+                if metadatos.get("color_match") is False:
+                    recurso.quality_reason = "color_no_coincide"
+                elif color_sin_verificar:
+                    recurso.quality_reason = "color_sin_verificar"
                 recurso.ai_error = None
             else:
                 puntaje, _ = calidad.puntuar(recorte.mascara, recorte.cobertura, region)
@@ -215,8 +291,11 @@ class PrepararPrenda:
                 mensaje = "Recurso de probador preparado desde la foto del producto."
             elif recurso.ai_status == ESTADO_REVISION:
                 mensaje = (
-                    "Recorte logrado pero de calidad dudosa; el recurso espera revisión "
-                    "antes de publicarse."
+                    "La foto no coincide con el color elegido; revisá el recurso antes de publicarlo."
+                    if metadatos.get("color_match") is False else
+                    "No se verificó el color de la foto; revisá el recurso antes de publicarlo."
+                    if color_sin_verificar else
+                    "Recorte logrado pero de calidad dudosa; el recurso espera revisión antes de publicarse."
                 )
             else:
                 mensaje = "No se pudo recortar el fondo de la foto; el recurso quedo pendiente de revision."

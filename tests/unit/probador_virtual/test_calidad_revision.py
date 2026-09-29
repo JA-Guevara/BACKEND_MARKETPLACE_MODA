@@ -220,7 +220,7 @@ def test_rechazar_marca_fallido_y_queda_fuera_del_probador(mundo):
     assert sesion.status_code == 404, sesion.text
 
 
-def test_la_cola_de_revision_lista_solo_los_dudosos(mundo):
+def test_la_cola_de_revision_incluye_calidad_dudosa_y_color_sin_verificar(mundo):
     client, db, dudoso, limpio, color, otro_color = mundo
     client.post(
         f"/api/v1/vestidor/admin/products/{dudoso.id}/assets", json={"color_id": str(color.id)}
@@ -232,8 +232,9 @@ def test_la_cola_de_revision_lista_solo_los_dudosos(mundo):
     cola = client.get("/api/v1/vestidor/admin/assets?status=review")
     assert cola.status_code == 200, cola.text
     recursos = cola.json()["data"]
-    assert len(recursos) == 1
-    assert recursos[0]["product_id"] == str(dudoso.id)
+    assert len(recursos) == 2
+    assert {r["product_id"] for r in recursos} == {str(dudoso.id), str(limpio.id)}
+    assert next(r for r in recursos if r["product_id"] == str(limpio.id))["quality_reason"] == "color_sin_verificar"
 
 
 def test_reintento_vuelve_a_analizar_y_limpia_la_revision(mundo):
@@ -259,15 +260,18 @@ def test_preparacion_masiva_procesa_por_colores_activos(mundo):
     assert lote.status_code == 200, lote.text
     resumen = lote.json()["data"]
     assert resumen["processed"] >= 3  # 1 color del dudoso + 2 del limpio
-    assert resumen["review"] == 1  # el dudoso queda en revisión
-    assert resumen["ready"] == 2  # ambos colores del limpio quedan listos
+    assert resumen["review"] == 3  # sin IA, los dos colores del limpio requieren revisión
+    assert resumen["ready"] == 0
     assert resumen["errors"] == 0
 
 
 def test_preparacion_masiva_solo_pendientes_no_toca_los_listos(mundo):
     client, db, dudoso, limpio, color, otro_color = mundo
-    client.post(
+    preparado = client.post(
         f"/api/v1/vestidor/admin/products/{limpio.id}/assets", json={"color_id": str(color.id)}
+    ).json()["data"]
+    client.post(
+        f"/api/v1/vestidor/admin/assets/{preparado['id']}/review", json={"approve": True}
     )
 
     lote = client.post(
@@ -277,7 +281,8 @@ def test_preparacion_masiva_solo_pendientes_no_toca_los_listos(mundo):
     resumen = lote.json()["data"]
     # El color listo ya está, el segundo color sigue pendiente: solo procesa ese.
     assert resumen["processed"] == 1
-    assert resumen["ready"] == 1
+    assert resumen["review"] == 1  # el segundo color aún no se verificó
+    assert resumen["ready"] == 0
 
 
 def test_una_foto_sin_fondo_liso_no_rompe_el_lote(mundo):
