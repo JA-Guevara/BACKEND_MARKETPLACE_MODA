@@ -15,6 +15,19 @@ class Settings(BaseSettings):
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
     database_url: str = "postgresql://postgres:postgres@localhost:5432/fashionstore"
+    # Pool de conexiones. El total real es replicas x workers x (size + overflow) y el
+    # plan gratuito de Supabase admite 60 conexiones directas, de las cuales la propia
+    # documentacion recomienda no usar mas del 40 % (24). Con 2 workers, 5 + 5 deja
+    # 20 conexiones (33 %) y sigue sobrando: la consulta real tarda 40 ms.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    # Supabase corta las conexiones ociosas del lado del servidor. Sin reciclado
+    # (valor por omision -1, "nunca") la primera peticion despues de un rato paga un
+    # reintento; reciclar a 30 minutos evita que la conexion llegue muerta al pool.
+    db_pool_recycle: int = 1800
+    # Se deja el valor por omision de SQLAlchemy: bajarlo cambia cuando falla una
+    # peticion con el pool saturado, y eso si seria un cambio de comportamiento.
+    db_pool_timeout: int = 30
     jwt_secret_key: str = Field(default="development-only-secret-key-change-me-now", min_length=32)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
@@ -35,6 +48,14 @@ class Settings(BaseSettings):
     # Casilla que recibe los avisos de reserva cuando la sucursal todavia
     # no tiene correo propio cargado (RF11).
     operations_email: str | None = None
+    # Cola de correos. El saludo TCP+TLS con Gmail ya cuesta 1,45 s medidos, asi que
+    # enviar dentro del request retiene ademas una conexion de base durante ~2,5 s.
+    # `email_background=False` fuerza el envio en linea: es lo que necesitan las
+    # pruebas, que comprueban el booleano de retorno y el evento de bitacora en la
+    # misma Session justo despues de llamar.
+    email_background: bool = True
+    email_queue_size: int = 100
+    email_workers: int = 2
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     commerce_currency: str = "bob"

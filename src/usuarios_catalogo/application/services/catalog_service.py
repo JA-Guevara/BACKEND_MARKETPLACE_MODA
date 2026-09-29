@@ -185,7 +185,9 @@ class CatalogService:
             changes["slug"] = self._unique_slug(source, ProductModel, product.id)
         product = self._save_updated(product, changes, actor, "catalog.product_updated", "Producto actualizado.")
         # La alerta se evalúa después de guardar: la prenda ya muestra el nuevo
-        # precio cuando el cliente abre el enlace del correo.
+        # precio cuando el cliente abre el enlace del correo. Los correos se
+        # encolan, no se envían acá: antes cada favorito costaba ~2,5 s de SMTP
+        # en serie y guardar un precio con 20 favoritos tardaba casi un minuto.
         if "base_price" in changes:
             from src.ventas_pagos.application.favorite_alerts import FavoriteAlerts
             FavoriteAlerts(self.db).price_dropped(product, old_price)

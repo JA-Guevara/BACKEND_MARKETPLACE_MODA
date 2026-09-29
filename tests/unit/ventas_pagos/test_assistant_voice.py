@@ -1,6 +1,5 @@
 """Contrato del dictado del asistente: el audio se transcribe sin persistirse."""
 
-import asyncio
 from io import BytesIO
 
 from fastapi import UploadFile
@@ -43,7 +42,7 @@ def test_transcribe_audio_sends_ephemeral_file_to_transcription(monkeypatch):
     monkeypatch.setattr(settings, "ai_transcription_model", "gpt-4o-mini-transcribe")
     monkeypatch.setattr(router.httpx, "post", lambda *args, **kwargs: calls.append((args, kwargs)) or _OpenAIReply())
 
-    result = asyncio.run(router.transcribe_assistant_audio(object(), _audio()))
+    result = router.transcribe_assistant_audio(object(), _audio())
 
     assert result.data == {"available": True, "text": "Exportame ventas de este mes en Excel"}
     assert calls[0][0][0] == "https://api.openai.com/v1/audio/transcriptions"
@@ -62,7 +61,7 @@ def test_transcribe_audio_never_sends_internal_prompt_as_user_message(monkeypatc
     ])
     monkeypatch.setattr(router.httpx, "post", lambda *args, **kwargs: calls.append((args, kwargs)) or next(replies))
 
-    result = asyncio.run(router.transcribe_assistant_audio(object(), _audio()))
+    result = router.transcribe_assistant_audio(object(), _audio())
 
     assert result.data == {"available": True, "text": "Exportame ventas de este mes en PDF"}
     assert len(calls) == 2
@@ -71,7 +70,7 @@ def test_transcribe_audio_never_sends_internal_prompt_as_user_message(monkeypatc
 def test_transcribe_audio_reports_missing_ai_configuration(monkeypatch):
     monkeypatch.setattr(settings, "ai_api_key", "")
 
-    result = asyncio.run(router.transcribe_assistant_audio(object(), _audio()))
+    result = router.transcribe_assistant_audio(object(), _audio())
 
     assert result.data["available"] is False
     assert "AI_API_KEY" in result.data["message"]

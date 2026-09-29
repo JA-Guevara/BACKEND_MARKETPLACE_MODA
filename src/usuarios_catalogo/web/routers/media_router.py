@@ -17,12 +17,18 @@ from src.usuarios_catalogo.infrastructure.media_storage import store_image
 router = APIRouter(prefix='/media', tags=['PAQ-01 · Usuarios y catálogo'])
 
 @router.post('/images', status_code=201)
-async def upload_image(request: Request, actor: Annotated[UserModel, Depends(require_permissions('catalog.write'))], file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_image(request: Request, actor: Annotated[UserModel, Depends(require_permissions('catalog.write'))], file: UploadFile = File(...), db: Session = Depends(get_db)):
+    # `def` y no `async def`: store_image reprocesa la imagen con Pillow (CPU
+    # pura: decodificar, rotar por EXIF, redimensionar y recomprimir a WEBP) y
+    # después audita y hace commit con SQLAlchemy síncrono. En el bucle de
+    # eventos eso congelaba todas las demás peticiones del proceso; en el pool
+    # de hilos de FastAPI solo ocupa un hilo. `file.file` es el archivo temporal
+    # ya posicionado en 0, equivalente síncrono de `await file.read()`.
     limit = settings.media_max_upload_mb * 1024 * 1024
     try:
-        raw = await file.read(limit + 1)
+        raw = file.file.read(limit + 1)
     finally:
-        await file.close()
+        file.file.close()
     if not raw or len(raw) > limit:
         raise ValidationError(f'La imagen debe pesar entre 1 byte y {settings.media_max_upload_mb} MB.')
     directory = Path(settings.media_storage_dir).resolve()

@@ -44,30 +44,38 @@ def export(resource: str, search: str = '', include_inactive: bool = True, inclu
                                 include_deleted=include_deleted, branch_id=branch_id), f'{resource}-exportacion')
 
 
-async def read_file(file):
+def read_file(file):
+    # Síncrono a propósito: `file.file` es el archivo temporal que Starlette ya
+    # dejó posicionado en 0, o sea el equivalente exacto de `await file.read()`.
+    # Así preview/import pueden declararse `def` y correr en el pool de hilos.
     if not (file.filename or '').lower().endswith('.xlsx'):
         raise ValidationError('Seleccioná un archivo .xlsx.')
-    content = await file.read(MAX_BYTES + 1)
-    await file.close()
+    content = file.file.read(MAX_BYTES + 1)
+    file.file.close()
     if len(content) > MAX_BYTES:
         raise ValidationError('Máximo 5 MB por archivo.')
     return content
 
 
 @router.post('/{resource}/preview')
-async def preview(resource: str, file: UploadFile = File(...), mode: str = Form('create'),
-                  actor: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
+def preview(resource: str, file: UploadFile = File(...), mode: str = Form('create'),
+            actor: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
+    # `def` y no `async def`: parsear el Excel con openpyxl es CPU pura y el
+    # cotejo contra la base usa SQLAlchemy síncrono. En el bucle de eventos eso
+    # congelaba el proceso entero durante toda la carga.
     spec = authorize(resource, actor, 'write')
-    result = process(db, spec, actor, await read_file(file), mode)
+    result = process(db, spec, actor, read_file(file), mode)
     return ApiResponse(message='Vista previa sin guardar.', data=result)
 
 
 @router.post('/{resource}/import')
-async def import_excel(resource: str, file: UploadFile = File(...), mode: str = Form(...),
-                       preview_digest: str = Form(...), confirm: bool = Form(False),
-                       actor: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
+def import_excel(resource: str, file: UploadFile = File(...), mode: str = Form(...),
+                 preview_digest: str = Form(...), confirm: bool = Form(False),
+                 actor: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
+    # `def` por el mismo motivo que `preview`, agravado: acá además se escriben
+    # todas las filas confirmadas dentro de la misma petición.
     spec = authorize(resource, actor, 'write')
-    content = await read_file(file)
+    content = read_file(file)
     if not confirm or sha256(content).hexdigest() != preview_digest:
         raise ValidationError('Revisá la vista previa del mismo archivo y confirmá la importación.')
     result = process(db, spec, actor, content, mode, confirm=True)

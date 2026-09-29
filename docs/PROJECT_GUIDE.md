@@ -162,6 +162,11 @@ Variables importantes:
 | Variable | Uso |
 |---|---|
 | `DATABASE_URL` | Conexión SQLAlchemy a PostgreSQL |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Tamaño del pool por proceso (5 + 5). El total es réplicas × workers × (size + overflow) y Supabase gratuito admite 60 conexiones: ver `DESPLIEGUE_Y_RENDIMIENTO.md` |
+| `DB_POOL_RECYCLE` | Segundos antes de reciclar una conexión (1800). Supabase corta las ociosas |
+| `DB_POOL_TIMEOUT` | Espera máxima por una conexión libre (30 s, el valor por omisión de SQLAlchemy) |
+| `WEB_CONCURRENCY` | Procesos de uvicorn en Railway (2 por defecto). Bajarlo a `1` si el contenedor se queda sin memoria |
+| `EMAIL_BACKGROUND`, `EMAIL_QUEUE_SIZE`, `EMAIL_WORKERS` | Cola de envío de correo fuera del request. `EMAIL_BACKGROUND=false` vuelve al envío en línea |
 | `JWT_SECRET_KEY` | Firma de tokens; debe ser larga, aleatoria y privada |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Duración del access token |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Duración máxima de la sesión renovable |

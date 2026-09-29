@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from uuid import uuid4
 import logging
 from sqlalchemy.exc import SQLAlchemyError
@@ -8,6 +9,7 @@ from fastapi.responses import JSONResponse
 from src.config.routes import api_router
 from src.infrastructure.config.settings import settings
 from src.infrastructure.cors.config import configure_cors
+from src.notificaciones.infrastructure.email.cola import apagar_cola
 from src.shared.context.audit_context import reset_audit_context, set_audit_context
 from src.shared.exceptions.base_exception import AppException
 
@@ -47,12 +49,27 @@ class AuditContextMiddleware:
                 reset_audit_context(token)
 
 
+@asynccontextmanager
+async def ciclo_de_vida(_: FastAPI):
+    """Apagado ordenado de la cola de correos.
+
+    Los hilos que envían los avisos son demonio: si el proceso muere sin avisar,
+    lo que quedaba encolado se pierde. Railway manda SIGTERM en cada reinicio o
+    despliegue, y uvicorn traduce eso a este cierre, así que es el único momento
+    en que se puede drenar. No hay nada que preparar al arrancar: la cola se crea
+    sola con el primer aviso.
+    """
+    yield
+    apagar_cola()
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         debug=settings.debug,
         version="1.0.0",
         openapi_tags=OPENAPI_PACKAGE_TAGS,
+        lifespan=ciclo_de_vida,
     )
     configure_cors(app)
     app.add_middleware(AuditContextMiddleware)

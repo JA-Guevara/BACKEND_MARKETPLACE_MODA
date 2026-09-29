@@ -720,6 +720,8 @@ El envío es "lo mejor posible": si el servidor de correo está caído o sin con
 
 El destinatario del aviso a la sucursal es su campo `notification_email`; si está vacío, se usa `OPERATIONS_EMAIL`.
 
+El envío ocurre **fuera del request**: la respuesta no espera al servidor de correo, así que el evento de bitácora aparece unos segundos después de responder (antes salía dentro de la operación, que por eso tardaba unos 2,5 s por aviso). Los nombres de acción, el destinatario en `metadata_` y la resolución automática de `ip_address`, `user_agent` y `request_id` no cambian. Con `EMAIL_BACKGROUND=false` el envío vuelve a ser en línea. Un aviso nunca se descarta: si la cola está llena o el proceso se está apagando, se envía en línea.
+
 ## Bitácora
 
 | Método y ruta | Permiso | Parámetros | Salida `data` |

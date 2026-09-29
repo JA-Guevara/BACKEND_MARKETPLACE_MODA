@@ -5,6 +5,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
@@ -125,22 +126,34 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
 
 
 @router.post("/assistant/transcribe")
-async def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
+def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
     """Convierte una nota de voz corta del asistente a texto.
 
     El navegador graba el audio tras el permiso explícito de la persona. El
     archivo no se persiste: se reenvía a la transcripción y se descarta al
     terminar la petición. El texto vuelve al frontend, que lo procesa con las
     mismas acciones autorizadas del chat (exportar, filtrar o preparar alta).
+
+    Es `def` a propósito, no `async def`: abajo se llama a `httpx.post` de forma
+    síncrona, con espera de `settings.ai_timeout` y un reintento con el segundo
+    modelo, o sea hasta el doble del tiempo límite. Declarado `async def` esa
+    espera corría dentro del bucle de eventos y congelaba TODAS las peticiones
+    del proceso; declarado `def`, FastAPI lo ejecuta en su pool de hilos y solo
+    ocupa un hilo mientras el resto del backend sigue respondiendo.
     """
     if not settings.ai_api_key:
         return response({"available": False, "text": "", "message": "El dictado por voz requiere configurar AI_API_KEY."})
     if audio.content_type and not (audio.content_type.startswith("audio/") or audio.content_type.startswith("video/")):
         raise HTTPException(status_code=415, detail="El audio debe ser WEBM, OGG, MP4 o WAV.")
-    content = await audio.read()
+    # `audio.file` es el archivo temporal que Starlette ya dejó posicionado en 0
+    # al parsear el multipart: es el equivalente síncrono exacto de `await
+    # audio.read()`. Se pide un byte más que el límite para poder responder 413
+    # sin traer a memoria un audio enorme, igual que ya hacen las otras subidas.
+    limite = 10 * 1024 * 1024
+    content = audio.file.read(limite + 1)
     if not content:
         raise HTTPException(status_code=422, detail="No recibimos ningún audio para transcribir.")
-    if len(content) > 10 * 1024 * 1024:
+    if len(content) > limite:
         raise HTTPException(status_code=413, detail="El audio supera el límite de 10 MB.")
     # `whisper-1` queda como respaldo: algunas claves tienen acceso a chat
     # pero no a un modelo de transcripción reciente. Se intenta una sola vez
@@ -534,8 +547,18 @@ def register_stock_movement(variant_id: uuid.UUID, data: StockEntry, user: Stock
 
 @router.post("/stripe/webhook")
 async def webhook(request: Request, db: Session = Depends(get_db)):
+    """Recibe los eventos firmados de Stripe.
+
+    Único endpoint que sigue siendo `async def`: Stripe firma los BYTES EXACTOS
+    del cuerpo y `request.body()` es la única forma de obtenerlos sin volver a
+    serializar el JSON (reserializar cambia espacios y orden de claves, y el
+    HMAC deja de validar). Lo que sí bloquea -el HMAC, el SELECT ... FOR UPDATE
+    del pedido y el correo de `notificar_pedido`- baja al pool de hilos para que
+    no congele el bucle de eventos, que es lo que hacía antes.
+    """
     body = await request.body()
-    return CommerceService(db).webhook(verify_event(body, request.headers.get("stripe-signature", "")))
+    firma = request.headers.get("stripe-signature", "")
+    return await run_in_threadpool(lambda: CommerceService(db).webhook(verify_event(body, firma)))
 
 
 @analytics_router.get("/dashboard")
