@@ -21,12 +21,23 @@ from src.usuarios_catalogo.web.routers import media_router
 from src.ventas_pagos.web import router as ventas_router
 
 
-# Únicos endpoints autorizados a seguir siendo `async def`, con el motivo por el
-# que no pueden ser `def`. La condición de la excepción es que el trabajo pesado
-# baje igual al pool de hilos con `run_in_threadpool`.
+# Endpoints `async def` que SÍ tienen trabajo bloqueante, con el motivo por el
+# que no pueden ser `def`. La condición de la excepción es que ese trabajo baje
+# igual al pool de hilos con `run_in_threadpool`.
 ASYNC_JUSTIFICADOS = {
     "webhook": "Stripe firma los bytes exactos del cuerpo: hace falta await request.body().",
 }
+
+# Endpoints `async def` que no hacen NADA bloqueante. Para ellos el bucle de
+# eventos es el lugar correcto -no gastan un hilo del pool-, así que la
+# condición es la inversa: que no aparezca ninguna de las llamadas que bloquean.
+ASYNC_SIN_TRABAJO = {
+    "health": "Devuelve un literal: no toca base, red ni disco.",
+}
+
+# Marcas de trabajo bloqueante. No pretende ser exhaustiva: alcanza con que
+# cubra lo que este backend usa, que es lo que congelaba el proceso.
+SENALES_DE_BLOQUEO = ("httpx.", "db.", "Session(", "open(", "Image.", "load_workbook", "time.sleep")
 
 
 def _endpoints_de_la_app():
@@ -40,12 +51,30 @@ def test_ningun_endpoint_async_deja_trabajo_bloqueante_en_el_bucle():
             continue
         nombre = route.endpoint.__name__
         codigo = inspect.getsource(route.endpoint)
-        if nombre not in ASYNC_JUSTIFICADOS or "run_in_threadpool" not in codigo:
+        if nombre in ASYNC_JUSTIFICADOS:
+            if "run_in_threadpool" not in codigo:
+                infractores.append(f"{route.path} -> {nombre} (ya no delega en run_in_threadpool)")
+        elif nombre in ASYNC_SIN_TRABAJO:
+            usadas = [senal for senal in SENALES_DE_BLOQUEO if senal in codigo]
+            if usadas:
+                infractores.append(f"{route.path} -> {nombre} (dejó de ser trivial: {', '.join(usadas)})")
+        else:
             infractores.append(f"{route.path} -> {nombre}")
     assert infractores == [], (
         "Estos endpoints son 'async def' y bloquearían el bucle de eventos. "
         "Declaralos 'def' o delegá el trabajo pesado con run_in_threadpool: "
         + ", ".join(infractores)
+    )
+
+
+def test_el_chequeo_de_salud_no_compite_por_el_pool_de_hilos():
+    # `/health` es lo que mira Railway para decidir si el proceso está vivo.
+    # Siendo `def` compartía los 40 hilos de anyio con la transcripción, el
+    # Excel y las imágenes: con el pool lleno el chequeo se encolaba detrás de
+    # ellos y podía dar falso negativo justo cuando más carga había.
+    ruta = next(r for r in create_app().routes if isinstance(r, APIRoute) and r.path == "/health")
+    assert inspect.iscoroutinefunction(ruta.endpoint), (
+        "/health volvió a ser 'def' y otra vez depende de que haya un hilo libre."
     )
 
 

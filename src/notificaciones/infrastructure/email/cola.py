@@ -62,6 +62,11 @@ class TrabajoCorreo:
     entidad_id: str | None = None
     actor_id: uuid.UUID | None = None
     contexto: dict = field(default_factory=dict)
+    # Los avisos de autenticación (verificar cuenta, recuperar contraseña) nunca
+    # dejaron evento de bitácora: mandarlos por la cola no puede empezar a
+    # dejarlo. Con `auditar=False` el trabajo se limita al SMTP y ni siquiera
+    # abre una Session, así que tampoco toma una conexión del pool.
+    auditar: bool = True
     # Copia plana del contexto de auditoría del request (ver nota del módulo).
     ip_address: str | None = None
     user_agent: str | None = None
@@ -130,6 +135,10 @@ def _sesion_por_defecto() -> Session:
 def procesar(trabajo: TrabajoCorreo, abrir_sesion: Callable[[], Session]) -> bool:
     """Envía y audita con una Session propia, que se cierra siempre."""
     enviado = enviar(trabajo)
+    if not trabajo.auditar:
+        # Sin evento que escribir no hay por qué abrir una Session: abrirla solo
+        # para cerrarla gastaría una conexión del pool por cada aviso.
+        return enviado
     db = abrir_sesion()
     try:
         registrar(db, trabajo, enviado)

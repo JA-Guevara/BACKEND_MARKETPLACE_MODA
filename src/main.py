@@ -76,7 +76,17 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
     @app.get("/health", tags=["system"])
-    def health() -> dict[str, str]:
+    async def health() -> dict[str, str]:
+        """Chequeo de salud de Railway. `async def` a propósito.
+
+        No toca la base ni la red: devuelve un literal, así que correr en el
+        bucle de eventos es lo correcto y además no gasta un hilo del pool.
+        Siendo `def` compartía los 40 hilos de anyio con los endpoints pesados
+        (transcripción, Excel, imágenes): con el pool saturado el chequeo
+        quedaba encolado detrás de ellos y Railway podía darlo por caído
+        -`healthcheckTimeout` 30 s- y reiniciar un proceso que estaba sano.
+        La respuesta no cambia: mismo 200 y mismo {"status": "ok"}.
+        """
         return {"status": "ok"}
 
     @app.exception_handler(AppException)
