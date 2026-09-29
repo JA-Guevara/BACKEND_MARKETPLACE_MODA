@@ -132,13 +132,15 @@ class PrepararPrenda:
                             "role": "system",
                             "content": (
                                 "Inspeccionás la foto de una prenda para un probador virtual. "
-                                "Respondé JSON con "
-                                "garment_type (uno de: " + ", ".join(TIPOS) + ") y body_region "
-                                "(uno de: upper_body, lower_body, full_body, feet), "
-                                "visible_color (nombre breve del color predominante de la prenda) "
-                                "y color_match (booleano: si la prenda fotografiada corresponde "
-                                "claramente al color de catálogo indicado; si no se puede saber, null). "
-                                "Ignorá el fondo y no confundas sombras con otro color."
+                                "Respondé JSON con: "
+                                "garment_type (uno de: " + ", ".join(TIPOS) + "), "
+                                "body_region (uno de: upper_body, lower_body, full_body, feet), "
+                                "visible_color (nombre breve del color predominante de la prenda), "
+                                "color_match (booleano: si la prenda fotografiada corresponde claramente "
+                                "al color de catálogo indicado; si no se puede saber, null), "
+                                "y anchor_points (objeto opcional con coordenadas normalizadas [x, y] de 0.0 a 1.0 "
+                                "en la foto: 'shoulder_left', 'shoulder_right', 'waist_left', 'waist_right', 'hem_left', 'hem_right'). "
+                                "Ignorá el fondo, maniquí o modelo, y no confundas sombras con otro color."
                             ),
                         },
                         {
@@ -167,10 +169,14 @@ class PrepararPrenda:
             coincide = contenido.get("color_match")
             if not isinstance(coincide, bool):
                 coincide = None
+            anclajes_ai = contenido.get("anchor_points")
+            if not isinstance(anclajes_ai, dict):
+                anclajes_ai = None
             return tipo, region, {
                 "source": "modelo_vision", "model": settings.ai_model,
                 "visible_color": str(contenido.get("visible_color") or "")[:80],
                 "color_match": coincide,
+                "anchor_points": anclajes_ai,
                 "catalog_color": color.name, "catalog_color_hex": color.hex_code,
             }
         except Exception as error:  # noqa: BLE001 - el respaldo debe cubrir cualquier fallo
@@ -224,6 +230,8 @@ class PrepararPrenda:
         try:
             fuente, datos, tipo, region, metadatos = self._elegir_fuente(producto, color)
             recurso.source_image_url = fuente
+            with Image.open(BytesIO(datos)) as img_orig:
+                tamano_orig = img_orig.size
             recorte = segmentacion.recortar_fondo(datos)
             directorio = Path(settings.media_storage_dir).resolve()
             nombre_prenda, ancho, alto = store_image(segmentacion.a_webp(recorte.imagen), directorio)
@@ -235,7 +243,13 @@ class PrepararPrenda:
             recurso.preview_url = recurso.transparent_url
             recurso.garment_type = tipo
             recurso.body_region = region
-            recurso.anchor_points = anclajes.calcular_anclajes(recorte.mascara, region)
+            recurso.anchor_points = anclajes.calcular_anclajes(
+                recorte.mascara,
+                region,
+                anclajes_sugeridos=metadatos.get("anchor_points"),
+                caja_original=recorte.caja_original,
+                tamano_original=tamano_orig,
+            )
             recurso.reviewed_by = None  # una nueva preparación vuelve a esperar revisión
             colores_activos = {v.color_id for v in producto.variants if v.is_active}
             # Una misma foto principal sirve de fuente para todos los colores.
@@ -283,7 +297,7 @@ class PrepararPrenda:
                 "quality_score": recurso.quality_score,
                 "quality_reason": recurso.quality_reason,
                 "output": {"width": ancho, "height": alto},
-                "segmentation": "pillow_floodfill",
+                "segmentation": recorte.metodo,
                 "tolerance": recorte.tolerancia,
                 "cutout_ok": recorte.logrado,
             }

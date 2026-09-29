@@ -46,14 +46,13 @@ class PrendaRecortada:
     cobertura: float
     """Proporción de la foto original ocupada por la prenda."""
     logrado: bool = True
-    """Si se pudo separar la prenda del fondo.
-
-    En `False` la imagen es la foto original **con** su fondo: sirve para que el
-    administrador vea qué pasó, pero no se puede mostrar sobre la cámara. Quien
-    prepara el recurso debe marcarlo como fallido, no como listo.
-    """
+    """Si se pudo separar la prenda del fondo."""
     tolerancia: int = TOLERANCIA
     """Tolerancia con la que se logró el recorte, para diagnóstico."""
+    caja_original: tuple[int, int, int, int] | None = None
+    """Bounding box (left, top, right, bottom) en la imagen original."""
+    metodo: str = "pillow_floodfill"
+    """Método que logró el recorte."""
 
 
 def _fondo_probable(imagen: Image.Image) -> tuple[int, int, int]:
@@ -89,14 +88,28 @@ def _intento(imagen: Image.Image, centinela, tolerancia: int) -> tuple[Image.Ima
     return mascara, opacos / float(ancho * alto)
 
 
+def _intento_diferencia(imagen: Image.Image, fondo: tuple[int, int, int], tolerancia: int = 40) -> tuple[Image.Image, float]:
+    """Segmentación adaptativa basada en la diferencia cromática respecto al fondo perimetral."""
+    ancho, alto = imagen.size
+    fr, fg, fb = fondo
+    pixeles = list(imagen.getdata())
+    umbral_cuad = (tolerancia * 1.5) ** 2
+    mascara_data = [
+        255 if ((p[0] - fr) ** 2 + (p[1] - fg) ** 2 + (p[2] - fb) ** 2) > umbral_cuad else 0
+        for p in pixeles
+    ]
+    mascara = Image.new("L", (ancho, alto))
+    mascara.putdata(mascara_data)
+    opacos = sum(1 for v in mascara_data if v > 0)
+    return mascara, opacos / float(ancho * alto)
+
+
 def recortar_fondo(datos: bytes) -> PrendaRecortada:
     """Deja la prenda sobre fondo transparente, recortada a su contorno."""
     with Image.open(BytesIO(datos)) as original:
         original.load()
         # Si el administrador ya subió PNG/WebP con alfa, ese recorte es más
-        # fiable que inferir nuevamente el fondo. Antes se convertía a RGB y
-        # se perdía esa transparencia, por lo que un recurso correctamente
-        # preparado volvía a aparecer con un rectángulo blanco.
+        # fiable que inferir nuevamente el fondo.
         if "A" in original.getbands():
             preparada = original.convert("RGBA")
             mascara_existente = preparada.getchannel("A")
@@ -111,42 +124,61 @@ def recortar_fondo(datos: bytes) -> PrendaRecortada:
                     cobertura=cobertura_existente,
                     logrado=True,
                     tolerancia=0,
+                    caja_original=caja_existente,
+                    metodo="alfa_existente",
                 )
         imagen = original.convert("RGB")
 
     ancho, alto = imagen.size
     centinela = _centinela_libre(imagen)
 
+    # Intento 1: Floodfill clásico desde esquinas (fondos lisos de catálogo)
     candidata, proporcion = _intento(imagen, centinela, TOLERANCIA)
     logrado = MINIMO_PRENDA <= proporcion <= MAXIMO_PRENDA
     mascara = candidata if logrado else None
     cobertura = proporcion if logrado else 0.0
     usada = TOLERANCIA
+    metodo = "pillow_floodfill"
+
+    # Intento 2: Si el floodfill no logró cobertura válida (fondos con sombras o modelo),
+    # intentamos diferencia adaptativa contra el perímetro.
     if not logrado:
-        # Ninguna tolerancia dejó una silueta creíble: fondo con estampado, o
-        # foto sobre un modelo. Se devuelve la foto completa para que el
-        # administrador vea qué pasó, pero marcada como no lograda: mostrarla
-        # sobre la cámara sería el rectángulo con fondo que este módulo evita.
+        fondo_perimetro = _fondo_probable(imagen)
+        candidata_diff, prop_diff = _intento_diferencia(imagen, fondo_perimetro, tolerancia=38)
+        if MINIMO_PRENDA <= prop_diff <= MAXIMO_PRENDA:
+            mascara = candidata_diff
+            cobertura = prop_diff
+            logrado = True
+            metodo = "adaptativo_perimetro"
+            usada = 38
+
+    if not logrado:
         mascara = Image.new("L", (ancho, alto), 255)
         cobertura = 1.0
+        caja = None
     else:
         # Apertura: borra las motas sueltas que quedan del borde del fondo.
         mascara = mascara.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
-        # Cierre: tapa agujeros de un píxel dentro de la prenda.
+        # Cierre: tapa agujeros dentro de la prenda.
         mascara = mascara.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
-        # Contrae un píxel: el contorno de la foto mezcla prenda y fondo, y sin
-        # esto queda un halo claro alrededor de la silueta sobre la cámara.
+        # Contrae un píxel: evita el halo claro alrededor de la silueta.
         mascara = mascara.filter(ImageFilter.MinFilter(3))
         mascara = mascara.filter(ImageFilter.GaussianBlur(0.9))
+        caja = mascara.point(lambda v: 255 if v > 8 else 0).getbbox()
 
     prenda = imagen.convert("RGBA")
     prenda.putalpha(mascara)
-    caja = mascara.point(lambda v: 255 if v > 8 else 0).getbbox()
     if caja:
         prenda = prenda.crop(caja)
         mascara = mascara.crop(caja)
     return PrendaRecortada(
-        imagen=prenda, mascara=mascara, cobertura=cobertura, logrado=logrado, tolerancia=usada
+        imagen=prenda,
+        mascara=mascara,
+        cobertura=cobertura,
+        logrado=logrado,
+        tolerancia=usada,
+        caja_original=caja,
+        metodo=metodo,
     )
 
 

@@ -73,24 +73,65 @@ def _extremos(mascara: Image.Image, proporcion: float) -> tuple[float, float] | 
     return izquierda, derecha
 
 
-def calcular_anclajes(mascara: Image.Image, body_region: str) -> dict:
+def calcular_anclajes(
+    mascara: Image.Image,
+    body_region: str,
+    anclajes_sugeridos: dict | None = None,
+    caja_original: tuple[int, int, int, int] | None = None,
+    tamano_original: tuple[int, int] | None = None,
+) -> dict:
     """Anclajes normalizados para la región indicada.
 
-    Devuelve pares izquierda/derecha por cada altura relevante. Si una fila
-    queda vacía (silueta irregular) se omite ese par: el probador usa los que
-    haya y, si faltan, cae al ajuste manual.
+    Devuelve pares izquierda/derecha por cada altura relevante.
+    Si se reciben anclajes semánticos sugeridos por un modelo de visión (AI),
+    se proyectan desde la foto original a la imagen recortada. Si no, o como
+    respaldo para los que falten, se calculan geométricamente sobre la máscara.
     """
     if body_region not in REGIONES:
         body_region = UPPER_BODY
     ancho, alto = mascara.size
     anclajes: dict[str, list[float]] = {}
+
+    # 1. Proyección de anclajes semánticos provistos por el modelo de visión
+    if anclajes_sugeridos and caja_original and tamano_original:
+        orig_w, orig_h = tamano_original
+        left, top, right, bottom = caja_original
+        crop_w = max(1, right - left)
+        crop_h = max(1, bottom - top)
+
+        for clave in ("shoulder", "waist", "hip", "chest", "hem"):
+            izq = anclajes_sugeridos.get(f"{clave}_left")
+            der = anclajes_sugeridos.get(f"{clave}_right")
+            if (
+                isinstance(izq, (list, tuple))
+                and len(izq) == 2
+                and isinstance(der, (list, tuple))
+                and len(der) == 2
+            ):
+                x1_crop = (izq[0] * orig_w - left) / crop_w
+                y1_crop = (izq[1] * orig_h - top) / crop_h
+                x2_crop = (der[0] * orig_w - left) / crop_w
+                y2_crop = (der[1] * orig_h - top) / crop_h
+
+                if (
+                    0.0 <= x1_crop < x2_crop <= 1.0
+                    and x2_crop - x1_crop >= ANCHO_MINIMO
+                    and 0.0 <= y1_crop <= 1.0
+                ):
+                    anclajes[f"{clave}_left"] = [round(x1_crop, 4), round(y1_crop, 4)]
+                    anclajes[f"{clave}_right"] = [round(x2_crop, 4), round(y2_crop, 4)]
+
+    # 2. Completar con geometría para los anclajes no resueltos por visión
     for nombre, proporcion in _FILAS[body_region].items():
+        if f"{nombre}_left" in anclajes and f"{nombre}_right" in anclajes:
+            continue
         extremos = _extremos(mascara, proporcion)
         if not extremos:
             continue
         izquierda, derecha = extremos
         anclajes[f"{nombre}_left"] = [round(izquierda, 4), round(proporcion, 4)]
         anclajes[f"{nombre}_right"] = [round(derecha, 4), round(proporcion, 4)]
+
     if not anclajes:
         # Silueta ilegible: se ancla al rectángulo completo para no dejar el
         # recurso sin referencia alguna.
