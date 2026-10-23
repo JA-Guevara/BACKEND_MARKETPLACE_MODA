@@ -1,5 +1,31 @@
 # FashionStore Backend — guía del proyecto
 
+## Segundo parcial: CU-00 a CU-05 (23/10/2026)
+
+La base incorpora `plataforma_saas` y `operacion_offline`. Las especificaciones y el seguimiento viven en `../docs` de la carpeta que contiene los tres repositorios (`docs/ESTADO_IMPLEMENTACION.md` en esa raíz).
+
+- Migraciones: `20261024_0016` crea empresas, planes, características y suscripciones, migra los datos existentes a FashionStore y cambia las unicidades de sucursal/producto; `20261028_0017` agrega trazabilidad offline de reservas. No se ejecutaron sobre producción.
+- `TenantScope` obtiene la empresa de la cuenta autenticada. Las rutas públicas de catálogo/sucursales usan `X-Tenant-Slug` y `DEFAULT_TENANT_SLUG`; con sesión prevalece la empresa de la cuenta. Usuarios, productos, sucursales, cajas y reservas se consultan por empresa y un recurso ajeno responde404.
+- Login, renovación y `/auth/me` devuelven empresa y suscripción. JWT access incluye `tid`. Desactivar empresa impide autenticación y uso de sesiones existentes y revoca refresh tokens.
+- `require_platform_permissions` exige permiso y cuenta `platform_admin` sin empresa para administrar empresas/planes/suscripciones globales. La administración de una empresa no obtiene ese alcance al agregar permisos a un rol.
+- `PlanGuard` valida vigencia, funcionalidades y cupo. POS requiere `sales`, asistente de reportes `ai_reports`, reservas `reservations`, instantánea `offline`. La consulta sigue disponible con suscripción suspendida; desactivar sucursales sigue permitido para reducir el uso.
+- Las suscripciones guardan historial en filas cerradas con `closed_at`. Una sola fila abierta por empresa. Renovar extiende la vigencia según la duración del plan, sin duplicar filas abiertas. El vencimiento se materializa al consultar y se confirma en la base.
+- La instantánea incluye catálogo/variantes, existencias y sucursales propias; clientes solo con `reservations.write` y únicamente los tres últimos caracteres de documento. `since` solicita cambios; productos/variantes dados de baja aparecen en `removed`. Las ofertas quedan `null`: los cupones/promociones dependen del carrito y se recalculan en línea.
+- CU-05 conserva la idempotencia del primer parcial: `client_key` es el UUID local y el reenvío idéntico no vuelve a descontar inventario. `origin=OFFLINE` exige clave y dispositivo. Reservar para otro cliente exige permiso y pertenencia a la empresa. La sincronización automática CU-07 está fuera de este alcance.
+
+Comandos desde este repositorio, con `DATABASE_URL` apuntando expresamente a una base local/de pruebas:
+
+```powershell
+.venv\Scripts\python.exe -m alembic upgrade head
+# PLATFORM_ADMIN_PASSWORD se proporciona por variable de entorno privada.
+.venv\Scripts\python.exe -m scripts.crear_admin_plataforma --email <correo>
+# DEMO_ADMIN_PASSWORD se proporciona por variable de entorno privada.
+.venv\Scripts\python.exe -m scripts.seed_empresas_demo
+.venv\Scripts\python.exe -B -m pytest -q tests/unit -p no:cacheprovider
+```
+
+Los scripts son idempotentes; el de demostración rechaza hosts remotos. Las pruebas sustituyen servicios externos y usan datos sintéticos. No declares migración aplicada ni validación de dispositivo por tener el código o una suite unitaria aprobada.
+
 ## 1. Propósito y alcance actual
 
 FashionStore es el backend de una plataforma de comercio electrónico de ropa con catálogo público como página principal. El acceso no comienza en una pantalla de login: cualquier visitante puede consultar productos, categorías, tallas, colores, temporadas, colecciones y sucursales. La autenticación se solicita cuando una operación es personal o administrativa.

@@ -1,3 +1,4 @@
+from src.infrastructure.security.tenancy import require_feature
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -451,7 +452,7 @@ def cash_points(user: Writer, branch_id: uuid.UUID, db: Session = Depends(get_db
     return response([{"id": row.id, "code": row.code, "name": row.name, "branch_id": row.branch_id} for row in rows])
 
 
-@router.post("/admin/pos/sales", status_code=201)
+@router.post("/admin/pos/sales", status_code=201, dependencies=[Depends(require_feature("sales"))])
 def pos_sale(data: POSSale, user: Writer, db: Session = Depends(get_db)):
     order, replay = CommerceService(db).pos_sale(user, data)
     return response({**order_data(order), "idempotent_replay": replay})
@@ -587,7 +588,7 @@ def insights(user: Analyst, data: InsightsRequest | None = None, db: Session = D
         return response({"available": False, "message": "El servicio de IA no respondio. Puede continuar usando las metricas reales."})
 
 
-@analytics_router.post("/assistant/interpret", tags=['PAQ-05 · Inteligencia artificial y reportes'])
+@analytics_router.post("/assistant/interpret", tags=['PAQ-05 · Inteligencia artificial y reportes'], dependencies=[Depends(require_feature("ai_reports"))])
 def interpret(data: InterpretRequest, user: Analyst, db: Session = Depends(get_db)):
     """Funcion A del asistente de reportes: consulta en lenguaje natural a una
     estructura validada (vista, filtros, agrupacion, metrica, comparacion).
@@ -602,7 +603,7 @@ def interpret(data: InterpretRequest, user: Analyst, db: Session = Depends(get_d
     return response(result)
 
 
-@analytics_router.post("/assistant/explain", tags=['PAQ-05 · Inteligencia artificial y reportes'])
+@analytics_router.post("/assistant/explain", tags=['PAQ-05 · Inteligencia artificial y reportes'], dependencies=[Depends(require_feature("ai_reports"))])
 def explain(data: ExplainRequest, user: Analyst, db: Session = Depends(get_db)):
     """Funcion B del asistente de reportes: explica metricas agregadas usando
     el contexto de filtros visible. El servidor recalcula las metricas; no
@@ -610,7 +611,7 @@ def explain(data: ExplainRequest, user: Analyst, db: Session = Depends(get_db)):
     return response(ReportsAI(db).explain(data.question, data.filters or ReportFilters()))
 
 
-@analytics_router.post("/assistant/execute", tags=['PAQ-05 · Inteligencia artificial y reportes'])
+@analytics_router.post("/assistant/execute", tags=['PAQ-05 · Inteligencia artificial y reportes'], dependencies=[Depends(require_feature("ai_reports"))])
 def execute_tool(data: AssistantToolRequest, user: Analyst, db: Session = Depends(get_db)):
     """Ejecuta una herramienta tipada del asistente (hoy export_report) con
     parametros validados en esta capa y datos autorizados. Deja bitacora con el

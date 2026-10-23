@@ -29,3 +29,12 @@ def require_permissions(*required: str) -> Callable:
         return user
 
     return dependency
+
+
+def require_platform_permissions(*required: str) -> Callable:
+    """La administración global exige cuenta de plataforma además del permiso."""
+    def dependency(user: UserModel = Depends(require_permissions(*required))) -> UserModel:
+        if user.tenant_id is not None or not any(role.code == 'platform_admin' and role.is_active for role in user.roles):
+            raise AuthorizationError('Esta operación requiere un administrador de plataforma.')
+        return user
+    return dependency

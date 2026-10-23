@@ -25,6 +25,8 @@ def test_sin_ia_configurada_el_endpoint_no_toca_la_api(monkeypatch):
     from src.infrastructure.config import settings as settings_module
 
     monkeypatch.setattr(settings_module.settings, "ai_api_key", "")
+    monkeypatch.setattr(catalog_router.PlanGuard, "exigir_funcion", lambda *args: None)
+    from types import SimpleNamespace
     calls = []
     original_post = catalog_router.httpx.post
     catalog_router.httpx.post = lambda *a, **k: calls.append(a)  # noqa: E731
@@ -32,6 +34,7 @@ def test_sin_ia_configurada_el_endpoint_no_toca_la_api(monkeypatch):
         result = catalog_router.draft_product(
             ProductDraftRequest(message="registrame una campera de cuero a 450 bolivianos"),
             actor=object(),
+            ctx=SimpleNamespace(tenant_id=None),
             db=None,
         )
     finally:

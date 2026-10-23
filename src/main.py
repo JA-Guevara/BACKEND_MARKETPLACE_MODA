@@ -15,6 +15,8 @@ from src.shared.exceptions.base_exception import AppException
 
 
 OPENAPI_PACKAGE_TAGS = [
+    {"name": "PAQ-06 · Plataforma SaaS", "description": "Empresas, planes y suscripciones."},
+    {"name": "PAQ-07 · Operación sin conexión", "description": "Instantáneas del catálogo y reservas sin conexión."},
     {"name": "PAQ-01 · Usuarios y catálogo", "description": "CU-01 a CU-07: identidad, roles, catálogo, temporadas y proveedores."},
     {"name": "PAQ-02 · Inventario y sucursales", "description": "CU-08 a CU-11: sucursales, disponibilidad, movimientos y actualización de existencias."},
     {"name": "PAQ-03 · Reservas y vestidor virtual", "description": "CU-12 a CU-16: reservas, avisos, recursos del vestidor y foto IA."},

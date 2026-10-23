@@ -28,3 +28,8 @@ api_router.include_router(vestidor_router)
 api_router.include_router(tryon_ai_router)
 api_router.include_router(notifications_router)
 api_router.include_router(engagement_router)
+
+from src.plataforma_saas.web.router import plataforma_router
+from src.operacion_offline.web.router import router as offline_router
+api_router.include_router(plataforma_router)
+api_router.include_router(offline_router)

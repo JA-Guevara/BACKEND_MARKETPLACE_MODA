@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
-from src.infrastructure.security.tenancy import TenantScope
+from src.infrastructure.security.tenancy import TenantScope, require_feature
 from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.infrastructure.security.authorization import require_permissions
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
@@ -93,7 +93,7 @@ def _user_data(users: dict, reservation: ReservationModel) -> dict:
     }
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_feature("reservations"))])
 def create_reservation(data: CrearReservaRequest, ctx: TenantScope, user: User, db: Session = Depends(get_db)):
     PlanGuard(db).exigir_funcion(ctx.tenant_id, "reservations")
     if data.origin == "OFFLINE":

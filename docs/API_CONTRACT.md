@@ -1,5 +1,35 @@
 # FashionStore API — contrato para frontend
 
+## Segundo parcial: contexto y rutas nuevas
+
+El prefijo de todas las rutas es `/api/v1`. Login/refresh devuelven `user.tenant` y `user.subscription`, igual que `/auth/me`; son `null` para plataforma. La suscripción contiene `plan_code`, `plan_name`, `status`, fechas, `days_left`, `features` (mapa booleano) y `limits` (mapa numérico). No enviar un `tenant_id` en operaciones de negocio: el servidor determina el alcance desde la sesión.
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| GET/POST | `/platform/tenants` | Plataforma: `tenants.read/write` |
+| GET | `/platform/tenants/stats` | Plataforma: `tenants.read` |
+| GET/PATCH | `/platform/tenants/{id}` | Plataforma: `tenants.read/write` |
+| GET | `/platform/tenants/{id}/activity` | Plataforma: `tenants.read` |
+| POST | `/platform/tenants/{id}/activate`, `/deactivate`, `/resend-invitation` | Plataforma: `tenants.write` |
+| GET/POST | `/platform/plans` | Plataforma: `plans.read/write` |
+| GET | `/platform/plans/features` | Plataforma: `plans.read` |
+| PATCH | `/platform/plans/{id}` | Plataforma: `plans.write` |
+| POST | `/platform/plans/{id}/activate`, `/deactivate` | Plataforma: `plans.write` |
+| GET | `/platform/tenants/{id}/subscription` | Plataforma: `subscriptions.read` |
+| POST | `/platform/tenants/{id}/subscription/change-plan`, `/renew`, `/status` | Plataforma: `subscriptions.write` |
+| GET | `/tenant/subscription` | Empresa: `my_subscription.read` |
+| GET | `/offline/snapshot?branch_id=&since=` | Empresa: funcionalidad `offline` y suscripción activa |
+
+Registro de empresa: datos fiscales/contacto, `admin:{first_name,last_name,email}`, `plan_code` y `start_date` opcional. No recibe contraseña. `tax_id` y `slug` no se editan. Una invitación fallida no revierte el alta; el reenvío informa su resultado.
+
+Crear/editar plan recibe `features:[{feature_code,enabled,limit_value}]`, incluyendo `max_active_branches` con límite positivo. La respuesta usa mapas `features`/`limits`; el formulario web transforma ambos formatos. Código de plan inmutable. Al reducir un límite se guarda el plan y se devuelve `exceeded_tenants`.
+
+Cambio de plan: `{plan_code,reason,start_date?}`; renovación: `{reason?}` (la duración se toma del plan, no recibe `days`); cambio de estado: `{status,reason}`. Un downgrade incompatible devuelve409 `plan_limit_exceeded` con `active_branches`, `limit` y `must_deactivate`, sin modificar la suscripción.
+
+`POST /reservations` mantiene su cuerpo previo y agrega `origin` (`ONLINE` por defecto), `device_id`, `client_created_at`, `customer_id`. `OFFLINE` requiere `client_key` y `device_id`. Las respuestas exponen origen/dispositivo/fecha local. Cliente ajeno404; seleccionar otro cliente sin permiso403. Mismo titular y clave con distinto contenido422; reenvío idéntico devuelve la misma reserva.
+
+Errores: `tenant_required`, `tenant_inactive`, `tenant_not_found`, `subscription_inactive`, `feature_not_in_plan`, `plan_limit_exceeded`, `tenant_tax_id_taken`, `tenant_slug_taken`, `plan_code_taken`, `plan_limit_invalid`. Se conserva el envoltorio `error:{code,message,details}`.
+
 ## Convenciones generales
 
 Base local: `http://localhost:8000/api/v1`

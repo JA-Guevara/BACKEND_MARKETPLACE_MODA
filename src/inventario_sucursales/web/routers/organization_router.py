@@ -129,7 +129,6 @@ def activate_branch(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter,
 
 @router.post("/organization/branches/{entity_id}/deactivate", response_model=ApiResponse[BranchResponse])
 def deactivate_branch(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
-    PlanGuard(db).exigir_activa(ctx.tenant_id)
     return ApiResponse(message="Sucursal desactivada.", data=OrganizationService(db, ctx.tenant_id).set_branch_active(entity_id, False, actor))
 
 

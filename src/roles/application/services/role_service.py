@@ -33,6 +33,7 @@ class RoleService:
 
     def update_role(self, role_id: uuid.UUID, data: RoleUpdate, actor: UserModel) -> RoleModel:
         role = self._get_role(role_id)
+        self._protect_platform_role(role, actor)
         for field, value in data.model_dump(exclude_unset=True).items():
             setattr(role, field, value.strip() if isinstance(value, str) else value)
         self._audit(actor, "roles.update", "role", role.id, "Rol actualizado.")
@@ -41,6 +42,7 @@ class RoleService:
 
     def set_permissions(self, role_id: uuid.UUID, permission_ids: list[uuid.UUID], actor: UserModel) -> RoleModel:
         role = self._get_role(role_id)
+        self._protect_platform_role(role, actor)
         role.permissions = self._resolve_permissions(permission_ids)
         self._audit(actor, "roles.permissions_updated", "role", role.id, "Permisos del rol actualizados.")
         self.db.commit()
@@ -56,6 +58,7 @@ class RoleService:
 
     def activate_role(self, role_id: uuid.UUID, actor: UserModel) -> RoleModel:
         role = self._get_role(role_id)
+        self._protect_platform_role(role, actor)
         role.is_active = True
         self._audit(actor, "roles.activate", "role", role.id, "Rol activado.")
         self.db.commit()
@@ -108,6 +111,12 @@ class RoleService:
         if any(permission is None or not permission.is_active for permission in permissions):
             raise NotFoundError("Uno o mas permisos no existen o estan inactivos.")
         return list(permissions)
+
+    @staticmethod
+    def _protect_platform_role(role, actor):
+        if role.code == 'platform_admin' and actor.tenant_id is not None:
+            from src.shared.exceptions.domain_exception import AuthorizationError
+            raise AuthorizationError('Una empresa no puede modificar el rol de plataforma.')
 
     def _get_role(self, role_id: uuid.UUID) -> RoleModel:
         role = self.repository.get_role(role_id)
