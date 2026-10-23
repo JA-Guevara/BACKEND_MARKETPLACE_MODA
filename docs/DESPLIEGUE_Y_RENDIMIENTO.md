@@ -128,8 +128,23 @@ Incidente 23/10/2026: login devolvió SQLSTATE `42703` (columna inexistente) y c
 (tabla inexistente) después de publicar CU-00 a CU-05. Los logs confirmaban un esquema incompleto,
 no un rechazo de contraseña. Desde la consola/SSH del **servicio backend correcto**, se puede
 comprobar/aplicar la secuencia con `python -m alembic current`, `python -m alembic upgrade head` y
-`python -m alembic current`. La revisión esperada es `20261028_0017`. No usar `alembic stamp` para
+`python -m alembic current`. La revisión esperada es `20261029_0018`. No usar `alembic stamp` para
 ocultar el problema ni borrar tablas. Si falla, revisar el error de migración antes de reiniciar.
+
+### Administradores anteriores al cambio a SaaS
+
+La revisión `20261029_0018`, autorizada por el propietario, convierte los usuarios con rol `admin`
+o `superadmin` de la empresa inicial que ya existían cuando la migración 0016 creó esa empresa.
+La identificación usa el UUID fijo de la empresa inicial y su fecha de creación, sin correos
+personales en el código. Las cuentas eliminadas se excluyen; los administradores nuevos y los
+de otras empresas conservan su alcance. No se alteran contraseña, verificación ni activación.
+
+Las cuentas convertidas quedan sin empresa y únicamente con `platform_admin`; se revocan sus
+refresh tokens. Deben iniciar sesión nuevamente para recibir el menú Empresas, Planes y
+Suscripciones. La bitácora registra `platform.legacy_admin_promoted` con empresa y roles previos.
+El downgrade restaura esa configuración si la cuenta conserva el alcance y rol aplicados por
+esta migración; las sesiones revocadas no se recuperan. El proceso es transaccional y se aplica
+una sola vez por base de datos mediante Alembic.
 
 ---
 
