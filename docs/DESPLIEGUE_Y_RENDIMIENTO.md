@@ -111,16 +111,25 @@ No hay ningún otro estado global compartido entre procesos: no hay caché en me
 ni hilos de fondo preexistentes. `MEDIA_STORAGE_DIR` es el sistema de archivos del mismo contenedor y
 los nombres se generan con `uuid4().hex`, así que los workers no colisionan.
 
-### El `preDeployCommand` de Alembic sigue siendo correcto
+### Migraciones antes de atender peticiones
 
-Railway ejecuta el pre-deploy **una sola vez por despliegue**, en un contenedor efímero, antes de que
-arranque ninguna réplica. `--workers` es un detalle interno del `startCommand` y Railway ni lo ve:
-Alembic no corre dos veces y no hay carrera de migraciones. Refuerzo adicional: `alembic/env.py` usa
-`poolclass=NullPool`, abre una conexión, migra y la cierra. Si el pre-deploy falla, el despliegue no
-avanza.
+Se conserva el `preDeployCommand` de Alembic. Además, `startCommand` ejecuta
+`python -m scripts.iniciar_servidor`: aplica `alembic upgrade head` antes de iniciar Uvicorn y sus
+workers. Si la migración falla, el proceso termina y no admite tráfico con un esquema antiguo.
+Si el pre-deploy ya migró, la segunda comprobación no aplica cambios. `alembic/env.py` usa
+`poolclass=NullPool` y cierra su conexión al terminar. Este arranque está previsto para una réplica;
+antes de escalar réplicas se debe mantener la migración centralizada en el pre-deploy.
 
-El `healthcheckTimeout` de 30 s alcanza: cada worker tarda ~2,1 s en importar la aplicación y lo
-hacen en paralelo.
+`PORT` y `WEB_CONCURRENCY` siguen controlando puerto y workers. El margen del chequeo de arranque
+es de 120 s para incluir la comprobación de migraciones. `/health` sigue siendo una señal de vida
+del proceso; no acredita que la base esté migrada ni conectada.
+
+Incidente 23/10/2026: login devolvió SQLSTATE `42703` (columna inexistente) y catálogo `42P01`
+(tabla inexistente) después de publicar CU-00 a CU-05. Los logs confirmaban un esquema incompleto,
+no un rechazo de contraseña. Desde la consola/SSH del **servicio backend correcto**, se puede
+comprobar/aplicar la secuencia con `python -m alembic current`, `python -m alembic upgrade head` y
+`python -m alembic current`. La revisión esperada es `20261028_0017`. No usar `alembic stamp` para
+ocultar el problema ni borrar tablas. Si falla, revisar el error de migración antes de reiniciar.
 
 ---
 
