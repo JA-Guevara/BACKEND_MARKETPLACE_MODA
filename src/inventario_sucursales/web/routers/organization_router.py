@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.database.session import get_db
+from src.infrastructure.security.tenancy import TenantScope, get_public_tenant_id
+from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.infrastructure.security.authorization import require_permissions
 from src.inventario_sucursales.application.services.organization_service import OrganizationService
 from src.inventario_sucursales.infrastructure.repositories.organization_repository import OrganizationRepository
@@ -21,8 +23,8 @@ SupplierWriter = Annotated[UserModel, Depends(require_permissions("suppliers.wri
 
 
 @router.get("/public/branches", response_model=ApiResponse[list[BranchResponse]], tags=['PAQ-02 · Inventario y sucursales'])
-def public_branches(db: Session = Depends(get_db)):
-    return ApiResponse(message="Sucursales obtenidas.", data=OrganizationRepository(db).list_branches(False, False))
+def public_branches(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return ApiResponse(message="Sucursales obtenidas.", data=OrganizationRepository(db, tenant_id).list_branches(False, False))
 
 
 @router.get("/organization/cities", response_model=ApiResponse[list[CityResponse]])
@@ -98,73 +100,83 @@ def delete_supplier(entity_id: uuid.UUID, actor: SupplierWriter, db: Session = D
 
 
 @router.get("/organization/branches", response_model=ApiResponse[list[BranchResponse]])
-def list_branches(actor: BranchReader, include_inactive: bool = False, include_deleted: bool = False, db: Session = Depends(get_db)):
-    return ApiResponse(message="Sucursales obtenidas.", data=OrganizationRepository(db).list_branches(include_inactive, include_deleted))
+def list_branches(ctx: TenantScope, actor: BranchReader, include_inactive: bool = False, include_deleted: bool = False, db: Session = Depends(get_db)):
+    return ApiResponse(message="Sucursales obtenidas.", data=OrganizationRepository(db, ctx.tenant_id).list_branches(include_inactive, include_deleted))
 
 
 @router.get("/organization/branches/{entity_id}", response_model=ApiResponse[BranchResponse])
-def get_branch(entity_id: uuid.UUID, actor: BranchReader, include_deleted: bool = False, db: Session = Depends(get_db)):
-    return ApiResponse(message="Sucursal obtenida.", data=OrganizationService(db).require_branch(entity_id, include_deleted))
+def get_branch(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchReader, include_deleted: bool = False, db: Session = Depends(get_db)):
+    return ApiResponse(message="Sucursal obtenida.", data=OrganizationService(db, ctx.tenant_id).require_branch(entity_id, include_deleted))
 
 
 @router.post("/organization/branches", response_model=ApiResponse[BranchResponse], status_code=status.HTTP_201_CREATED)
-def create_branch(data: BranchCreate, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Sucursal creada.", data=OrganizationService(db).create_branch(data, actor))
+def create_branch(data: BranchCreate, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Sucursal creada.", data=OrganizationService(db, ctx.tenant_id).create_branch(data, actor))
 
 
 @router.patch("/organization/branches/{entity_id}", response_model=ApiResponse[BranchResponse])
-def update_branch(entity_id: uuid.UUID, data: BranchUpdate, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Sucursal actualizada.", data=OrganizationService(db).update_branch(entity_id, data, actor))
+def update_branch(entity_id: uuid.UUID, data: BranchUpdate, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Sucursal actualizada.", data=OrganizationService(db, ctx.tenant_id).update_branch(entity_id, data, actor))
 
 
 @router.post("/organization/branches/{entity_id}/activate", response_model=ApiResponse[BranchResponse])
-def activate_branch(entity_id: uuid.UUID, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Sucursal activada.", data=OrganizationService(db).set_branch_active(entity_id, True, actor))
+def activate_branch(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Sucursal activada.", data=OrganizationService(db, ctx.tenant_id).set_branch_active(entity_id, True, actor))
 
 
 @router.post("/organization/branches/{entity_id}/deactivate", response_model=ApiResponse[BranchResponse])
-def deactivate_branch(entity_id: uuid.UUID, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Sucursal desactivada.", data=OrganizationService(db).set_branch_active(entity_id, False, actor))
+def deactivate_branch(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Sucursal desactivada.", data=OrganizationService(db, ctx.tenant_id).set_branch_active(entity_id, False, actor))
 
 
 @router.delete("/organization/branches/{entity_id}", response_model=ApiResponse[None])
-def delete_branch(entity_id: uuid.UUID, actor: BranchWriter, db: Session = Depends(get_db)):
-    OrganizationService(db).delete_branch(entity_id, actor)
+def delete_branch(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    OrganizationService(db, ctx.tenant_id).delete_branch(entity_id, actor)
     return ApiResponse(message="Sucursal eliminada.")
 
 
 @router.get("/organization/cash-points", response_model=ApiResponse[list[CashPointResponse]])
-def list_cash_points(actor: BranchReader, branch_id: uuid.UUID | None = None, include_inactive: bool = False, include_deleted: bool = False, db: Session = Depends(get_db)):
-    return ApiResponse(message="Puntos de caja obtenidos.", data=OrganizationRepository(db).list_cash_points(branch_id, include_inactive, include_deleted))
+def list_cash_points(ctx: TenantScope, actor: BranchReader, branch_id: uuid.UUID | None = None, include_inactive: bool = False, include_deleted: bool = False, db: Session = Depends(get_db)):
+    return ApiResponse(message="Puntos de caja obtenidos.", data=OrganizationRepository(db, ctx.tenant_id).list_cash_points(branch_id, include_inactive, include_deleted))
 
 
 @router.get("/organization/cash-points/{entity_id}", response_model=ApiResponse[CashPointResponse])
-def get_cash_point(entity_id: uuid.UUID, actor: BranchReader, include_deleted: bool = False, db: Session = Depends(get_db)):
-    return ApiResponse(message="Punto de caja obtenido.", data=OrganizationService(db).require_cash_point(entity_id, include_deleted))
+def get_cash_point(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchReader, include_deleted: bool = False, db: Session = Depends(get_db)):
+    return ApiResponse(message="Punto de caja obtenido.", data=OrganizationService(db, ctx.tenant_id).require_cash_point(entity_id, include_deleted))
 
 
 @router.post("/organization/cash-points", response_model=ApiResponse[CashPointResponse], status_code=status.HTTP_201_CREATED)
-def create_cash_point(data: CashPointCreate, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Punto de caja creado.", data=OrganizationService(db).create_cash_point(data, actor))
+def create_cash_point(data: CashPointCreate, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Punto de caja creado.", data=OrganizationService(db, ctx.tenant_id).create_cash_point(data, actor))
 
 
 @router.patch("/organization/cash-points/{entity_id}", response_model=ApiResponse[CashPointResponse])
-def update_cash_point(entity_id: uuid.UUID, data: CashPointUpdate, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Punto de caja actualizado.", data=OrganizationService(db).update_cash_point(entity_id, data, actor))
+def update_cash_point(entity_id: uuid.UUID, data: CashPointUpdate, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Punto de caja actualizado.", data=OrganizationService(db, ctx.tenant_id).update_cash_point(entity_id, data, actor))
 
 
 @router.post("/organization/cash-points/{entity_id}/activate", response_model=ApiResponse[CashPointResponse])
-def activate_cash_point(entity_id: uuid.UUID, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Punto de caja activado.", data=OrganizationService(db).set_cash_point_active(entity_id, True, actor))
+def activate_cash_point(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Punto de caja activado.", data=OrganizationService(db, ctx.tenant_id).set_cash_point_active(entity_id, True, actor))
 
 
 @router.post("/organization/cash-points/{entity_id}/deactivate", response_model=ApiResponse[CashPointResponse])
-def deactivate_cash_point(entity_id: uuid.UUID, actor: BranchWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Punto de caja desactivado.", data=OrganizationService(db).set_cash_point_active(entity_id, False, actor))
+def deactivate_cash_point(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    return ApiResponse(message="Punto de caja desactivado.", data=OrganizationService(db, ctx.tenant_id).set_cash_point_active(entity_id, False, actor))
 
 
 @router.delete("/organization/cash-points/{entity_id}", response_model=ApiResponse[None])
-def delete_cash_point(entity_id: uuid.UUID, actor: BranchWriter, db: Session = Depends(get_db)):
-    OrganizationService(db).delete_cash_point(entity_id, actor)
+def delete_cash_point(entity_id: uuid.UUID, ctx: TenantScope, actor: BranchWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_activa(ctx.tenant_id)
+    OrganizationService(db, ctx.tenant_id).delete_cash_point(entity_id, actor)
     return ApiResponse(message="Punto de caja eliminado.")
 

@@ -21,9 +21,10 @@ from src.usuarios_catalogo.web.schemas.catalog import ARAssetCreate, ARAssetUpda
 
 
 class CatalogService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
-        self.repository = CatalogRepository(db)
+        self.tenant_id = tenant_id
+        self.repository = CatalogRepository(db, tenant_id)
         self.audit = RecordAuditEvent(db)
 
     def create_category(self, data: CategoryCreate, actor: UserModel) -> CategoryModel:
@@ -137,6 +138,7 @@ class CatalogService:
         self._validate_primary_flags(data.images, "imagenes")
         self._validate_primary_flags(data.suppliers, "proveedores")
         product = ProductModel(
+            tenant_id=self.tenant_id,
             name=data.name.strip(), slug=slug, description=data.description.strip(), brand=self._strip(data.brand),
             gender=self._strip(data.gender), base_price=data.base_price, category_id=data.category_id,
             season_id=data.season_id, collection_id=data.collection_id, is_featured=data.is_featured,
@@ -445,7 +447,7 @@ class CatalogService:
         counter = 2
         while True:
             column = model.slug
-            existing = self.db.scalar(select(model).where(func.lower(column) == slug.lower()))
+            existing = self.db.scalar(select(model).where(func.lower(column) == slug.lower(), *([model.tenant_id == self.tenant_id] if model is ProductModel and self.tenant_id else [])))
             if not existing or existing.id == current_id:
                 return slug
             slug = f"{base}-{counter}"

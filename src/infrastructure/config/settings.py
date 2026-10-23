@@ -10,6 +10,8 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
 
+    default_tenant_slug: str = "fashionstore"
+    invitation_token_expire_hours: int = 72
     app_name: str = "FashionStore API"
     app_env: str = "development"
     debug: bool = False

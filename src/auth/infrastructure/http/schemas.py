@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -69,6 +69,25 @@ class RoleSummary(BaseModel):
     permissions: list[PermissionSummary] = Field(default_factory=list)
 
 
+class TenantSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    slug: str
+    trade_name: str
+    status: str
+
+
+class SubscriptionSummary(BaseModel):
+    plan_code: str
+    plan_name: str
+    status: str
+    start_date: date
+    end_date: date
+    days_left: int
+    features: dict[str, bool]
+    limits: dict[str, int]
+
+
 class AuthUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -79,6 +98,8 @@ class AuthUserResponse(BaseModel):
     phone: str | None
     is_active: bool
     is_verified: bool
+    tenant: TenantSummary | None = None
+    subscription: SubscriptionSummary | None = None
     last_login_at: datetime | None
     roles: list[RoleSummary] = Field(default_factory=list)
 

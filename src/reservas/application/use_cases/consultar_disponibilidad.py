@@ -10,14 +10,15 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
-from src.shared.exceptions.domain_exception import ValidationError
+from src.shared.exceptions.domain_exception import ValidationError, NotFoundError
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
 from src.ventas_pagos.infrastructure.models import StockModel
 
 
 class ConsultarDisponibilidad:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id=None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     def execute(
         self,
@@ -30,6 +31,8 @@ class ConsultarDisponibilidad:
         distinguir "no tiene" de "no alcanza": la variante queda disponible solo
         si el stock cubre la cantidad solicitada."""
         branch = self.db.get(BranchModel, branch_id)
+        if branch and self.tenant_id and branch.tenant_id != self.tenant_id:
+            raise NotFoundError("Sucursal no encontrada.")
         if not branch or not branch.is_active or branch.deleted_at:
             raise ValidationError("Sucursal no disponible.")
         if not variant_ids:
@@ -56,6 +59,7 @@ class ConsultarDisponibilidad:
             .all()
         }
 
+        variantes = {key: variant for key, variant in variantes.items() if not self.tenant_id or variant.product.tenant_id == self.tenant_id}
         resultado = []
         for variant_id, pedido in zip(variant_ids, pedidos):
             variante = variantes.get(variant_id)

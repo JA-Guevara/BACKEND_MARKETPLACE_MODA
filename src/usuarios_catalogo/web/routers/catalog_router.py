@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.config.settings import settings
 from src.infrastructure.database.session import get_db
+from src.infrastructure.security.tenancy import TenantScope, get_public_tenant_id
+from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.infrastructure.security.authorization import require_permissions
 from src.shared.exceptions.domain_exception import NotFoundError
 from src.shared.responses.api_response import ApiResponse
@@ -30,13 +32,13 @@ CatalogWriter = Annotated[UserModel, Depends(require_permissions("catalog.write"
 
 @router.get("/products", response_model=ApiResponse[Page[PublicProductResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
 def public_products(
-    db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(24, ge=1, le=100),
+    tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(24, ge=1, le=100),
     search: str | None = None, category_id: uuid.UUID | None = None, season_id: uuid.UUID | None = None,
     collection_id: uuid.UUID | None = None, size_id: uuid.UUID | None = None, color_id: uuid.UUID | None = None,
     brand: str | None = None, featured: bool | None = None, min_price: Decimal | None = Query(default=None, ge=0),
     max_price: Decimal | None = Query(default=None, ge=0),
 ):
-    result = CatalogService(db).public_page(
+    result = CatalogService(db, tenant_id).public_page(
         page=page, page_size=page_size, search=search, category_id=category_id, season_id=season_id,
         collection_id=collection_id, size_id=size_id, color_id=color_id, brand=brand, featured=featured,
         min_price=min_price, max_price=max_price, include_deleted=False,
@@ -45,8 +47,8 @@ def public_products(
 
 
 @router.get("/products/{slug}", response_model=ApiResponse[PublicProductResponse], tags=['PAQ-01 · Usuarios y catálogo'])
-def public_product(slug: str, db: Session = Depends(get_db)):
-    product = CatalogRepository(db).get_product_by_slug(slug)
+def public_product(slug: str, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    product = CatalogRepository(db, tenant_id).get_product_by_slug(slug)
     if not product:
         raise NotFoundError("Producto no encontrado.")
     return ApiResponse(message="Producto obtenido.", data=CatalogService.to_public(product))
@@ -79,13 +81,13 @@ def public_collections(db: Session = Depends(get_db)):
 
 @router.get("/admin/products", response_model=ApiResponse[Page[ProductResponse]])
 def admin_products(
-    actor: CatalogReader, db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    ctx: TenantScope, actor: CatalogReader, db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
     search: str | None = None, category_id: uuid.UUID | None = None, season_id: uuid.UUID | None = None,
     collection_id: uuid.UUID | None = None, size_id: uuid.UUID | None = None, color_id: uuid.UUID | None = None,
     brand: str | None = None, featured: bool | None = None, min_price: Decimal | None = Query(default=None, ge=0),
     max_price: Decimal | None = Query(default=None, ge=0), include_deleted: bool = False,
 ):
-    items, total = CatalogRepository(db).list_products(
+    items, total = CatalogRepository(db, ctx.tenant_id).list_products(
         page=page, page_size=page_size, public=False, search=search, category_id=category_id, season_id=season_id,
         collection_id=collection_id, size_id=size_id, color_id=color_id, brand=brand, featured=featured,
         min_price=min_price, max_price=max_price, include_deleted=include_deleted,
@@ -95,8 +97,9 @@ def admin_products(
 
 
 @router.post("/admin/products", response_model=ApiResponse[ProductResponse], status_code=status.HTTP_201_CREATED)
-def create_product(data: ProductCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Producto creado.", data=CatalogService(db).create_product(data, actor))
+def create_product(data: ProductCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Producto creado.", data=CatalogService(db, ctx.tenant_id).create_product(data, actor))
 
 
 PRODUCT_DRAFT_SCHEMA = {
@@ -127,7 +130,8 @@ def _draft_unavailable(message: str) -> ApiResponse:
 
 
 @router.post("/admin/products/draft", tags=['PAQ-01 · Usuarios y catálogo'])
-def draft_product(data: ProductDraftRequest, actor: CatalogWriter, db: Session = Depends(get_db)):
+def draft_product(data: ProductDraftRequest, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
     """Extrae, con IA, los campos de una prenda nueva a partir de un pedido en
     lenguaje natural (ej.: "registrame una campera de cuero a 450 bolivianos").
     NO crea nada: el admin revisa el borrador y confirma con POST /admin/products
@@ -183,34 +187,39 @@ def draft_product(data: ProductDraftRequest, actor: CatalogWriter, db: Session =
 
 
 @router.get("/admin/products/{product_id}", response_model=ApiResponse[ProductResponse])
-def admin_product(product_id: uuid.UUID, actor: CatalogReader, db: Session = Depends(get_db)):
-    return ApiResponse(message="Producto obtenido.", data=CatalogService(db).require_product(product_id, include_deleted=True))
+def admin_product(product_id: uuid.UUID, ctx: TenantScope, actor: CatalogReader, db: Session = Depends(get_db)):
+    return ApiResponse(message="Producto obtenido.", data=CatalogService(db, ctx.tenant_id).require_product(product_id, include_deleted=True))
 
 
 @router.patch("/admin/products/{product_id}", response_model=ApiResponse[ProductResponse])
-def update_product(product_id: uuid.UUID, data: ProductUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Producto actualizado.", data=CatalogService(db).update_product(product_id, data, actor))
+def update_product(product_id: uuid.UUID, data: ProductUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Producto actualizado.", data=CatalogService(db, ctx.tenant_id).update_product(product_id, data, actor))
 
 
 @router.post("/admin/products/{product_id}/activate", response_model=ApiResponse[ProductResponse])
-def activate_product(product_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Producto activado.", data=CatalogService(db).set_product_active(product_id, True, actor))
+def activate_product(product_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Producto activado.", data=CatalogService(db, ctx.tenant_id).set_product_active(product_id, True, actor))
 
 
 @router.post("/admin/products/{product_id}/deactivate", response_model=ApiResponse[ProductResponse])
-def deactivate_product(product_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Producto desactivado.", data=CatalogService(db).set_product_active(product_id, False, actor))
+def deactivate_product(product_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Producto desactivado.", data=CatalogService(db, ctx.tenant_id).set_product_active(product_id, False, actor))
 
 
 @router.delete("/admin/products/{product_id}", response_model=ApiResponse[None])
-def delete_product(product_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-    CatalogService(db).delete_product(product_id, actor)
+def delete_product(product_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    CatalogService(db, ctx.tenant_id).delete_product(product_id, actor)
     return ApiResponse(message="Producto eliminado.")
 
 
 @router.post("/admin/products/{product_id}/variants", response_model=ApiResponse[ProductResponse])
-def add_variant(product_id: uuid.UUID, data: VariantCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    producto = CatalogService(db).add_variant(product_id, data, actor)
+def add_variant(product_id: uuid.UUID, data: VariantCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    producto = CatalogService(db, ctx.tenant_id).add_variant(product_id, data, actor)
     # Si la foto principal ya existe, el color nuevo no necesita que alguien
     # vuelva a «configurar» el probador: se prepara automáticamente.
     try:
@@ -221,18 +230,21 @@ def add_variant(product_id: uuid.UUID, data: VariantCreate, actor: CatalogWriter
 
 
 @router.patch("/admin/products/{product_id}/variants/{variant_id}", response_model=ApiResponse[ProductResponse])
-def update_variant(product_id: uuid.UUID, variant_id: uuid.UUID, data: VariantUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Variante actualizada.", data=CatalogService(db).update_variant(product_id, variant_id, data, actor))
+def update_variant(product_id: uuid.UUID, variant_id: uuid.UUID, data: VariantUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Variante actualizada.", data=CatalogService(db, ctx.tenant_id).update_variant(product_id, variant_id, data, actor))
 
 
 @router.delete("/admin/products/{product_id}/variants/{variant_id}", response_model=ApiResponse[ProductResponse])
-def delete_variant(product_id: uuid.UUID, variant_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Variante eliminada.", data=CatalogService(db).delete_variant(product_id, variant_id, actor))
+def delete_variant(product_id: uuid.UUID, variant_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Variante eliminada.", data=CatalogService(db, ctx.tenant_id).delete_variant(product_id, variant_id, actor))
 
 
 @router.post("/admin/products/{product_id}/images", response_model=ApiResponse[ProductResponse])
-def add_image(product_id: uuid.UUID, data: ImageCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    producto = CatalogService(db).add_image(product_id, data, actor)
+def add_image(product_id: uuid.UUID, data: ImageCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    producto = CatalogService(db, ctx.tenant_id).add_image(product_id, data, actor)
     if data.is_primary:
         # La imagen principal es la referencia única del probador. Al cambiarla
         # se vuelven a preparar todos los colores para no mantener un recorte de
@@ -247,28 +259,33 @@ def add_image(product_id: uuid.UUID, data: ImageCreate, actor: CatalogWriter, db
 
 
 @router.delete("/admin/products/{product_id}/images/{image_id}", response_model=ApiResponse[ProductResponse])
-def delete_image(product_id: uuid.UUID, image_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Imagen eliminada.", data=CatalogService(db).delete_image(product_id, image_id, actor))
+def delete_image(product_id: uuid.UUID, image_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Imagen eliminada.", data=CatalogService(db, ctx.tenant_id).delete_image(product_id, image_id, actor))
 
 
 @router.post("/admin/products/{product_id}/ar-assets", response_model=ApiResponse[ProductResponse])
-def add_ar_asset(product_id: uuid.UUID, data: ARAssetCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Activo AR agregado.", data=CatalogService(db).add_ar_asset(product_id, data, actor))
+def add_ar_asset(product_id: uuid.UUID, data: ARAssetCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Activo AR agregado.", data=CatalogService(db, ctx.tenant_id).add_ar_asset(product_id, data, actor))
 
 
 @router.patch("/admin/products/{product_id}/ar-assets/{asset_id}", response_model=ApiResponse[ProductResponse])
-def update_ar_asset(product_id: uuid.UUID, asset_id: uuid.UUID, data: ARAssetUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Activo AR actualizado.", data=CatalogService(db).update_ar_asset(product_id, asset_id, data, actor))
+def update_ar_asset(product_id: uuid.UUID, asset_id: uuid.UUID, data: ARAssetUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Activo AR actualizado.", data=CatalogService(db, ctx.tenant_id).update_ar_asset(product_id, asset_id, data, actor))
 
 
 @router.delete("/admin/products/{product_id}/ar-assets/{asset_id}", response_model=ApiResponse[ProductResponse])
-def delete_ar_asset(product_id: uuid.UUID, asset_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Activo AR eliminado.", data=CatalogService(db).delete_ar_asset(product_id, asset_id, actor))
+def delete_ar_asset(product_id: uuid.UUID, asset_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Activo AR eliminado.", data=CatalogService(db, ctx.tenant_id).delete_ar_asset(product_id, asset_id, actor))
 
 
 @router.put("/admin/products/{product_id}/suppliers", response_model=ApiResponse[ProductResponse])
-def set_product_suppliers(product_id: uuid.UUID, data: SetProductSuppliersRequest, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Proveedores actualizados.", data=CatalogService(db).set_suppliers(product_id, data.suppliers, actor))
+def set_product_suppliers(product_id: uuid.UUID, data: SetProductSuppliersRequest, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "products")
+    return ApiResponse(message="Proveedores actualizados.", data=CatalogService(db, ctx.tenant_id).set_suppliers(product_id, data.suppliers, actor))
 
 
 @router.get("/admin/categories", response_model=ApiResponse[list[CategoryResponse]])

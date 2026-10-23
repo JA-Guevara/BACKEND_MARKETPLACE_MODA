@@ -59,3 +59,8 @@ class AuthEmailService:
             asunto="Recupera tu contrasena de FashionStore",
             cuerpo=f"Puedes crear una nueva contrasena ingresando al siguiente enlace:\n\n{link}",
         )
+
+    def send_tenant_invitation(self, email: str, token: str, trade_name: str) -> bool:
+        link = f"{settings.frontend_url}/recuperar-contrasena?token={token}&invitacion=1"
+        return self._entregar(email=email, asunto=f"Bienvenido a FashionStore: activa la cuenta de {trade_name}",
+            cuerpo=f"Crea tu contraseña para administrar {trade_name}:\n\n{link}")

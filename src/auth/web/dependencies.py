@@ -29,6 +29,14 @@ def get_current_user(
     user = UserRepository(db).get_by_id(user_id)
     if not user or not user.is_active:
         raise AuthenticationError("La cuenta no esta disponible.")
+    from src.plataforma_saas.infrastructure.models.tenant import TenantModel
+    from src.plataforma_saas.domain.exceptions import TenantInactiveError
+    if "tid" in payload and payload["tid"] != (str(user.tenant_id) if user.tenant_id else None):
+        raise AuthenticationError("La empresa de la sesión cambió. Inicie sesión nuevamente.")
+    if user.tenant_id:
+        tenant = db.get(TenantModel, user.tenant_id)
+        if tenant is None or tenant.status != "ACTIVA":
+            raise TenantInactiveError()
     set_audit_actor(user.id)
     return user
 

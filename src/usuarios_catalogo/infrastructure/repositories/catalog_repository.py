@@ -8,8 +8,9 @@ from src.usuarios_catalogo.infrastructure.models.catalog import ARAssetModel, Ca
 
 
 class CatalogRepository:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     def add(self, entity):
         self.db.add(entity)
@@ -37,13 +38,13 @@ class CatalogRepository:
             selectinload(ProductModel.images),
             selectinload(ProductModel.ar_assets),
             selectinload(ProductModel.suppliers),
-        ).where(ProductModel.id == entity_id)
+        ).where(ProductModel.id == entity_id, *([ProductModel.tenant_id == self.tenant_id] if self.tenant_id else []))
         if not include_deleted:
             stmt = stmt.where(ProductModel.deleted_at.is_(None))
         return self.db.scalar(stmt)
 
     def get_product_by_slug(self, slug: str, public: bool = True) -> ProductModel | None:
-        stmt = select(ProductModel).where(func.lower(ProductModel.slug) == slug.lower(), ProductModel.deleted_at.is_(None))
+        stmt = select(ProductModel).where(*([ProductModel.tenant_id == self.tenant_id] if self.tenant_id else []), func.lower(ProductModel.slug) == slug.lower(), ProductModel.deleted_at.is_(None))
         if public:
             stmt = stmt.where(ProductModel.is_active.is_(True))
         return self.db.scalar(stmt)
@@ -106,7 +107,7 @@ class CatalogRepository:
         max_price: Decimal | None = None,
         include_deleted: bool = False,
     ) -> tuple[list[ProductModel], int]:
-        conditions = []
+        conditions = [ProductModel.tenant_id == self.tenant_id] if self.tenant_id else []
         if not include_deleted:
             conditions.append(ProductModel.deleted_at.is_(None))
         if public:

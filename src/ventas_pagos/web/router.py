@@ -12,6 +12,7 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user, get_optional_user
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db
+from src.infrastructure.security.tenancy import get_public_tenant_id
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.config.settings import settings
 from src.shared.exceptions.domain_exception import NotFoundError
@@ -65,8 +66,8 @@ def order_data(order):
 
 
 @router.get("/branches")
-def branches(db: Session = Depends(get_db)):
-    return response([{"id": row.id, "name": row.name, "address": row.address} for row in db.scalars(select(BranchModel).where(BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None))).all()])
+def branches(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return response([{"id": row.id, "name": row.name, "address": row.address} for row in db.scalars(select(BranchModel).where(BranchModel.tenant_id == tenant_id, BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None))).all()])
 
 
 @router.get("/recommendations")

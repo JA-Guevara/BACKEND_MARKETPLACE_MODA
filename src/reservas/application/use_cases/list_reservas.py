@@ -6,8 +6,8 @@ from src.reservas.infrastructure.persistence.repositories.reserva_repository imp
 
 
 class ListarReservas:
-    def __init__(self, db: Session) -> None:
-        self.repository = ReservaRepository(db)
+    def __init__(self, db: Session, tenant_id=None) -> None:
+        self.repository = ReservaRepository(db, tenant_id)
 
     def execute(
         self,

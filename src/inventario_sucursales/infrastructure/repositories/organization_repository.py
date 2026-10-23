@@ -7,8 +7,9 @@ from src.inventario_sucursales.infrastructure.models.organization import BranchM
 
 
 class OrganizationRepository:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     def get_city(self, entity_id: uuid.UUID) -> CityModel | None:
         return self.db.get(CityModel, entity_id)
@@ -49,16 +50,16 @@ class OrganizationRepository:
         return list(self.db.scalars(stmt.order_by(SupplierModel.business_name)))
 
     def get_branch(self, entity_id: uuid.UUID, include_deleted: bool = False) -> BranchModel | None:
-        stmt = select(BranchModel).options(selectinload(BranchModel.cash_points)).where(BranchModel.id == entity_id)
+        stmt = select(BranchModel).where(*([BranchModel.tenant_id == self.tenant_id] if self.tenant_id else [])).options(selectinload(BranchModel.cash_points)).where(BranchModel.id == entity_id)
         if not include_deleted:
             stmt = stmt.where(BranchModel.deleted_at.is_(None))
         return self.db.scalar(stmt)
 
     def find_branch_by_code(self, code: str) -> BranchModel | None:
-        return self.db.scalar(select(BranchModel).where(func.lower(BranchModel.code) == code.lower()))
+        return self.db.scalar(select(BranchModel).where(func.lower(BranchModel.code) == code.lower(), *([BranchModel.tenant_id == self.tenant_id] if self.tenant_id else [])))
 
     def list_branches(self, include_inactive: bool, include_deleted: bool) -> list[BranchModel]:
-        stmt = select(BranchModel).options(selectinload(BranchModel.cash_points)).order_by(BranchModel.name)
+        stmt = select(BranchModel).where(*([BranchModel.tenant_id == self.tenant_id] if self.tenant_id else [])).options(selectinload(BranchModel.cash_points)).order_by(BranchModel.name)
         if not include_inactive:
             stmt = stmt.where(BranchModel.is_active.is_(True))
         if not include_deleted:
@@ -66,18 +67,18 @@ class OrganizationRepository:
         return list(self.db.scalars(stmt).unique())
 
     def get_cash_point(self, entity_id: uuid.UUID, include_deleted: bool = False) -> CashPointModel | None:
-        stmt = select(CashPointModel).where(CashPointModel.id == entity_id)
+        stmt = select(CashPointModel).where(*([CashPointModel.tenant_id == self.tenant_id] if self.tenant_id else [])).where(CashPointModel.id == entity_id)
         if not include_deleted:
             stmt = stmt.where(CashPointModel.deleted_at.is_(None))
         return self.db.scalar(stmt)
 
     def find_cash_point(self, branch_id: uuid.UUID, code: str) -> CashPointModel | None:
         return self.db.scalar(
-            select(CashPointModel).where(CashPointModel.branch_id == branch_id, func.lower(CashPointModel.code) == code.lower())
+            select(CashPointModel).where(*([CashPointModel.tenant_id == self.tenant_id] if self.tenant_id else []), CashPointModel.branch_id == branch_id, func.lower(CashPointModel.code) == code.lower())
         )
 
     def list_cash_points(self, branch_id: uuid.UUID | None, include_inactive: bool, include_deleted: bool) -> list[CashPointModel]:
-        stmt = select(CashPointModel)
+        stmt = select(CashPointModel).where(*([CashPointModel.tenant_id == self.tenant_id] if self.tenant_id else []))
         if branch_id:
             stmt = stmt.where(CashPointModel.branch_id == branch_id)
         if not include_inactive:

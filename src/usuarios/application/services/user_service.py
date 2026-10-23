@@ -23,9 +23,10 @@ from src.usuarios.infrastructure.persistence.models.usuario import AddressModel
 
 
 class UserService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
-        self.users = UserRepository(db)
+        self.tenant_id = tenant_id
+        self.users = UserRepository(db, tenant_id)
         self.roles = RoleRepository(db)
         self.tokens = AuthTokenRepository(db)
         self.audit = RecordAuditEvent(db)
@@ -50,7 +51,9 @@ class UserService:
         if data.document_number and self.users.get_by_document(data.document_number):
             raise ConflictError("El numero de documento ya esta registrado.")
         roles = self._resolve_roles(data.role_ids)
+        self._tenant_roles(roles)
         user = UserModel(
+            tenant_id=self.tenant_id,
             email=str(data.email).lower(),
             password_hash=self.passwords.hash(data.password),
             first_name=data.first_name.strip(),
@@ -87,7 +90,9 @@ class UserService:
         user = self.get(user_id)
         if user.id == actor.id and not role_ids:
             raise ConflictError("No puede retirarse todos sus propios roles.")
-        user.roles = self._resolve_roles(role_ids)
+        roles = self._resolve_roles(role_ids)
+        self._tenant_roles(roles)
+        user.roles = roles
         self._audit(actor, "users.roles_updated", user, "Roles del usuario actualizados.")
         self.db.commit()
         return self.get(user.id)
@@ -195,3 +200,8 @@ class UserService:
             description=description,
             metadata=metadata,
         )
+
+    def _tenant_roles(self, roles):
+        if self.tenant_id and any(role.code == "platform_admin" for role in roles):
+            from src.shared.exceptions.domain_exception import AuthorizationError
+            raise AuthorizationError("No puede asignar roles de plataforma a una cuenta de empresa.")

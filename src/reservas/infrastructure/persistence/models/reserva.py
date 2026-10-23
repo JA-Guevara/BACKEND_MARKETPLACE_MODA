@@ -13,8 +13,13 @@ class ReservationModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("user_id", "client_key", name="uq_reservations_user_client_key"),
     )
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)
+    origin: Mapped[str] = mapped_column(String(10), default="ONLINE", server_default="ONLINE")
+    device_id: Mapped[str | None] = mapped_column(String(64))
+    client_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False, index=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     items: Mapped[list] = mapped_column(JSON, nullable=False)

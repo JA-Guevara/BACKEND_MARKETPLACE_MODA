@@ -8,8 +8,9 @@ from src.reservas.infrastructure.persistence.models.reserva import ReservationMo
 
 
 class ReservaRepository:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id=None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     def add(self, reserva: ReservationModel) -> ReservationModel:
         self.db.add(reserva)
@@ -17,7 +18,7 @@ class ReservaRepository:
         return reserva
 
     def get(self, reserva_id: uuid.UUID, user_id: uuid.UUID | None = None) -> ReservationModel | None:
-        query = select(ReservationModel).where(ReservationModel.id == reserva_id)
+        query = select(ReservationModel).where(ReservationModel.id == reserva_id, *([ReservationModel.tenant_id == self.tenant_id] if self.tenant_id else []))
         if user_id is not None:
             query = query.where(ReservationModel.user_id == user_id)
         return self.db.scalar(query.with_for_update())
@@ -25,6 +26,7 @@ class ReservaRepository:
     def get_by_client_key(self, user_id: uuid.UUID, client_key: str) -> ReservationModel | None:
         return self.db.scalar(
             select(ReservationModel).where(
+                *([ReservationModel.tenant_id == self.tenant_id] if self.tenant_id else []),
                 ReservationModel.user_id == user_id,
                 ReservationModel.client_key == client_key,
             )
@@ -44,7 +46,7 @@ class ReservaRepository:
         order: str = "scheduled_at",
         direction: str = "desc",
     ) -> tuple[list[ReservationModel], int]:
-        conditions = []
+        conditions = [ReservationModel.tenant_id == self.tenant_id] if self.tenant_id else []
         if user_id is not None:
             conditions.append(ReservationModel.user_id == user_id)
         if branch_id is not None:

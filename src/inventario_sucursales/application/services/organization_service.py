@@ -12,9 +12,10 @@ from src.shared.exceptions.domain_exception import ConflictError, NotFoundError
 
 
 class OrganizationService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
-        self.repository = OrganizationRepository(db)
+        self.tenant_id = tenant_id
+        self.repository = OrganizationRepository(db, tenant_id)
         self.audit = RecordAuditEvent(db)
 
     def create_city(self, data: CityCreate, actor: UserModel) -> CityModel:
@@ -92,12 +93,13 @@ class OrganizationService:
         self.db.commit()
 
     def create_branch(self, data: BranchCreate, actor: UserModel) -> BranchModel:
+        self._branch_capacity()
         city = self.require_city(data.city_id)
         if not city.is_active:
             raise ConflictError("La ciudad seleccionada esta inactiva.")
         if self.repository.find_branch_by_code(data.code):
             raise ConflictError("El codigo de sucursal ya existe.")
-        branch = BranchModel(**self._trimmed(data.model_dump()))
+        branch = BranchModel(tenant_id=self.tenant_id, **self._trimmed(data.model_dump()))
         self.repository.add(branch)
         self._audit(actor, "branches.create", branch, "Sucursal creada.")
         self.db.commit()
@@ -122,6 +124,8 @@ class OrganizationService:
 
     def set_branch_active(self, entity_id: uuid.UUID, active: bool, actor: UserModel) -> BranchModel:
         branch = self.require_branch(entity_id, include_deleted=True)
+        if active and (not branch.is_active or branch.deleted_at):
+            self._branch_capacity()
         branch.is_active = active
         if active:
             branch.deleted_at = None
@@ -146,7 +150,7 @@ class OrganizationService:
             raise ConflictError("La sucursal esta inactiva.")
         if self.repository.find_cash_point(data.branch_id, data.code):
             raise ConflictError("El codigo de caja ya existe en la sucursal.")
-        cash_point = CashPointModel(**self._trimmed(data.model_dump()))
+        cash_point = CashPointModel(tenant_id=self.tenant_id, **self._trimmed(data.model_dump()))
         self.repository.add(cash_point)
         self._audit(actor, "branches.cash_point_created", cash_point, "Punto de caja creado.")
         self.db.commit()
@@ -220,3 +224,10 @@ class OrganizationService:
 
     def _audit(self, actor: UserModel, action: str, entity, description: str) -> None:
         self.audit.execute(actor_user_id=actor.id, action=action, entity_type=entity.__tablename__, entity_id=str(entity.id), description=description)
+
+    def _branch_capacity(self):
+        if self.tenant_id:
+            from src.plataforma_saas.application.plan_guard import PlanGuard
+            guard = PlanGuard(self.db)
+            guard.bloquear_empresa(self.tenant_id)
+            guard.exigir_limite(self.tenant_id, "max_active_branches", guard.repository.count_active_branches(self.tenant_id))

@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -10,7 +11,7 @@ from src.auth.domain.exceptions import (
     InvalidCredentialsError,
 )
 from src.auth.domain.password_policy import PasswordPolicy
-from src.auth.infrastructure.http.schemas import RegisterRequest, TokenResponse
+from src.auth.infrastructure.http.schemas import AuthUserResponse, TenantSummary, RegisterRequest, TokenResponse
 from src.auth.infrastructure.persistence.models.email_verification_token import EmailVerificationTokenModel
 from src.auth.infrastructure.persistence.models.password_reset_token import PasswordResetTokenModel
 from src.auth.infrastructure.persistence.models.refresh_token import RefreshTokenModel
@@ -26,8 +27,9 @@ from src.shared.exceptions.domain_exception import AuthenticationError, Conflict
 
 
 class AuthService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id=None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
         self.users = UserRepository(db)
         self.tokens = AuthTokenRepository(db)
         self.roles = RoleRepository(db)
@@ -44,6 +46,7 @@ class AuthService:
         if not client_role:
             raise ConflictError("El rol base de cliente no existe. Revise la migracion inicial.")
         user = UserModel(
+            tenant_id=self.tenant_id,
             email=str(data.email).lower(),
             password_hash=self.passwords.hash(data.password),
             first_name=data.first_name.strip(),
@@ -89,7 +92,7 @@ class AuthService:
             raise InvalidCredentialsError()
         if not user.is_active:
             raise InactiveAccountError("La cuenta esta desactivada.")
-        if user.locked_until and user.locked_until > now:
+        if user.locked_until and self._utc(user.locked_until) > now:
             raise AccountLockedError(f"La cuenta esta bloqueada hasta {user.locked_until.isoformat()}.")
         if not self.passwords.verify(password, user.password_hash):
             user.failed_login_attempts += 1
@@ -107,6 +110,7 @@ class AuthService:
             )
             self.db.commit()
             raise InvalidCredentialsError()
+        self._check_tenant(user)
         user.failed_login_attempts = 0
         user.locked_until = None
         user.last_login_at = now
@@ -133,11 +137,12 @@ class AuthService:
             self.db.commit()
             raise AuthenticationError("Se detecto reutilizacion de un token revocado.")
         now = datetime.now(timezone.utc)
-        if stored.expires_at <= now:
+        if self._utc(stored.expires_at) <= now:
             raise AuthenticationError("Token de renovacion expirado.")
         user = self.users.get_by_id(stored.user_id)
         if not user or not user.is_active:
             raise AuthenticationError("La cuenta no esta disponible.")
+        self._check_tenant(user)
         response = self._issue_tokens(user, ip_address)
         replacement_payload = self.jwt.decode(response.refresh_token, "refresh")
         stored.revoked_at = now
@@ -188,7 +193,7 @@ class AuthService:
     def reset_password(self, raw_token: str, new_password: str) -> None:
         stored = self.tokens.get_password_reset(self.jwt.hash_token(raw_token))
         now = datetime.now(timezone.utc)
-        if not stored or stored.used_at or stored.expires_at <= now:
+        if not stored or stored.used_at or self._utc(stored.expires_at) <= now:
             raise AuthenticationError("El enlace de recuperacion es invalido o expiro.")
         user = self.users.get_by_id(stored.user_id)
         if not user or not user.is_active:
@@ -197,6 +202,7 @@ class AuthService:
         if self.passwords.verify(new_password, user.password_hash):
             raise ConflictError("La nueva contrasena debe ser diferente de la actual.")
         user.password_hash = self.passwords.hash(new_password)
+        user.is_verified = True
         user.failed_login_attempts = 0
         user.locked_until = None
         self.tokens.consume_password_resets_for_user(user.id)
@@ -230,7 +236,7 @@ class AuthService:
     def verify_email(self, raw_token: str) -> None:
         stored = self.tokens.get_email_verification(self.jwt.hash_token(raw_token))
         now = datetime.now(timezone.utc)
-        if not stored or stored.used_at or stored.expires_at <= now:
+        if not stored or stored.used_at or self._utc(stored.expires_at) <= now:
             raise AuthenticationError("El enlace de verificacion es invalido o expiro.")
         user = self.users.get_by_id(stored.user_id)
         if not user:
@@ -262,7 +268,7 @@ class AuthService:
         self.email.send_verification(user.email, raw_token)
 
     def _issue_tokens(self, user: UserModel, ip_address: str | None) -> TokenResponse:
-        access_token, expires_in = self.jwt.create_access_token(str(user.id))
+        access_token, expires_in = self.jwt.create_access_token(str(user.id), str(user.tenant_id) if user.tenant_id else None)
         refresh_token, jti, expires_at = self.jwt.create_refresh_token(str(user.id))
         self.tokens.add_refresh(
             RefreshTokenModel(
@@ -273,9 +279,37 @@ class AuthService:
                 created_by_ip=ip_address,
             )
         )
+        response_user = AuthUserResponse.model_validate(user)
+        if user.tenant_id:
+            from src.plataforma_saas.application.plan_guard import PlanGuard
+            from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
+            response_user.tenant = TenantSummary.model_validate(SaasRepository(self.db).get_tenant(user.tenant_id))
+            response_user.subscription = PlanGuard(self.db).resumen(user.tenant_id)
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=expires_in,
-            user=user,
+            user=response_user,
         )
+
+    def _check_tenant(self, user):
+        from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
+        from src.plataforma_saas.domain.exceptions import TenantInactiveError
+        if user.tenant_id:
+            tenant = SaasRepository(self.db).get_tenant(user.tenant_id)
+            if tenant is None or tenant.status != "ACTIVA":
+                raise TenantInactiveError()
+
+    def create_unusable_password_hash(self) -> str:
+        return self.passwords.hash(secrets.token_urlsafe(64))
+
+    def issue_password_setup_token(self, user: UserModel) -> str:
+        self.tokens.consume_password_resets_for_user(user.id)
+        raw, hashed = self.jwt.create_opaque_token()
+        self.tokens.add_password_reset(PasswordResetTokenModel(user_id=user.id, token_hash=hashed,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.invitation_token_expire_hours)))
+        return raw
+
+    @staticmethod
+    def _utc(value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)

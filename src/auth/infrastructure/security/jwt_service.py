@@ -10,9 +10,9 @@ from src.shared.exceptions.domain_exception import AuthenticationError
 
 
 class JWTService:
-    def create_access_token(self, user_id: str) -> tuple[str, int]:
+    def create_access_token(self, user_id: str, tenant_id: str | None = None) -> tuple[str, int]:
         expires_delta = timedelta(minutes=settings.access_token_expire_minutes)
-        token = self._encode(user_id, "access", expires_delta)
+        token = self._encode(user_id, "access", expires_delta, tenant_id=tenant_id)
         return token, int(expires_delta.total_seconds())
 
     def create_refresh_token(self, user_id: str) -> tuple[str, str, datetime]:
@@ -42,7 +42,7 @@ class JWTService:
         return token, JWTService.hash_token(token)
 
     def _encode(
-        self, subject: str, token_type: str, expires_delta: timedelta, *, jti: str | None = None
+        self, subject: str, token_type: str, expires_delta: timedelta, *, jti: str | None = None, tenant_id: str | None = None
     ) -> str:
         now = datetime.now(timezone.utc)
         payload: dict[str, Any] = {
@@ -51,6 +51,8 @@ class JWTService:
             "iat": now,
             "exp": now + expires_delta,
         }
+        if token_type == "access":
+            payload["tid"] = tenant_id
         if jti:
             payload["jti"] = jti
         return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)

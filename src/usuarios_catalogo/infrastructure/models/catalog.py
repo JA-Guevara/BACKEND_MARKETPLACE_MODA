@@ -64,10 +64,11 @@ class CollectionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class ProductModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "products"
     __table_args__ = (
-        UniqueConstraint("slug"),
+        UniqueConstraint("tenant_id", "slug"),
         CheckConstraint("base_price >= 0", name="base_price_nonnegative"),
     )
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(180), nullable=False, index=True)
     slug: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)

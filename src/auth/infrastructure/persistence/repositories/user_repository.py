@@ -7,11 +7,12 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 
 
 class UserRepository:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     def get_by_id(self, user_id: uuid.UUID, *, include_deleted: bool = False) -> UserModel | None:
-        stmt = select(UserModel).options(selectinload(UserModel.roles)).where(UserModel.id == user_id)
+        stmt = select(UserModel).options(selectinload(UserModel.roles)).where(UserModel.id == user_id, *([UserModel.tenant_id == self.tenant_id] if self.tenant_id else []))
         if not include_deleted:
             stmt = stmt.where(UserModel.deleted_at.is_(None))
         return self.db.scalar(stmt)
@@ -41,7 +42,7 @@ class UserRepository:
     ) -> tuple[list[UserModel], int]:
         stmt = select(UserModel).options(selectinload(UserModel.roles))
         count_stmt = select(func.count(UserModel.id))
-        conditions = []
+        conditions = [UserModel.tenant_id == self.tenant_id] if self.tenant_id else []
         if not include_deleted:
             conditions.append(UserModel.deleted_at.is_(None))
         if search:

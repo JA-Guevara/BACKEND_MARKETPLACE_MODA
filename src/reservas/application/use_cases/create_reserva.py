@@ -16,7 +16,8 @@ from src.reservas.domain.entities.horario import validar_horario
 from src.reservas.infrastructure.http.schemas import CrearReservaRequest
 from src.reservas.infrastructure.persistence.models.reserva import ReservationModel
 from src.reservas.infrastructure.persistence.repositories.reserva_repository import ReservaRepository
-from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
+from src.shared.exceptions.domain_exception import NotFoundError, ValidationError, AuthorizationError
+from src.infrastructure.security.authorization import get_permission_codes
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
 from src.ventas_pagos.application.stock_service import StockService
 
@@ -24,18 +25,23 @@ MAX_ITEMS_AFTER_MERGE = 20
 
 
 class CrearReserva:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id=None) -> None:
         self.db = db
-        self.repository = ReservaRepository(db)
+        self.tenant_id = tenant_id
+        self.repository = ReservaRepository(db, tenant_id)
 
     def _branch(self, branch_id) -> BranchModel:
         branch = self.db.get(BranchModel, branch_id)
+        if branch and self.tenant_id and branch.tenant_id != self.tenant_id:
+            raise NotFoundError("Sucursal no encontrada.")
         if not branch or not branch.is_active or branch.deleted_at:
             raise ValidationError("Sucursal no disponible.")
         return branch
 
     def _snapshot(self, variant_id, quantity: int) -> ReservaItemSnapshot:
         variant = self.db.get(ProductVariantModel, variant_id)
+        if variant and self.tenant_id and variant.product.tenant_id != self.tenant_id:
+            raise NotFoundError("Prenda no encontrada.")
         if not variant or not variant.is_active or not variant.product.is_active or variant.product.deleted_at:
             raise NotFoundError("Una de las prendas seleccionadas ya no esta disponible.")
         return ReservaItemSnapshot(
@@ -69,7 +75,7 @@ class CrearReserva:
         """La reserva sirve para probarse una talla puntual: si la sucursal no la
         tiene, o no alcanza para la cantidad pedida, se rechaza con el detalle
         en vez de hacer viajar al cliente."""
-        disponibilidad = ConsultarDisponibilidad(self.db).execute(
+        disponibilidad = ConsultarDisponibilidad(self.db, self.tenant_id).execute(
             branch_id, [item["variant_id"] for item in items], [item["quantity"] for item in items]
         )
         faltantes = [d for d in disponibilidad if not d["available"]]
@@ -88,6 +94,8 @@ class CrearReserva:
         """La clave idempotente reutiliza la reserva registrada SOLO cuando el
         detalle coincide; si llega la misma clave con prendas/horario distintos,
         se avisa en vez de devolver en silencio la reserva anterior."""
+        if existing.origin != data.origin or existing.device_id != data.device_id:
+            return False
         if existing.branch_id != data.branch_id:
             return False
         # SQLite devuelve datetime sin tz; PostgreSQL puede conservarla.
@@ -114,6 +122,14 @@ class CrearReserva:
             )
 
     def execute(self, user: UserModel, data: CrearReservaRequest) -> ReservationModel:
+        actor = user
+        if data.customer_id:
+            if "reservations.write" not in get_permission_codes(actor):
+                raise AuthorizationError("No tiene permiso para reservar a nombre de un cliente.")
+            customer = self.db.get(UserModel, data.customer_id)
+            if not customer or customer.tenant_id != (self.tenant_id or actor.tenant_id) or customer.deleted_at or not customer.is_active or not any(role.code == "client" for role in customer.roles):
+                raise NotFoundError("Cliente no encontrado.")
+            user = customer
         # Serializar reintentos del mismo usuario ANTES de comprobar stock:
         # una segunda petición debe devolver la reserva, incluso si la primera
         # ya apartó las últimas unidades disponibles.
@@ -131,6 +147,11 @@ class CrearReserva:
         snapshot = [self._snapshot(item["variant_id"], item["quantity"]).as_dict() for item in items]
         reserva = ReservationModel(
             id=uuid.uuid4(),
+            tenant_id=self.tenant_id or user.tenant_id,
+            origin=data.origin,
+            device_id=data.device_id,
+            client_created_at=data.client_created_at,
+            created_by_id=actor.id if data.customer_id else None,
             user_id=user.id,
             branch_id=data.branch_id,
             status="pending",
@@ -152,7 +173,7 @@ class CrearReserva:
                 inventory.change(
                     item["variant_id"], data.branch_id, -item["quantity"],
                     "reservation_hold", "Prendas apartadas para una reserva en sucursal.",
-                    reference=str(reserva.id), actor_id=user.id,
+                    reference=str(reserva.id), actor_id=actor.id,
                 )
             reserva.inventory_held = True
             self.repository.add(reserva)
@@ -161,8 +182,8 @@ class CrearReserva:
                 entity_type="reservation",
                 entity_id=str(reserva.id),
                 description="Reserva de prendas registrada para probar en sucursal.",
-                actor_user_id=user.id,
-                metadata={"branch_id": str(data.branch_id), "items": len(snapshot), "scheduled_at": data.scheduled_at.isoformat()},
+                actor_user_id=actor.id,
+                metadata={"origin": data.origin, "device_id": data.device_id, "branch_id": str(data.branch_id), "items": len(snapshot), "scheduled_at": data.scheduled_at.isoformat()},
             )
             self.db.commit()
         except IntegrityError:

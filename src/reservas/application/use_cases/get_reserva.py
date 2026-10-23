@@ -8,8 +8,8 @@ from src.shared.exceptions.domain_exception import NotFoundError
 
 
 class ObtenerReserva:
-    def __init__(self, db: Session) -> None:
-        self.repository = ReservaRepository(db)
+    def __init__(self, db: Session, tenant_id=None) -> None:
+        self.repository = ReservaRepository(db, tenant_id)
 
     def execute(self, reserva_id: uuid.UUID, user_id: uuid.UUID | None = None) -> ReservationModel:
         reserva = self.repository.get(reserva_id, user_id=user_id)

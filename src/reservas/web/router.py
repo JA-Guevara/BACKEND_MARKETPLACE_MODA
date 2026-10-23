@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
+from src.infrastructure.security.tenancy import TenantScope
+from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.infrastructure.security.authorization import require_permissions
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
@@ -73,6 +75,10 @@ def reserva_data(reserva: ReservationModel, db: Session, branch: BranchModel | N
         "created_at": reserva.created_at,
         "updated_at": reserva.updated_at,
         "inventory_held": reserva.inventory_held,
+        "origin": reserva.origin,
+        "device_id": reserva.device_id,
+        "client_created_at": reserva.client_created_at,
+        "created_by_id": reserva.created_by_id,
         "branch_name": branch.name if branch else None,
     }
 
@@ -88,8 +94,11 @@ def _user_data(users: dict, reservation: ReservationModel) -> dict:
 
 
 @router.post("", status_code=201)
-def create_reservation(data: CrearReservaRequest, user: User, db: Session = Depends(get_db)):
-    reserva = CrearReserva(db).execute(user, data)
+def create_reservation(data: CrearReservaRequest, ctx: TenantScope, user: User, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "reservations")
+    if data.origin == "OFFLINE":
+        PlanGuard(db).exigir_funcion(ctx.tenant_id, "offline")
+    reserva = CrearReserva(db, ctx.tenant_id).execute(user, data)
     branch = db.get(BranchModel, reserva.branch_id)
     return ApiResponse(
         message="Reserva registrada.",
@@ -99,7 +108,7 @@ def create_reservation(data: CrearReservaRequest, user: User, db: Session = Depe
 
 @router.get("/availability")
 def check_availability(
-    user: User,
+    ctx: TenantScope, user: User,
     branch_id: uuid.UUID,
     variant_ids: Annotated[list[uuid.UUID], Query()],
     quantities: Annotated[list[int] | None, Query()] = None,
@@ -108,19 +117,19 @@ def check_availability(
     """Indica, por cada talla pedida, si la sucursal elegida alcanza para las
     cantidades solicitadas. ``quantities`` (opcional) viaja alineado y por la
     misma posición que ``variant_ids``."""
-    datos = ConsultarDisponibilidad(db).execute(branch_id, variant_ids, quantities)
+    datos = ConsultarDisponibilidad(db, ctx.tenant_id).execute(branch_id, variant_ids, quantities)
     return ApiResponse(message="Disponibilidad obtenida.", data=datos)
 
 
 @router.get("", response_model=ApiResponse[Page[dict]])
 def list_my_reservations(
-    user: User,
+    ctx: TenantScope, user: User,
     db: Session = Depends(get_db),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status: str | None = None,
 ):
-    items, total = ListarReservas(db).execute(page=page, page_size=page_size, user_id=user.id, status=status)
+    items, total = ListarReservas(db, ctx.tenant_id).execute(page=page, page_size=page_size, user_id=user.id, status=status)
     branches = {b.id: b for b in db.query(BranchModel).filter(BranchModel.id.in_({r.branch_id for r in items})).all()} if items else {}
     result = Page(
         items=[reserva_data(r, db, branches.get(r.branch_id)) for r in items],
@@ -133,21 +142,21 @@ def list_my_reservations(
 
 
 @router.get("/{reservation_id}")
-def get_reservation(reservation_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
-    reserva = ObtenerReserva(db).execute(reservation_id, user_id=user.id)
+def get_reservation(reservation_id: uuid.UUID, ctx: TenantScope, user: User, db: Session = Depends(get_db)):
+    reserva = ObtenerReserva(db, ctx.tenant_id).execute(reservation_id, user_id=user.id)
     return ApiResponse(message="Reserva obtenida.", data=reserva_data(reserva, db))
 
 
 @router.post("/{reservation_id}/cancel")
-def cancel_reservation(reservation_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
-    reserva = ObtenerReserva(db).execute(reservation_id, user_id=user.id)
+def cancel_reservation(reservation_id: uuid.UUID, ctx: TenantScope, user: User, db: Session = Depends(get_db)):
+    reserva = ObtenerReserva(db, ctx.tenant_id).execute(reservation_id, user_id=user.id)
     reserva = CancelarReserva(db).execute(reserva, user)
     return ApiResponse(message="Reserva cancelada.", data=reserva_data(reserva, db))
 
 
 @router.get("/admin/all", response_model=ApiResponse[Page[dict]])
 def list_all_reservations(
-    user: Reader,
+    ctx: TenantScope, user: Reader,
     db: Session = Depends(get_db),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -159,7 +168,7 @@ def list_all_reservations(
     order: str = Query("scheduled_at", pattern="^(scheduled_at|created_at)$"),
     direction: str = Query("desc", pattern="^(asc|desc)$"),
 ):
-    items, total = ListarReservas(db).execute(
+    items, total = ListarReservas(db, ctx.tenant_id).execute(
         page=page,
         page_size=page_size,
         branch_id=branch_id,
@@ -189,8 +198,9 @@ def list_all_reservations(
 
 
 @router.patch("/admin/{reservation_id}/status")
-def update_reservation_status(reservation_id: uuid.UUID, data: EstadoReservaUpdate, user: Writer, db: Session = Depends(get_db)):
-    reserva = ObtenerReserva(db).execute(reservation_id)
+def update_reservation_status(reservation_id: uuid.UUID, data: EstadoReservaUpdate, ctx: TenantScope, user: Writer, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, "reservations")
+    reserva = ObtenerReserva(db, ctx.tenant_id).execute(reservation_id)
     reserva = ActualizarEstadoReserva(db).execute(reserva, data.status, user, data.note)
     return ApiResponse(message="Estado de la reserva actualizado.", data=reserva_data(reserva, db))
 

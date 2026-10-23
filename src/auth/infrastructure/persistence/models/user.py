@@ -1,6 +1,7 @@
+import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.infrastructure.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -10,6 +11,8 @@ from src.roles.infrastructure.persistence.models.role import user_roles
 class UserModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "users"
     __table_args__ = (UniqueConstraint("email"), UniqueConstraint("document_number"))
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), index=True)
 
     email: Mapped[str] = mapped_column(String(320), index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)

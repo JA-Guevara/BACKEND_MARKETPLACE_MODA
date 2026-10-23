@@ -40,8 +40,9 @@ class SupplierModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class BranchModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "branches"
-    __table_args__ = (UniqueConstraint("code"), UniqueConstraint("city_id", "name"))
+    __table_args__ = (UniqueConstraint("tenant_id", "code"), UniqueConstraint("tenant_id", "city_id", "name"))
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     code: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
     city_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cities.id", ondelete="RESTRICT"), nullable=False, index=True)
@@ -63,6 +64,7 @@ class CashPointModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "cash_points"
     __table_args__ = (UniqueConstraint("branch_id", "code"),)
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), nullable=False, index=True)
     code: Mapped[str] = mapped_column(String(30), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)

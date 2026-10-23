@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from src.auth.application.services.auth_service import AuthService
 from src.auth.infrastructure.http.schemas import (
     AuthUserResponse,
+    TenantSummary,
     ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginRequest,
@@ -19,6 +20,10 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
 from src.shared.responses.api_response import ApiResponse
+from src.infrastructure.security.tenancy import get_public_tenant_id
+from src.plataforma_saas.application.plan_guard import PlanGuard
+from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
+from uuid import UUID
 
 
 router = APIRouter(prefix="/auth", tags=['PAQ-01 · Usuarios y catálogo'])
@@ -30,9 +35,9 @@ def request_context(request: Request) -> tuple[str | None, str | None]:
 
 
 @router.post("/register", response_model=ApiResponse[AuthUserResponse], status_code=status.HTTP_201_CREATED)
-def register(data: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+def register(data: RegisterRequest, request: Request, tenant_id: UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
     ip, user_agent = request_context(request)
-    user = AuthService(db).register(data, ip_address=ip, user_agent=user_agent)
+    user = AuthService(db, tenant_id).register(data, ip_address=ip, user_agent=user_agent)
     return ApiResponse(message="Cuenta registrada. Revise su correo para verificarla.", data=user)
 
 
@@ -58,8 +63,13 @@ def logout(data: LogoutRequest, request: Request, db: Session = Depends(get_db))
 
 
 @router.get("/me", response_model=ApiResponse[AuthUserResponse])
-def me(user: UserModel = Depends(get_current_user)):
-    return ApiResponse(message="Usuario autenticado.", data=user)
+def me(user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
+    response = AuthUserResponse.model_validate(user)
+    if user.tenant_id:
+        response.tenant = TenantSummary.model_validate(SaasRepository(db).get_tenant(user.tenant_id))
+        response.subscription = PlanGuard(db).resumen(user.tenant_id)
+        db.commit()
+    return ApiResponse(message="Usuario autenticado.", data=response)
 
 
 @router.post("/forgot-password", response_model=ApiResponse[None])
