@@ -17,6 +17,10 @@ con su propia instancia de `ColaDeCorreos` y su propia fábrica de Session.
 """
 import pytest
 import os
+import sqlite3
+from uuid import UUID
+
+sqlite3.register_adapter(UUID, lambda u: str(u))
 
 # Las pruebas nunca deben usar servicios configurados en el .env del equipo.
 os.environ["DATABASE_URL"] = "postgresql://test:test@127.0.0.1:1/fashionstore_test"
@@ -38,6 +42,7 @@ from sqlalchemy.orm import Session
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.plataforma_saas.infrastructure.models.plan import PlanModel, PlanFeatureModel
 from src.plataforma_saas.infrastructure.models.subscription import SubscriptionModel
+from src.plataforma_saas.infrastructure.models.support_session import SupportSessionModel
 from src.plataforma_saas.domain.estados import FUNCIONES
 
 DEFAULT_TENANT_ID = UUID("30000000-0000-0000-0000-000000000001")
@@ -47,8 +52,13 @@ DEFAULT_TENANT_ID = UUID("30000000-0000-0000-0000-000000000001")
 def legacy_tenant_fixture(db, flush_context, instances):
     if db.get_bind().dialect.name != "sqlite":
         return
-    affected = [obj for obj in db.new if hasattr(obj, "tenant_id") and obj.__tablename__ in
-                {"users", "branches", "cash_points", "products", "reservations"}]
+    legacy_tables = {
+        "users", "branches", "cash_points", "products", "reservations",
+        "categories", "sizes", "colors", "seasons", "collections", "suppliers",
+        "commerce_orders", "commerce_order_returns", "commerce_promotions",
+        "virtual_tryon_assets", "tryon_ai_jobs",
+    }
+    affected = [obj for obj in db.new if hasattr(obj, "tenant_id") and obj.__tablename__ in legacy_tables]
     if not affected:
         return
     connection = db.connection()

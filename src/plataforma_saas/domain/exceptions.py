@@ -1,4 +1,10 @@
-from src.shared.exceptions.domain_exception import AuthorizationError, ConflictError, NotFoundError, ValidationError
+from src.shared.exceptions.domain_exception import (
+    AuthenticationError,
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 
 
 class TenantRequiredError(AuthorizationError):
@@ -49,3 +55,45 @@ class PlanCodeTakenError(ConflictError):
 class PlanLimitInvalidError(ValidationError):
     code = "plan_limit_invalid"
     def __init__(self): super().__init__("Los límites deben ser números positivos.")
+
+
+class SupportSessionExpiredError(AuthenticationError):
+    code = "support_session_expired"
+    def __init__(self, message: str = "La sesión de soporte ha expirado o no es válida."):
+        super().__init__(message)
+
+
+class PlatformScopeOnlyError(AuthorizationError):
+    code = "platform_scope_only"
+    def __init__(self, message: str = "Esta operación solo está disponible en el alcance de plataforma."):
+        super().__init__(message)
+
+
+class SupportReasonInvalidError(ValidationError):
+    code = "support_reason_invalid"
+    def __init__(self, message: str = "El motivo de la sesión de soporte es inválido."):
+        super().__init__(message)
+
+
+class SupportLimitExceededError(ConflictError):
+    code = "support_limit_exceeded"
+    def __init__(self, message: str = "Límite de tiempo de soporte excedido o sesión no permitida."):
+        super().__init__(message)
+
+
+class SystemRoleLockedError(ConflictError):
+    code = "system_role_locked"
+    def __init__(self, message: str = "No se puede modificar un rol del sistema protegido."):
+        super().__init__(message)
+
+
+class PermissionOutOfScopeError(AuthorizationError):
+    code = "permission_out_of_scope"
+    def __init__(self, message: str = "El permiso está fuera del alcance de la operación."):
+        super().__init__(message)
+
+
+class LastPlatformAdminError(ConflictError):
+    code = "last_platform_admin"
+    def __init__(self, message: str = "No se puede eliminar o degradar al último administrador de plataforma."):
+        super().__init__(message)

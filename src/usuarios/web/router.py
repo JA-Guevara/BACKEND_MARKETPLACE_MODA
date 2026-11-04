@@ -67,7 +67,7 @@ def update_user(user_id: uuid.UUID, data: UserUpdate, ctx: TenantScope, actor: U
 
 @router.put("/{user_id}/roles", response_model=ApiResponse[UserResponse])
 def set_roles(user_id: uuid.UUID, data: AssignRolesRequest, ctx: TenantScope, actor: UserWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Roles actualizados.", data=UserService(db, ctx.tenant_id).set_roles(user_id, data.role_ids, actor))
+    return ApiResponse(message="Roles actualizados.", data=UserService(db, ctx.tenant_id).assign_roles(user_id, data.role_ids, actor))
 
 
 @router.post("/{user_id}/deactivate", response_model=ApiResponse[UserResponse])
@@ -115,4 +115,3 @@ def update_my_address(address_id: uuid.UUID, data: AddressUpdate, user: UserMode
 def delete_my_address(address_id: uuid.UUID, user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
     UserService(db, user.tenant_id).delete_address(user.id, address_id, user)
     return ApiResponse(message="Direccion eliminada.")
-

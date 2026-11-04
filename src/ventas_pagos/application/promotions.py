@@ -3,6 +3,7 @@
 El navegador solo muestra el resultado. Toda condición, vigencia y límite se
 valida aquí al cotizar y se vuelve a validar al crear el pedido.
 """
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -17,13 +18,16 @@ CENT = Decimal("0.01")
 
 
 class PromotionService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None):
         self.db = db
+        self.tenant_id = tenant_id
 
     def quote(self, user, items: list[dict], coupon_code: str | None = None, *, lock: bool = False) -> dict:
         subtotal = sum((Decimal(str(row["line_total"])) for row in items), Decimal(0))
         now = datetime.now(timezone.utc)
         query = select(PromotionModel).where(PromotionModel.is_active.is_(True))
+        if self.tenant_id is not None:
+            query = query.where(PromotionModel.tenant_id == self.tenant_id)
         if lock:
             query = query.with_for_update()
         promos = list(self.db.scalars(query).all())
@@ -71,6 +75,8 @@ class PromotionService:
             promotion = self.db.get(PromotionModel, discount["promotion_id"])
             if not promotion:
                 raise ConflictError("Una promoción cambió mientras se confirmaba el pedido.")
+            if self.tenant_id and promotion.tenant_id != self.tenant_id:
+                raise ConflictError("La promoción no pertenece a la empresa.")
             if promotion.max_uses is not None and promotion.uses_count >= promotion.max_uses:
                 raise ConflictError("La promoción alcanzó su límite de usos.")
             if promotion.per_user_limit is not None:
@@ -90,9 +96,12 @@ class PromotionService:
         if p.max_uses is not None and p.uses_count >= p.max_uses: return False
         if subtotal < p.minimum_order or self._scope_total(p, items) <= 0: return False
         if p.customer_scope == "frequent":
-            paid = self.db.scalar(select(func.count(OrderModel.id)).where(
+            query = select(func.count(OrderModel.id)).where(
                 OrderModel.user_id == user.id, OrderModel.payment_status == "paid"
-            )) or 0
+            )
+            if self.tenant_id:
+                query = query.where(OrderModel.tenant_id == self.tenant_id)
+            paid = self.db.scalar(query) or 0
             if paid < max(1, p.minimum_paid_orders): return False
         return True
 

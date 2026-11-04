@@ -56,7 +56,7 @@ class OrganizationService:
     def create_supplier(self, data: SupplierCreate, actor: UserModel) -> SupplierModel:
         if self.repository.find_supplier_by_tax_id(data.tax_id):
             raise ConflictError("El NIT o identificador fiscal ya esta registrado.")
-        supplier = SupplierModel(**self._trimmed(data.model_dump()))
+        supplier = SupplierModel(tenant_id=self.tenant_id, **self._trimmed(data.model_dump()))
         self.repository.add(supplier)
         self._audit(actor, "suppliers.create", supplier, "Proveedor creado.")
         self.db.commit()

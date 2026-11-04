@@ -1,10 +1,13 @@
+from datetime import datetime, timezone
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.auth.application.services.auth_service import AuthService
 from src.auth.infrastructure.http.schemas import (
     AuthUserResponse,
-    TenantSummary,
     ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginRequest,
@@ -13,17 +16,21 @@ from src.auth.infrastructure.http.schemas import (
     RegisterRequest,
     ResendVerificationRequest,
     ResetPasswordRequest,
+    TenantSummary,
     TokenResponse,
     VerifyEmailRequest,
 )
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
+from src.bitacora.infrastructure.persistence.models.evento_bitacora import AuditEventModel
 from src.infrastructure.database.session import get_db
-from src.shared.responses.api_response import ApiResponse
+from src.infrastructure.security.access_context import AccessContext, get_access_context
 from src.infrastructure.security.tenancy import get_public_tenant_id
 from src.plataforma_saas.application.plan_guard import PlanGuard
+from src.plataforma_saas.infrastructure.models.support_session import SupportSessionModel
 from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
-from uuid import UUID
+from src.plataforma_saas.web.schemas.support import SupportSessionResponse
+from src.shared.responses.api_response import ApiResponse
 
 
 router = APIRouter(prefix="/auth", tags=['PAQ-01 · Usuarios y catálogo'])
@@ -63,9 +70,40 @@ def logout(data: LogoutRequest, request: Request, db: Session = Depends(get_db))
 
 
 @router.get("/me", response_model=ApiResponse[AuthUserResponse])
-def me(user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
+def me(ctx: AccessContext = Depends(get_access_context), db: Session = Depends(get_db)):
+    user = ctx.user
     response = AuthUserResponse.model_validate(user)
-    if user.tenant_id:
+    if ctx.is_support:
+        tenant = SaasRepository(db).get_tenant(ctx.tenant_id)
+        if tenant:
+            response.tenant = TenantSummary.model_validate(tenant)
+        response.subscription = PlanGuard(db).resumen(ctx.tenant_id)
+        session = db.get(SupportSessionModel, ctx.support_session_id)
+        if session:
+            now = datetime.now(timezone.utc)
+            tenant_name = (tenant.trade_name or tenant.legal_name) if tenant else "Empresa"
+            actions_count = db.scalar(
+                select(func.count(AuditEventModel.id)).where(
+                    AuditEventModel.support_session_id == session.id
+                )
+            ) or 0
+            response.support = SupportSessionResponse(
+                id=session.id,
+                tenant_id=session.tenant_id,
+                tenant_name=tenant_name,
+                platform_user_id=session.platform_user_id,
+                platform_user_name=f"{user.first_name} {user.last_name}".strip(),
+                reason=session.reason,
+                duration_minutes=session.duration_minutes,
+                started_at=session.started_at,
+                expires_at=session.expires_at,
+                ended_at=session.ended_at,
+                end_reason=session.end_reason,
+                actions_count=actions_count,
+                is_active=session.is_active(now),
+            )
+        db.commit()
+    elif user.tenant_id:
         response.tenant = TenantSummary.model_validate(SaasRepository(db).get_tenant(user.tenant_id))
         response.subscription = PlanGuard(db).resumen(user.tenant_id)
         db.commit()
@@ -104,4 +142,3 @@ def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
 def resend_verification(data: ResendVerificationRequest, db: Session = Depends(get_db)):
     AuthService(db).resend_verification(str(data.email))
     return ApiResponse(message="Si corresponde, se envio un nuevo enlace de verificacion.")
-

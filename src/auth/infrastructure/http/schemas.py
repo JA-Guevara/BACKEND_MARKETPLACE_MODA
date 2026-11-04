@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -100,6 +101,7 @@ class AuthUserResponse(BaseModel):
     is_verified: bool
     tenant: TenantSummary | None = None
     subscription: SubscriptionSummary | None = None
+    support: Any | None = None
     last_login_at: datetime | None
     roles: list[RoleSummary] = Field(default_factory=list)
 

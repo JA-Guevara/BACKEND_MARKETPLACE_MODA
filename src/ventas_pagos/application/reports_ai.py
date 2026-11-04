@@ -41,8 +41,9 @@ def _chat(system: str, content: str, max_tokens: int = 350) -> str:
 
 
 class ReportsAI:
-    def __init__(self, db) -> None:
+    def __init__(self, db, tenant_id=None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     # ---------- Funcion A: interpretar consulta ----------
 
@@ -308,7 +309,7 @@ class ReportsAI:
             }
 
     def _snapshot(self, filters: ReportFilters) -> str:
-        data = ReportsService(self.db).dashboard(
+        data = ReportsService(self.db, self.tenant_id).dashboard(
             date_from=filters.date_from, date_to=filters.date_to,
             branch_id=filters.branch_id, category_id=filters.category_id, status=filters.status,
             low_stock_lt=filters.low_stock_lt,

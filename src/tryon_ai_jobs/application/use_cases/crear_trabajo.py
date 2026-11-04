@@ -62,6 +62,7 @@ class CrearTrabajo:
             hours=settings.tryon_result_expiration_hours
         )
         trabajo = TryOnJobModel(
+            tenant_id=producto.tenant_id,
             user_id=user.id,
             product_id=producto.id,
             color_id=color_id,
@@ -84,6 +85,7 @@ class CrearTrabajo:
             entity_id=str(trabajo.id),
             description="Se pidió una foto IA del probador.",
             actor_user_id=user.id,
+            tenant_id=producto.tenant_id,
             metadata={
                 "product_id": str(producto.id),
                 "color_id": str(color_id) if color_id else None,

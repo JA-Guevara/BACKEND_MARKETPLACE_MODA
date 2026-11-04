@@ -31,7 +31,7 @@ class CatalogService:
         slug = self._unique_slug(data.slug or data.name, CategoryModel)
         if data.parent_id:
             self.require_reference(CategoryModel, data.parent_id)
-        entity = CategoryModel(name=data.name.strip(), slug=slug, description=data.description, parent_id=data.parent_id)
+        entity = CategoryModel(tenant_id=self.tenant_id, name=data.name.strip(), slug=slug, description=data.description, parent_id=data.parent_id)
         return self._save_created(entity, actor, "catalog.category_created", "Categoria creada.")
 
     def update_category(self, entity_id: uuid.UUID, data: CategoryUpdate, actor: UserModel) -> CategoryModel:
@@ -54,7 +54,7 @@ class CatalogService:
         code = data.code.strip().upper()
         if self.repository.find_size_code(code):
             raise ConflictError("El codigo de talla ya existe.")
-        return self._save_created(SizeModel(code=code, name=data.name.strip(), sort_order=data.sort_order), actor, "catalog.size_created", "Talla creada.")
+        return self._save_created(SizeModel(tenant_id=self.tenant_id, code=code, name=data.name.strip(), sort_order=data.sort_order), actor, "catalog.size_created", "Talla creada.")
 
     def update_size(self, entity_id: uuid.UUID, data: SizeUpdate, actor: UserModel) -> SizeModel:
         entity = self.require_reference(SizeModel, entity_id)
@@ -68,7 +68,7 @@ class CatalogService:
 
     def create_color(self, data: ColorCreate, actor: UserModel) -> ColorModel:
         self._validate_color_unique(data.name, data.hex_code)
-        return self._save_created(ColorModel(name=data.name.strip(), hex_code=data.hex_code.upper()), actor, "catalog.color_created", "Color creado.")
+        return self._save_created(ColorModel(tenant_id=self.tenant_id, name=data.name.strip(), hex_code=data.hex_code.upper()), actor, "catalog.color_created", "Color creado.")
 
     def update_color(self, entity_id: uuid.UUID, data: ColorUpdate, actor: UserModel) -> ColorModel:
         entity = self.require_reference(ColorModel, entity_id)
@@ -82,7 +82,7 @@ class CatalogService:
     def create_season(self, data: SeasonCreate, actor: UserModel) -> SeasonModel:
         if self.repository.find_season_name(data.name):
             raise ConflictError("La temporada ya existe.")
-        return self._save_created(SeasonModel(**self._trimmed(data.model_dump())), actor, "catalog.season_created", "Temporada creada.")
+        return self._save_created(SeasonModel(tenant_id=self.tenant_id, **self._trimmed(data.model_dump())), actor, "catalog.season_created", "Temporada creada.")
 
     def update_season(self, entity_id: uuid.UUID, data: SeasonUpdate, actor: UserModel) -> SeasonModel:
         entity = self.require_reference(SeasonModel, entity_id)
@@ -102,7 +102,7 @@ class CatalogService:
             self.require_reference(SeasonModel, data.season_id, active=True)
         if self.repository.find_collection(data.name, data.season_id):
             raise ConflictError("La coleccion ya existe para esa temporada.")
-        return self._save_created(CollectionModel(**self._trimmed(data.model_dump())), actor, "catalog.collection_created", "Coleccion creada.")
+        return self._save_created(CollectionModel(tenant_id=self.tenant_id, **self._trimmed(data.model_dump())), actor, "catalog.collection_created", "Coleccion creada.")
 
     def update_collection(self, entity_id: uuid.UUID, data: CollectionUpdate, actor: UserModel) -> CollectionModel:
         entity = self.require_reference(CollectionModel, entity_id)
@@ -364,9 +364,19 @@ class CatalogService:
             "images": product.images, "ar_assets": [item for item in product.ar_assets if item.is_active],
         })
 
+    def require_dictionary(self, model: type, entity_id: uuid.UUID):
+        return self.require_reference(model, entity_id)
+
     def require_reference(self, model, entity_id: uuid.UUID, active: bool = False):
         getters = {CategoryModel: self.repository.get_category, SizeModel: self.repository.get_size, ColorModel: self.repository.get_color, SeasonModel: self.repository.get_season, CollectionModel: self.repository.get_collection}
-        entity = getters[model](entity_id)
+        getter = getters.get(model)
+        if getter:
+            entity = getter(entity_id)
+        else:
+            stmt = select(model).where(model.id == entity_id)
+            if hasattr(model, 'tenant_id') and self.tenant_id:
+                stmt = stmt.where(model.tenant_id == self.tenant_id)
+            entity = self.db.scalar(stmt)
         if not entity:
             raise NotFoundError("Dato de catalogo no encontrado.")
         if active and not entity.is_active:
@@ -394,7 +404,10 @@ class CatalogService:
             if item.supplier_id in seen:
                 raise ConflictError("No se puede repetir un proveedor en el producto.")
             seen.add(item.supplier_id)
-            supplier = self.db.get(SupplierModel, item.supplier_id)
+            stmt = select(SupplierModel).where(SupplierModel.id == item.supplier_id)
+            if self.tenant_id:
+                stmt = stmt.where(SupplierModel.tenant_id == self.tenant_id)
+            supplier = self.db.scalar(stmt)
             if not supplier or not supplier.is_active or supplier.deleted_at:
                 raise NotFoundError("Uno de los proveedores no existe o esta inactivo.")
             links.append(ProductSupplierModel(**item.model_dump()))
@@ -447,7 +460,10 @@ class CatalogService:
         counter = 2
         while True:
             column = model.slug
-            existing = self.db.scalar(select(model).where(func.lower(column) == slug.lower(), *([model.tenant_id == self.tenant_id] if model is ProductModel and self.tenant_id else [])))
+            conditions = [func.lower(column) == slug.lower()]
+            if hasattr(model, 'tenant_id') and self.tenant_id:
+                conditions.append(model.tenant_id == self.tenant_id)
+            existing = self.db.scalar(select(model).where(*conditions))
             if not existing or existing.id == current_id:
                 return slug
             slug = f"{base}-{counter}"

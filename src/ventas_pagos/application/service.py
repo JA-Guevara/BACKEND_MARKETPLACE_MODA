@@ -20,22 +20,29 @@ from src.notificaciones.application.use_cases.send_notification import notificar
 
 
 class CommerceService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None):
         self.db = db
+        self.tenant_id = tenant_id
 
     def audit(self, order, action, description):
         RecordAuditEvent(self.db).execute(action="commerce." + action, entity_type="order", entity_id=str(order.id), description=description, metadata={"number":order.number,"status":order.status,"payment_status":order.payment_status})
 
     def branch(self, branch_id):
         branch = self.db.get(BranchModel, branch_id)
-        if not branch or not branch.is_active or branch.deleted_at:
+        if not branch or branch.deleted_at:
+            raise NotFoundError("Sucursal no encontrada.")
+        if self.tenant_id and branch.tenant_id != self.tenant_id:
+            raise NotFoundError("Sucursal no pertenece a la empresa.")
+        if not branch.is_active:
             raise ValidationError("Sucursal no disponible.")
         return branch
 
     def variant(self, variant_id):
         variant = self.db.get(ProductVariantModel, variant_id)
-        if not variant or not variant.is_active or not variant.product.is_active or variant.product.deleted_at:
+        if not variant or not variant.is_active or not variant.product or not variant.product.is_active or variant.product.deleted_at:
             raise NotFoundError("La variante no esta disponible.")
+        if self.tenant_id and variant.product.tenant_id != self.tenant_id:
+            raise NotFoundError("La variante no pertenece a la empresa.")
         return variant
 
     def snapshot(self, variant, quantity, branch_id):
@@ -55,11 +62,13 @@ class CommerceService:
             variant = self.db.get(ProductVariantModel, row.variant_id)
             if variant is None:
                 continue
+            if self.tenant_id and variant.product.tenant_id != self.tenant_id:
+                continue
             item = self.snapshot(variant, row.quantity, branch_id)
             if not variant.is_active or not variant.product.is_active or variant.product.deleted_at:
                 item["available"] = 0
             items.append(item)
-        quote = PromotionService(self.db).quote(user, items, coupon_code)
+        quote = PromotionService(self.db, self.tenant_id).quote(user, items, coupon_code)
         return {"items": items, "currency": settings.commerce_currency, **quote}
 
     def recommendations(self, user, limit: int = 8, *, branch_id=None, size_id=None,
@@ -80,6 +89,8 @@ class CommerceService:
             ProductModel.is_active.is_(True), ProductModel.deleted_at.is_(None),
             ProductModel.id.in_(disponibles),
         )
+        if self.tenant_id:
+            query = query.where(ProductModel.tenant_id == self.tenant_id)
         if season_id:
             query = query.where(ProductModel.season_id == season_id)
         if product_id:
@@ -89,9 +100,12 @@ class CommerceService:
         preferred_categories: set[uuid.UUID] = set()
         preferred_size_products: set[uuid.UUID] = set()
         if user is not None:
-            paid_orders = self.db.scalars(select(OrderModel).where(
+            order_query = select(OrderModel).where(
                 OrderModel.user_id == user.id, OrderModel.payment_status == "paid"
-            )).all()
+            )
+            if self.tenant_id:
+                order_query = order_query.where(OrderModel.tenant_id == self.tenant_id)
+            paid_orders = self.db.scalars(order_query).all()
             purchased_ids = {
                 uuid.UUID(item["product_id"]) for order in paid_orders
                 for item in order.items if item.get("product_id")
@@ -100,43 +114,33 @@ class CommerceService:
                 uuid.UUID(item["variant_id"]) for order in paid_orders
                 for item in order.items if item.get("variant_id")
             }
-            if purchased_variants and not size_id:
-                preferred_sizes = set(self.db.scalars(
-                    select(ProductVariantModel.size_id).where(
-                        ProductVariantModel.id.in_(purchased_variants)
-                    )
-                ))
-                size_query = select(ProductVariantModel.product_id).join(
-                    StockModel, StockModel.variant_id == ProductVariantModel.id
-                ).where(
-                    ProductVariantModel.size_id.in_(preferred_sizes),
-                    ProductVariantModel.is_active.is_(True), StockModel.quantity > 0,
-                )
-                if branch_id:
-                    size_query = size_query.where(StockModel.branch_id == branch_id)
-                preferred_size_products = set(self.db.scalars(size_query))
-            if purchased_ids:
-                preferred_categories = set(self.db.scalars(
-                    select(ProductModel.category_id).where(ProductModel.id.in_(purchased_ids))
-                ))
-                query = query.where(ProductModel.id.notin_(purchased_ids))
-        context = self.db.get(ProductModel, product_id) if product_id else None
-        today = date.today()
+            if purchased_variants:
+                variants = self.db.scalars(
+                    select(ProductVariantModel).where(ProductVariantModel.id.in_(purchased_variants))
+                ).all()
+                preferred_categories = {v.product.category_id for v in variants if v.product}
+                size_ids = {v.size_id for v in variants if v.size_id}
+                if size_ids:
+                    size_product_rows = self.db.scalars(
+                        select(ProductVariantModel.product_id).where(
+                            ProductVariantModel.size_id.in_(size_ids),
+                            ProductVariantModel.is_active.is_(True),
+                        )
+                    ).all()
+                    preferred_size_products = set(size_product_rows)
 
-        def score(product):
-            season = product.season
-            current_season = bool(
-                season and season.is_active
-                and (season.start_date is None or season.start_date <= today)
-                and (season.end_date is None or season.end_date >= today)
-            )
+        def score(product: ProductModel) -> tuple:
+            # 1. No comprada antes
+            novelty = 1 if product.id not in purchased_ids else 0
+            # 2. Misma categoría que compras previas
+            cat_match = 1 if product.category_id in preferred_categories else 0
+            # 3. Disponible en una talla que el cliente ya compró
+            size_match = 1 if product.id in preferred_size_products else 0
+            # 4. Antigüedad (más nuevo primero)
             return (
-                int(bool(context and product.category_id == context.category_id)) * 4
-                + int(product.category_id in preferred_categories) * 3
-                + int(product.id in preferred_size_products) * 2
-                + int(bool(context and context.season_id and product.season_id == context.season_id)) * 2
-                + int(current_season) * 2
-                + int(product.is_featured),
+                novelty,
+                cat_match,
+                size_match,
                 product.created_at.isoformat() if product.created_at else "",
             )
 
@@ -160,28 +164,34 @@ class CommerceService:
         query = select(OrderModel).where(OrderModel.id == order_id)
         if user is not None:
             query = query.where(OrderModel.user_id == user.id)
+        if self.tenant_id is not None:
+            query = query.where(OrderModel.tenant_id == self.tenant_id)
         order = self.db.scalar(query.with_for_update())
         if not order:
             raise NotFoundError("Pedido no encontrado.")
         return order
 
     def create_order(self, user, data):
-        self.branch(data.branch_id)
+        branch = self.branch(data.branch_id)
+        order_tenant_id = self.tenant_id or branch.tenant_id
         self.db.execute(select(UserModel.id).where(UserModel.id == user.id).with_for_update())
         # Se calcula nuevamente con bloqueo: no se confía ni en el total ni en
         # un cupón que pudo caducar entre la pantalla de carrito y el pago.
         cart = self.cart(user, data.branch_id, data.coupon_code)
-        quote = PromotionService(self.db).quote(user, cart["items"], data.coupon_code, lock=True)
+        quote = PromotionService(self.db, order_tenant_id).quote(user, cart["items"], data.coupon_code, lock=True)
         cart.update(quote)
         if not cart["items"]:
             raise ValidationError("El carrito esta vacio.")
         try:
+            stock_svc = StockService(self.db, order_tenant_id)
             for item in sorted(cart["items"], key=lambda x: x["variant_id"]):
                 self.variant(uuid.UUID(item["variant_id"]))
-                StockService(self.db).change(uuid.UUID(item["variant_id"]), data.branch_id,
+                stock_svc.change(uuid.UUID(item["variant_id"]), data.branch_id,
                     -item["quantity"], "web_order_hold", "Existencias reservadas para pedido web.",
                     reference="nuevo-pedido", actor_id=user.id)
-            order = OrderModel(number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=user.id,
+            order = OrderModel(
+                tenant_id=order_tenant_id,
+                number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=user.id,
                 branch_id=data.branch_id, customer_email=user.email, payment_method=data.payment_method,
                 sales_channel=data.channel,
                 total=Decimal(cart["total"]), subtotal=Decimal(cart["subtotal"]),
@@ -195,7 +205,7 @@ class CommerceService:
                 self.track(order, "Pedido cubierto íntegramente por descuentos; no requiere cobro.")
             self.db.add(order)
             self.db.flush()
-            PromotionService(self.db).record_uses(user, order, quote)
+            PromotionService(self.db, order_tenant_id).record_uses(user, order, quote)
             self.audit(order, "order_created", "Pedido creado con reserva de existencias.")
             self.db.execute(delete(CartItemModel).where(CartItemModel.user_id == user.id))
             self.db.commit()
@@ -210,8 +220,9 @@ class CommerceService:
             raise
 
     def release(self, order, status):
+        stock_svc = StockService(self.db, order.tenant_id)
         for item in sorted(order.items, key=lambda row: row["variant_id"]):
-            StockService(self.db).change(uuid.UUID(item["variant_id"]), order.branch_id,
+            stock_svc.change(uuid.UUID(item["variant_id"]), order.branch_id,
                 item["quantity"], "web_order_release", "Existencias liberadas por pedido no cobrado.",
                 reference=order.number)
         order.status = status
@@ -326,7 +337,10 @@ class CommerceService:
                 raise ValidationError("El punto de caja no está disponible.")
             if cash_point.branch_id != data.branch_id:
                 raise ValidationError("El punto de caja no pertenece a la sucursal seleccionada.")
-            self.branch(data.branch_id)
+            branch = self.branch(data.branch_id)
+            order_tenant_id = self.tenant_id or branch.tenant_id
+            if cash_point.tenant_id != order_tenant_id:
+                raise ValidationError("El punto de caja no pertenece a la empresa.")
             replay = self.db.scalar(select(OrderModel).where(OrderModel.client_request_id == data.client_request_id).with_for_update())
             if replay:
                 if replay.cashier_user_id != actor.id or replay.request_fingerprint != fingerprint:
@@ -338,7 +352,7 @@ class CommerceService:
                 known_user = self.db.scalar(select(UserModel).where(UserModel.email == data.customer_email, UserModel.is_active.is_(True)))
             items = []
             total = Decimal(0)
-            stock = StockService(self.db)
+            stock = StockService(self.db, order_tenant_id)
             for line in sorted(data.items, key=lambda row: str(row.variant_id)):
                 variant = self.variant(line.variant_id)
                 snapshot = self.snapshot(variant, line.quantity, data.branch_id)
@@ -348,6 +362,7 @@ class CommerceService:
                 total += Decimal(snapshot["line_total"])
             now = datetime.now(timezone.utc)
             order = OrderModel(
+                tenant_id=order_tenant_id,
                 number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=known_user.id if known_user else None,
                 customer_email=data.customer_email or "", branch_id=data.branch_id,
                 sales_channel="pos", cash_point_id=cash_point.id, cashier_user_id=actor.id,

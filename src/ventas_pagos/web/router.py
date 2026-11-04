@@ -1,4 +1,4 @@
-from src.infrastructure.security.tenancy import require_feature
+from src.infrastructure.security.tenancy import require_feature, TenantScope, get_tenant_context, get_public_tenant_id
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -13,12 +13,11 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user, get_optional_user
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db
-from src.infrastructure.security.tenancy import get_public_tenant_id
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.config.settings import settings
 from src.shared.exceptions.domain_exception import NotFoundError
 from src.shared.responses.api_response import ApiResponse
-from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductVariantModel
+from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductVariantModel, ProductModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.ventas_pagos.infrastructure.models import StockModel, StockMovementModel, CartItemModel, OrderModel, OrderReturnModel
 from src.inventario_sucursales.infrastructure.models.organization import CashPointModel
@@ -45,6 +44,7 @@ Writer = Annotated[UserModel, Depends(require_permissions("commerce.write"))]
 StockReader = Annotated[UserModel, Depends(require_permissions("stock.read"))]
 StockWriter = Annotated[UserModel, Depends(require_permissions("stock.write"))]
 Analyst = Annotated[UserModel, Depends(require_permissions("dashboard.read"))]
+TenantCtx = Annotated[TenantScope, Depends(get_tenant_context)]
 
 
 def response(data=None):
@@ -72,10 +72,10 @@ def branches(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session =
 
 
 @router.get("/recommendations")
-def recommendations(user: OptionalUser, db: Session = Depends(get_db),
+def recommendations(user: OptionalUser, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db),
                     branch_id: uuid.UUID | None = None, size_id: uuid.UUID | None = None,
                     season_id: uuid.UUID | None = None, product_id: uuid.UUID | None = None):
-    return response(CommerceService(db).recommendations(
+    return response(CommerceService(db, tenant_id).recommendations(
         user, branch_id=branch_id, size_id=size_id, season_id=season_id,
         product_id=product_id,
     ))
@@ -147,19 +147,12 @@ def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
         return response({"available": False, "text": "", "message": "El dictado por voz requiere configurar AI_API_KEY."})
     if audio.content_type and not (audio.content_type.startswith("audio/") or audio.content_type.startswith("video/")):
         raise HTTPException(status_code=415, detail="El audio debe ser WEBM, OGG, MP4 o WAV.")
-    # `audio.file` es el archivo temporal que Starlette ya dejó posicionado en 0
-    # al parsear el multipart: es el equivalente síncrono exacto de `await
-    # audio.read()`. Se pide un byte más que el límite para poder responder 413
-    # sin traer a memoria un audio enorme, igual que ya hacen las otras subidas.
     limite = 10 * 1024 * 1024
     content = audio.file.read(limite + 1)
     if not content:
         raise HTTPException(status_code=422, detail="No recibimos ningún audio para transcribir.")
     if len(content) > limite:
         raise HTTPException(status_code=413, detail="El audio supera el límite de 10 MB.")
-    # `whisper-1` queda como respaldo: algunas claves tienen acceso a chat
-    # pero no a un modelo de transcripción reciente. Se intenta una sola vez
-    # cada modelo y se conserva el mismo audio en memoria, sin persistirlo.
     models = list(dict.fromkeys([settings.ai_transcription_model, "whisper-1"]))
     for model in models:
         try:
@@ -176,15 +169,10 @@ def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
             )
             result.raise_for_status()
             text = str(result.json().get("text", "")).strip()
-            # Ante silencio el modelo NO devuelve vacío: inventa una frase de
-            # sus datos de entrenamiento, casi siempre el crédito de un
-            # subtítulo. Mandar eso al asistente hace que responda a un mensaje
-            # que nadie dijo. Ver `domain/transcripcion.py`.
             utilizable = transcripcion.texto_utilizable(text)
             if utilizable:
                 return response({"available": True, "text": utilizable})
         except (httpx.HTTPError, ValueError, TypeError):
-            # Probar el respaldo sin revelar detalles del proveedor al cliente.
             continue
     return response({
         "available": False,
@@ -200,19 +188,19 @@ def transcribe_assistant_audio(user: User, audio: UploadFile = File(...)):
 def profile(data: ProfileUpdate, user: User, db: Session = Depends(get_db)):
     for key, value in data.model_dump().items():
         setattr(user, key, value)
-    RecordAuditEvent(db).execute(action="commerce.profile_updated", entity_type="user", entity_id=str(user.id), description="Cliente actualizo su perfil.", actor_user_id=user.id)
+    RecordAuditEvent(db).execute(action="commerce.profile_updated", entity_type="user", entity_id=str(user.id), description="Cliente actualizo su perfil.", actor_user_id=user.id, tenant_id=user.tenant_id)
     db.commit()
     return response({"id": user.id, "email": user.email, "first_name": user.first_name, "last_name": user.last_name, "phone": user.phone})
 
 
 @router.get("/cart")
-def cart(user: User, branch_id: uuid.UUID | None = None, coupon_code: str | None = Query(None, max_length=50), db: Session = Depends(get_db)):
-    return response(CommerceService(db).cart(user, branch_id, coupon_code))
+def cart(user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), branch_id: uuid.UUID | None = None, coupon_code: str | None = Query(None, max_length=50), db: Session = Depends(get_db)):
+    return response(CommerceService(db, tenant_id).cart(user, branch_id, coupon_code))
 
 
 @router.put("/cart/items/{variant_id}")
-def set_cart(variant_id: uuid.UUID, data: Quantity, user: User, db: Session = Depends(get_db)):
-    CommerceService(db).set_cart(user, variant_id, data.quantity)
+def set_cart(variant_id: uuid.UUID, data: Quantity, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    CommerceService(db, tenant_id).set_cart(user, variant_id, data.quantity)
     return response()
 
 
@@ -226,12 +214,7 @@ def delete_cart(variant_id: uuid.UUID, user: User, db: Session = Depends(get_db)
 
 @router.delete("/cart")
 def clear_cart(user: User, db: Session = Depends(get_db)):
-    """Vacía el carrito autenticado.
-
-    El cliente móvil permite quitar todas las prendas desde un único botón.
-    Se bloquea la fila del usuario por el mismo motivo que al cambiar una
-    cantidad: una actualización simultánea no puede dejar líneas a medias.
-    """
+    """Vacía el carrito autenticado."""
     db.execute(select(UserModel.id).where(UserModel.id == user.id).with_for_update())
     db.execute(delete(CartItemModel).where(CartItemModel.user_id == user.id))
     db.commit()
@@ -239,8 +222,8 @@ def clear_cart(user: User, db: Session = Depends(get_db)):
 
 
 @router.post("/orders", status_code=201)
-def create_order(data: CheckoutOrder, user: User, db: Session = Depends(get_db)):
-    return response(order_data(CommerceService(db).create_order(user, data)))
+def create_order(data: CheckoutOrder, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return response(order_data(CommerceService(db, tenant_id).create_order(user, data)))
 
 
 @router.get("/payment-return/{order_id}", response_class=HTMLResponse)
@@ -264,18 +247,21 @@ def mobile_payment_return(order_id: uuid.UUID, result: str = "success"):
 
 
 @router.get("/orders")
-def orders(user: User, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-    return response([order_data(o) for o in db.scalars(select(OrderModel).where(OrderModel.user_id == user.id).order_by(OrderModel.created_at.desc()).offset(offset).limit(limit))])
+def orders(user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    query = select(OrderModel).where(OrderModel.user_id == user.id)
+    if tenant_id:
+        query = query.where(OrderModel.tenant_id == tenant_id)
+    return response([order_data(o) for o in db.scalars(query.order_by(OrderModel.created_at.desc()).offset(offset).limit(limit))])
 
 
 @router.get("/orders/{order_id}")
-def get_order(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
-    return response(order_data(CommerceService(db).order(order_id, user)))
+def get_order(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return response(order_data(CommerceService(db, tenant_id).order(order_id, user)))
 
 
 @router.post("/orders/{order_id}/checkout")
-def checkout(order_id: uuid.UUID, request: Request, user: User, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def checkout(order_id: uuid.UUID, request: Request, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    service = CommerceService(db, tenant_id)
     order = service.order(order_id, user)
     local_api = settings.public_api_url.startswith("http://localhost")
     return_url = (
@@ -287,16 +273,16 @@ def checkout(order_id: uuid.UUID, request: Request, user: User, db: Session = De
 
 
 @router.post("/orders/{order_id}/cancel")
-def cancel(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def cancel(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    service = CommerceService(db, tenant_id)
     return response(order_data(service.cancel(service.order(order_id, user))))
 
 
 @router.get("/orders/{order_id}/returns")
-def order_returns(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
+def order_returns(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
     """CU19: que puede devolver el cliente de este pedido y que ya pidio."""
-    order = CommerceService(db).order(order_id, user)
-    service = ReturnsService(db)
+    order = CommerceService(db, tenant_id).order(order_id, user)
+    service = ReturnsService(db, tenant_id)
     return response({
         **service.devolvible(order),
         "returns": [return_data(row) for row in service.del_pedido(order.id)],
@@ -304,16 +290,17 @@ def order_returns(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)
 
 
 @router.post("/orders/{order_id}/returns", status_code=201)
-def request_return(order_id: uuid.UUID, data: ReturnRequest, user: User, db: Session = Depends(get_db)):
-    order = CommerceService(db).order(order_id, user)
-    return response(return_data(ReturnsService(db).solicitar(user, order, data)))
+def request_return(order_id: uuid.UUID, data: ReturnRequest, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    order = CommerceService(db, tenant_id).order(order_id, user)
+    return response(return_data(ReturnsService(db, tenant_id).solicitar(user, order, data)))
 
 
 @router.get("/orders/{order_id}/exchange-options")
 def exchange_options(order_id: uuid.UUID, variant_id: uuid.UUID, user: User,
+                     tenant_id: uuid.UUID = Depends(get_public_tenant_id),
                      db: Session = Depends(get_db)):
-    order = CommerceService(db).order(order_id, user)
-    service = ReturnsService(db)
+    order = CommerceService(db, tenant_id).order(order_id, user)
+    service = ReturnsService(db, tenant_id)
     state = service.devolvible(order)
     if not state["can_request"] or not state["units"].get(str(variant_id)):
         raise NotFoundError("La prenda no está disponible para cambio.")
@@ -322,23 +309,24 @@ def exchange_options(order_id: uuid.UUID, variant_id: uuid.UUID, user: User,
 
 @router.post("/orders/{order_id}/exchanges", status_code=201)
 def request_exchange(order_id: uuid.UUID, data: ExchangeRequest, user: User,
+                     tenant_id: uuid.UUID = Depends(get_public_tenant_id),
                      db: Session = Depends(get_db)):
-    order = CommerceService(db).order(order_id, user)
-    return response(return_data(ReturnsService(db).solicitar_cambio(user, order, data)))
+    order = CommerceService(db, tenant_id).order(order_id, user)
+    return response(return_data(ReturnsService(db, tenant_id).solicitar_cambio(user, order, data)))
 
 
 @router.get("/returns")
-def my_returns(user: User, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-    return response([return_data(row) for row in ReturnsService(db).mias(user, limit, offset)])
+def my_returns(user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    return response([return_data(row) for row in ReturnsService(db, tenant_id).mias(user, limit, offset)])
 
 
 @router.get("/admin/pos/orders")
-def pos_lookup(user: Writer, db: Session = Depends(get_db), number: str = Query(min_length=3, max_length=40)):
+def pos_lookup(user: Writer, ctx: TenantCtx, db: Session = Depends(get_db), number: str = Query(min_length=3, max_length=40)):
     """Busca una venta por su número, para atender una devolución en el mostrador."""
-    order = db.scalar(select(OrderModel).where(OrderModel.number == number.strip().upper()))
+    order = db.scalar(select(OrderModel).where(OrderModel.number == number.strip().upper(), OrderModel.tenant_id == ctx.tenant_id))
     if not order:
         raise NotFoundError("No encontramos una venta con ese número.")
-    service = ReturnsService(db)
+    service = ReturnsService(db, ctx.tenant_id)
     return response({
         "order": order_data(order),
         **service.devolvible(order),
@@ -347,15 +335,16 @@ def pos_lookup(user: Writer, db: Session = Depends(get_db), number: str = Query(
 
 
 @router.post("/admin/pos/returns", status_code=201)
-def pos_return(data: CounterReturn, user: Writer, db: Session = Depends(get_db)):
+def pos_return(data: CounterReturn, user: Writer, ctx: TenantCtx, db: Session = Depends(get_db)):
     """CU19 en el mostrador: registra la devolución y reintegra en un solo paso."""
-    order = CommerceService(db).order(data.order_id)
-    return response(return_data(ReturnsService(db).registrar_en_caja(user, order, data)))
+    order = CommerceService(db, ctx.tenant_id).order(data.order_id)
+    return response(return_data(ReturnsService(db, ctx.tenant_id).registrar_en_caja(user, order, data)))
 
 
 @router.get("/admin/returns")
 def admin_returns(
     user: Reader,
+    ctx: TenantCtx,
     db: Session = Depends(get_db),
     status: str | None = Query(None, max_length=20),
     limit: int = Query(100, ge=1, le=500),
@@ -363,7 +352,9 @@ def admin_returns(
     branch_id: uuid.UUID | None = None,
     q: str | None = Query(None, max_length=60),
 ):
-    service = ReturnsService(db)
+    if branch_id:
+        CommerceService(db, ctx.tenant_id).branch(branch_id)
+    service = ReturnsService(db, ctx.tenant_id)
     filas = service.todas(status, limit, offset, branch_id=branch_id, q=q)
     contexto = service.enriquecer(filas)
     return response([
@@ -372,26 +363,27 @@ def admin_returns(
 
 
 @router.patch("/admin/returns/{return_id}")
-def resolve_return(return_id: uuid.UUID, data: ReturnResolution, user: Writer, db: Session = Depends(get_db)):
-    service = ReturnsService(db)
+def resolve_return(return_id: uuid.UUID, data: ReturnResolution, user: Writer, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = ReturnsService(db, ctx.tenant_id)
     return response(return_data(service.resolver(user, service.obtener(return_id), data)))
 
 
 @router.post("/orders/{order_id}/payment-status")
-def reconcile_payment(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def reconcile_payment(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    service = CommerceService(db, tenant_id)
     return response(order_data(service.reconcile_payment(service.order(order_id, user))))
 
 
 @router.post("/admin/orders/{order_id}/payment-status")
-def admin_reconcile_payment(order_id: uuid.UUID, user: Writer, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def admin_reconcile_payment(order_id: uuid.UUID, user: Writer, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = CommerceService(db, ctx.tenant_id)
     return response(order_data(service.reconcile_payment(service.order(order_id))))
 
 
 @router.get("/admin/orders")
 def admin_orders(
     user: Reader,
+    ctx: TenantCtx,
     db: Session = Depends(get_db),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -400,13 +392,10 @@ def admin_orders(
     channel: str | None = Query(None, pattern="^(web|pos)$"),
     q: str | None = Query(None, max_length=120),
 ):
-    """Bandeja de pedidos para gestión, con los filtros con los que se trabaja.
-
-    Sin filtros hay que pasar páginas a mano para encontrar un pedido: quien
-    despacha trabaja por estado y por sucursal, y cuando un cliente llama trae
-    su número o su correo.
-    """
-    consulta = select(OrderModel)
+    """Bandeja de pedidos para gestión, con los filtros con los que se trabaja."""
+    if branch_id:
+        CommerceService(db, ctx.tenant_id).branch(branch_id)
+    consulta = select(OrderModel).where(OrderModel.tenant_id == ctx.tenant_id)
     if status:
         consulta = consulta.where(OrderModel.status == status)
     if branch_id:
@@ -419,9 +408,8 @@ def admin_orders(
             OrderModel.number.ilike(texto.upper()) | OrderModel.customer_email.ilike(texto)
         )
     rows = db.scalars(consulta.order_by(OrderModel.created_at.desc()).offset(offset).limit(limit)).all()
-    # Una marca por pedido evita que gestión abra uno por uno para ver si tiene
-    # devoluciones pendientes de resolver.
     con_devolucion = set(db.scalars(select(OrderReturnModel.order_id).where(
+        OrderReturnModel.tenant_id == ctx.tenant_id,
         OrderReturnModel.order_id.in_([o.id for o in rows] or [uuid.uuid4()]),
         OrderReturnModel.status.in_(["requested", "approved"]),
     )))
@@ -431,21 +419,22 @@ def admin_orders(
 
 
 @router.patch("/admin/orders/{order_id}/tracking")
-def tracking(order_id: uuid.UUID, data: TrackingUpdate, user: Writer, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def tracking(order_id: uuid.UUID, data: TrackingUpdate, user: Writer, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = CommerceService(db, ctx.tenant_id)
     return response(order_data(service.tracking(service.order(order_id), data)))
 
 
 @router.post("/admin/orders/{order_id}/payment")
-def payment(order_id: uuid.UUID, data: ManualPayment, user: Writer, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def payment(order_id: uuid.UUID, data: ManualPayment, user: Writer, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = CommerceService(db, ctx.tenant_id)
     return response(order_data(service.manual_payment(service.order(order_id), data)))
 
 
 @router.get("/admin/cash-points")
-def cash_points(user: Writer, branch_id: uuid.UUID, db: Session = Depends(get_db)):
-    CommerceService(db).branch(branch_id)
+def cash_points(user: Writer, branch_id: uuid.UUID, ctx: TenantCtx, db: Session = Depends(get_db)):
+    CommerceService(db, ctx.tenant_id).branch(branch_id)
     rows = db.scalars(select(CashPointModel).where(
+        CashPointModel.tenant_id == ctx.tenant_id,
         CashPointModel.branch_id == branch_id, CashPointModel.is_active.is_(True),
         CashPointModel.deleted_at.is_(None)
     ).order_by(CashPointModel.code)).all()
@@ -453,24 +442,19 @@ def cash_points(user: Writer, branch_id: uuid.UUID, db: Session = Depends(get_db
 
 
 @router.post("/admin/pos/sales", status_code=201, dependencies=[Depends(require_feature("sales"))])
-def pos_sale(data: POSSale, user: Writer, db: Session = Depends(get_db)):
-    order, replay = CommerceService(db).pos_sale(user, data)
+def pos_sale(data: POSSale, user: Writer, ctx: TenantCtx, db: Session = Depends(get_db)):
+    CommerceService(db, ctx.tenant_id).branch(data.branch_id)
+    order, replay = CommerceService(db, ctx.tenant_id).pos_sale(user, data)
     return response({**order_data(order), "idempotent_replay": replay})
 
 
 @router.get("/admin/orders/{order_id}/receipt")
-def pos_receipt(order_id: uuid.UUID, user: Writer, db: Session = Depends(get_db)):
-    """Comprobante imprimible de una venta.
-
-    Lo puede reimprimir cualquiera con permiso de escritura comercial, no solo
-    el cajero que la hizo: un comprobante perdido lo reclama el cliente en el
-    mostrador y quien atiende puede no ser la misma persona del turno anterior.
-    """
-    order = CommerceService(db).order(order_id)
+def pos_receipt(order_id: uuid.UUID, user: Writer, ctx: TenantCtx, db: Session = Depends(get_db)):
+    order = CommerceService(db, ctx.tenant_id).order(order_id)
     RecordAuditEvent(db).execute(
         action="commerce.receipt_printed", entity_type="order", entity_id=str(order.id),
         description="Comprobante de venta reimpreso.", actor_user_id=user.id,
-        metadata={"number": order.number},
+        metadata={"number": order.number}, tenant_id=ctx.tenant_id,
     )
     db.commit()
     return StreamingResponse(comprobante_de_venta(order), media_type="application/pdf", headers={
@@ -479,10 +463,10 @@ def pos_receipt(order_id: uuid.UUID, user: Writer, db: Session = Depends(get_db)
 
 
 @router.get("/admin/stock")
-def stock(user: StockReader, branch_id: uuid.UUID, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def stock(user: StockReader, branch_id: uuid.UUID, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = CommerceService(db, ctx.tenant_id)
     service.branch(branch_id)
-    variants = db.scalars(select(ProductVariantModel).where(ProductVariantModel.is_active.is_(True))).all()
+    variants = db.scalars(select(ProductVariantModel).join(ProductModel, ProductModel.id == ProductVariantModel.product_id).where(ProductModel.tenant_id == ctx.tenant_id, ProductVariantModel.is_active.is_(True))).all()
     rows_by_variant = {row.variant_id: row.quantity for row in db.execute(
         select(StockModel).where(StockModel.branch_id == branch_id)
     ).scalars()}
@@ -490,10 +474,10 @@ def stock(user: StockReader, branch_id: uuid.UUID, db: Session = Depends(get_db)
 
 
 @router.get("/admin/pos/stock")
-def pos_stock(user: Writer, branch_id: uuid.UUID, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def pos_stock(user: Writer, branch_id: uuid.UUID, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = CommerceService(db, ctx.tenant_id)
     service.branch(branch_id)
-    variants = db.scalars(select(ProductVariantModel).where(ProductVariantModel.is_active.is_(True))).all()
+    variants = db.scalars(select(ProductVariantModel).join(ProductModel, ProductModel.id == ProductVariantModel.product_id).where(ProductModel.tenant_id == ctx.tenant_id, ProductVariantModel.is_active.is_(True))).all()
     rows_by_variant = {row.variant_id: row.quantity for row in db.scalars(
         select(StockModel).where(StockModel.branch_id == branch_id)
     )}
@@ -502,23 +486,27 @@ def pos_stock(user: Writer, branch_id: uuid.UUID, db: Session = Depends(get_db))
 
 
 @router.put("/admin/stock/{variant_id}")
-def update_stock(variant_id: uuid.UUID, data: StockQuantity, user: StockWriter, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def update_stock(variant_id: uuid.UUID, data: StockQuantity, user: StockWriter, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = CommerceService(db, ctx.tenant_id)
     service.branch(data.branch_id)
     service.variant(variant_id)
-    row = StockService(db).locked_stock(variant_id, data.branch_id)
+    stock_svc = StockService(db, ctx.tenant_id)
+    row = stock_svc.locked_stock(variant_id, data.branch_id)
     previous = row.quantity if row else 0
-    StockService(db).change(variant_id, data.branch_id, data.quantity - previous, "adjustment", data.reason, actor_id=user.id)
-    RecordAuditEvent(db).execute(action="commerce.stock_adjusted", entity_type="stock", entity_id=str(variant_id), description="Existencias ajustadas por sucursal.", actor_user_id=user.id, metadata={"branch_id":str(data.branch_id),"previous":previous,"quantity":data.quantity})
+    stock_svc.change(variant_id, data.branch_id, data.quantity - previous, "adjustment", data.reason, actor_id=user.id)
+    RecordAuditEvent(db).execute(action="commerce.stock_adjusted", entity_type="stock", entity_id=str(variant_id), description="Existencias ajustadas por sucursal.", actor_user_id=user.id, metadata={"branch_id":str(data.branch_id),"previous":previous,"quantity":data.quantity}, tenant_id=ctx.tenant_id)
     db.commit()
     FavoriteAlerts(db).restocked(service.variant(variant_id).product, previous, data.quantity)
     return response({"variant_id": variant_id, **data.model_dump()})
 
 
 @router.get("/admin/stock/movements")
-def stock_movements(user: StockReader, branch_id: uuid.UUID, variant_id: uuid.UUID | None = None,
+def stock_movements(user: StockReader, branch_id: uuid.UUID, ctx: TenantCtx, variant_id: uuid.UUID | None = None,
                     limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db)):
-    CommerceService(db).branch(branch_id)
+    service = CommerceService(db, ctx.tenant_id)
+    service.branch(branch_id)
+    if variant_id:
+        service.variant(variant_id)
     query = select(StockMovementModel).where(StockMovementModel.branch_id == branch_id)
     if variant_id:
         query = query.where(StockMovementModel.variant_id == variant_id)
@@ -532,16 +520,17 @@ def stock_movements(user: StockReader, branch_id: uuid.UUID, variant_id: uuid.UU
 
 
 @router.post("/admin/stock/{variant_id}/movements", status_code=201)
-def register_stock_movement(variant_id: uuid.UUID, data: StockEntry, user: StockWriter, db: Session = Depends(get_db)):
-    service = CommerceService(db)
+def register_stock_movement(variant_id: uuid.UUID, data: StockEntry, user: StockWriter, ctx: TenantCtx, db: Session = Depends(get_db)):
+    service = CommerceService(db, ctx.tenant_id)
     service.branch(data.branch_id)
     service.variant(variant_id)
     delta = -data.quantity if data.kind == "issue" else data.quantity
-    row = StockService(db).change(variant_id, data.branch_id, delta, data.kind, data.reason,
+    stock_svc = StockService(db, ctx.tenant_id)
+    row = stock_svc.change(variant_id, data.branch_id, delta, data.kind, data.reason,
                                   reference=data.reference, actor_id=user.id)
     RecordAuditEvent(db).execute(action="commerce.stock_movement", entity_type="stock", entity_id=str(variant_id),
         description=f"Movimiento de inventario: {data.kind}.", actor_user_id=user.id,
-        metadata={"branch_id": str(data.branch_id), "delta": delta, "quantity": row.quantity, "reason": data.reason})
+        metadata={"branch_id": str(data.branch_id), "delta": delta, "quantity": row.quantity, "reason": data.reason}, tenant_id=ctx.tenant_id)
     db.commit()
     FavoriteAlerts(db).restocked(service.variant(variant_id).product, row.quantity - delta, row.quantity)
     return response({"variant_id": variant_id, "branch_id": data.branch_id, "quantity": row.quantity})
@@ -549,35 +538,26 @@ def register_stock_movement(variant_id: uuid.UUID, data: StockEntry, user: Stock
 
 @router.post("/stripe/webhook")
 async def webhook(request: Request, db: Session = Depends(get_db)):
-    """Recibe los eventos firmados de Stripe.
-
-    Único endpoint que sigue siendo `async def`: Stripe firma los BYTES EXACTOS
-    del cuerpo y `request.body()` es la única forma de obtenerlos sin volver a
-    serializar el JSON (reserializar cambia espacios y orden de claves, y el
-    HMAC deja de validar). Lo que sí bloquea -el HMAC, el SELECT ... FOR UPDATE
-    del pedido y el correo de `notificar_pedido`- baja al pool de hilos para que
-    no congele el bucle de eventos, que es lo que hacía antes.
-    """
+    """Recibe los eventos firmados de Stripe."""
     body = await request.body()
     firma = request.headers.get("stripe-signature", "")
     return await run_in_threadpool(lambda: CommerceService(db).webhook(verify_event(body, firma)))
 
 
 @analytics_router.get("/dashboard")
-def dashboard(user: Analyst, db: Session = Depends(get_db), date_from: datetime | None = None, date_to: datetime | None = None,
+def dashboard(user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db), date_from: datetime | None = None, date_to: datetime | None = None,
               branch_id: uuid.UUID | None = None, category_id: uuid.UUID | None = None,
               status: str | None = Query(default=None, max_length=30), low_stock_lt: int | None = Query(default=None, ge=0, le=10000)):
-    return response(ReportsService(db).dashboard(date_from, date_to, branch_id, category_id, status, low_stock_lt))
+    return response(ReportsService(db, ctx.tenant_id).dashboard(date_from, date_to, branch_id, category_id, status, low_stock_lt))
 
 
 @analytics_router.post("/insights")
-def insights(user: Analyst, data: InsightsRequest | None = None, db: Session = Depends(get_db)):
-    """Recomendaciones de la IA sobre el contexto real (retrocompatible: si no
-    se envia cuerpo se usa el dashboard completo)."""
+def insights(user: Analyst, ctx: TenantCtx, data: InsightsRequest | None = None, db: Session = Depends(get_db)):
+    """Recomendaciones de la IA sobre el contexto real."""
     if not settings.ai_api_key:
         return response({"available": False, "message": "Configure AI_API_KEY para habilitar recomendaciones. Las metricas reales ya estan disponibles."})
     filters = data.filters if data and data.filters else ReportFilters()
-    snapshot = ReportsService(db).dashboard(filters.date_from, filters.date_to, filters.branch_id, filters.category_id, filters.status)
+    snapshot = ReportsService(db, ctx.tenant_id).dashboard(filters.date_from, filters.date_to, filters.branch_id, filters.category_id, filters.status)
     try:
         result = httpx.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": "Bearer " + settings.ai_api_key},
             json={"model": settings.ai_model, "messages": [{"role": "system", "content": "Eres analista de FashionStore. Da 3 recomendaciones breves en espanol basadas solo en metricas agregadas. No inventes tendencias ni causalidad. Senala cuando faltan datos."},
@@ -589,41 +569,32 @@ def insights(user: Analyst, data: InsightsRequest | None = None, db: Session = D
 
 
 @analytics_router.post("/assistant/interpret", tags=['PAQ-05 · Inteligencia artificial y reportes'], dependencies=[Depends(require_feature("ai_reports"))])
-def interpret(data: InterpretRequest, user: Analyst, db: Session = Depends(get_db)):
-    """Funcion A del asistente de reportes: consulta en lenguaje natural a una
-    estructura validada (vista, filtros, agrupacion, metrica, comparacion).
-    No modifica datos y resuelve nombres contra el catalogo autorizado."""
+def interpret(data: InterpretRequest, user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db)):
+    """Funcion A del asistente de reportes."""
     branches = [
         {"id": str(row.id), "name": row.name}
-        for row in db.scalars(select(BranchModel).where(BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None)))
+        for row in db.scalars(select(BranchModel).where(BranchModel.tenant_id == ctx.tenant_id, BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None)))
         if row.name
     ]
-    categories = [{"id": str(row.id), "name": row.name} for row in db.scalars(select(CategoryModel)) if row.name]
-    result = ReportsAI(db).interpret(data.message, data.current, {"branches": branches, "categories": categories})
+    categories = [{"id": str(row.id), "name": row.name} for row in db.scalars(select(CategoryModel).where(CategoryModel.tenant_id == ctx.tenant_id)) if row.name]
+    result = ReportsAI(db, ctx.tenant_id).interpret(data.message, data.current, {"branches": branches, "categories": categories})
     return response(result)
 
 
 @analytics_router.post("/assistant/explain", tags=['PAQ-05 · Inteligencia artificial y reportes'], dependencies=[Depends(require_feature("ai_reports"))])
-def explain(data: ExplainRequest, user: Analyst, db: Session = Depends(get_db)):
-    """Funcion B del asistente de reportes: explica metricas agregadas usando
-    el contexto de filtros visible. El servidor recalcula las metricas; no
-    confia en cifras del navegador."""
-    return response(ReportsAI(db).explain(data.question, data.filters or ReportFilters()))
+def explain(data: ExplainRequest, user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db)):
+    """Funcion B del asistente de reportes."""
+    return response(ReportsAI(db, ctx.tenant_id).explain(data.question, data.filters or ReportFilters()))
 
 
 @analytics_router.post("/assistant/execute", tags=['PAQ-05 · Inteligencia artificial y reportes'], dependencies=[Depends(require_feature("ai_reports"))])
-def execute_tool(data: AssistantToolRequest, user: Analyst, db: Session = Depends(get_db)):
-    """Ejecuta una herramienta tipada del asistente (hoy export_report) con
-    parametros validados en esta capa y datos autorizados. Deja bitacora con el
-    correo del actor; si llega una request_id repetida dentro de la ventana,
-    no vuelve a auditar la accion (X-Idempotent-Replay: true)."""
+def execute_tool(data: AssistantToolRequest, user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db)):
+    """Ejecuta una herramienta tipada del asistente con parametros validados."""
     try:
-        result = AssistantTools(db).execute(data.tool, data.params, user, data.request_id)
+        result = AssistantTools(db, ctx.tenant_id).execute(data.tool, data.params, user, data.request_id)
     except UnknownToolError as exc:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     headers = {
         "Content-Disposition": f'attachment; filename="{result.filename}"',
@@ -640,23 +611,21 @@ def execute_tool(data: AssistantToolRequest, user: Analyst, db: Session = Depend
 
 
 @analytics_router.get("/reports/export", tags=['PAQ-05 · Inteligencia artificial y reportes'])
-def export_reports(user: Analyst, db: Session = Depends(get_db), report: str = Query(default="ventas"),
+def export_reports(user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db), report: str = Query(default="ventas"),
                    format: str = Query(default="xlsx"), date_from: datetime | None = None, date_to: datetime | None = None,
                    branch_id: uuid.UUID | None = None, category_id: uuid.UUID | None = None,
                    status: str | None = Query(default=None, max_length=30)):
-    """Exporta el conjunto filtrado autorizado (max report_export_max_rows),
-    con totales consistentes con el dashboard. xlsx principal, csv tabular."""
+    """Exporta el conjunto filtrado autorizado."""
     if format not in {"xlsx", "csv"}:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="Formato no soportado: use xlsx o csv.")
     if report not in {"ventas", "pedidos", "pagos", "prendas_vendidas", "existencias", "sucursales"}:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="Reporte no soportado.")
     fif = ReportFilters(date_from=date_from, date_to=date_to, branch_id=branch_id, category_id=category_id, status=status)
-    title, headers, rows = ReportsService(db).export_report(report, fif.date_from, fif.date_to, fif.branch_id, fif.category_id, fif.status)
+    reports_svc = ReportsService(db, ctx.tenant_id)
+    title, headers, rows = reports_svc.export_report(report, fif.date_from, fif.date_to, fif.branch_id, fif.category_id, fif.status)
     truncated = len(rows) > settings.report_export_max_rows
     rows = rows[: settings.report_export_max_rows]
-    period = ReportsService(db)._window(fif.date_from, fif.date_to)
+    period = reports_svc._window(fif.date_from, fif.date_to)
     period_text = f"{period[0].isoformat() if period[0] else 'inicio'} a {period[1].isoformat() if period[1] else 'hoy'}"
     filtro_text = "; ".join(
         part for part in [
@@ -677,21 +646,8 @@ def export_reports(user: Analyst, db: Session = Depends(get_db), report: str = Q
 
 
 @analytics_router.post("/reports/export-multiple", tags=['PAQ-05 · Inteligencia artificial y reportes'])
-def export_reports_multiple(data: MultiExportRequest, user: Analyst, db: Session = Depends(get_db)):
-    """Exportacion multiple (NUEVO): varios reportes en una sola operacion.
-
-    - xlsx: un archivo con una hoja por reporte + hoja "Criterios".
-    - pdf: un documento con cabecera, criterios y una seccion por reporte,
-      encabezados repetidos y paginas numeradas.
-    - csv: un reporte => .csv; varios => .zip con un CSV por reporte y
-      criterios.txt (nunca se concatenan tablas incompatibles).
-
-    Mantiene el endpoint individual GET /analytics/reports/export compatible.
-    Valida tipos, formato, filtros y permiso (dashboard.read) en el servidor;
-    respeta el limite de filas y comunica el truncamiento por encabezado.
-    """
-    from fastapi import HTTPException
-
+def export_reports_multiple(data: MultiExportRequest, user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db)):
+    """Exportacion multiple."""
     invalid = [key for key in data.reports if key not in REPORT_TYPES]
     if invalid:
         raise HTTPException(status_code=422, detail=f"Reportes no soportados: {', '.join(invalid)}.")
@@ -699,12 +655,13 @@ def export_reports_multiple(data: MultiExportRequest, user: Analyst, db: Session
     if not reports:
         raise HTTPException(status_code=422, detail="Selecciona al menos un reporte.")
 
-    payload, media_type, filename, summary = MultiExportService(db).export(reports, data.format, data.filters)
+    payload, media_type, filename, summary = MultiExportService(db, ctx.tenant_id).export(reports, data.format, data.filters)
     RecordAuditEvent(db).execute(
         action="analytics.reports_export_multiple",
         entity_type="report",
         description=f"Exportacion multiple en {data.format}: {', '.join(summary['reports'])}.",
         actor_user_id=user.id,
+        tenant_id=ctx.tenant_id,
         metadata={"reports": reports, "format": data.format, **{k: v for k, v in summary.items() if k != "reports"}},
     )
     db.commit()
@@ -716,5 +673,3 @@ def export_reports_multiple(data: MultiExportRequest, user: Analyst, db: Session
     }
     return StreamingResponse(iter([payload.getvalue()] if hasattr(payload, "getvalue") else [payload]),
                              media_type=media_type, headers=headers)
-
-

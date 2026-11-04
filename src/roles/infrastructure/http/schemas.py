@@ -30,6 +30,7 @@ class PermissionResponse(BaseModel):
     name: str
     description: str | None
     module: str
+    scope: str = "tenant"
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -65,6 +66,8 @@ class RoleResponse(BaseModel):
     description: str | None
     is_system: bool
     is_active: bool
+    is_template: bool = False
+    users_count: int = 0
     permissions: list[PermissionResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

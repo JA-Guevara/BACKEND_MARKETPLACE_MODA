@@ -22,6 +22,7 @@ class PermissionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255))
     module: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(10), default="tenant", server_default="tenant", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     roles: Mapped[list["RoleModel"]] = relationship(

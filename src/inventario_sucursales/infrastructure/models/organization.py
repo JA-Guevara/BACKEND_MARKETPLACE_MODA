@@ -23,8 +23,9 @@ class CityModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class SupplierModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "suppliers"
-    __table_args__ = (UniqueConstraint("tax_id"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "tax_id", name="uq_suppliers_tenant_tax_id"),)
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     business_name: Mapped[str] = mapped_column(String(180), nullable=False, index=True)
     trade_name: Mapped[str | None] = mapped_column(String(180))
     tax_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)

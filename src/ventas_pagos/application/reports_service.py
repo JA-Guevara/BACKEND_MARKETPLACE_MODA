@@ -13,6 +13,8 @@ from src.reservas.infrastructure.persistence.models.reserva import ReservationMo
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, ProductVariantModel
 from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
 
+DEFAULT_TENANT_ID = uuid.UUID("30000000-0000-0000-0000-000000000001")
+
 WEEKDAY_LABELS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 DEFAULT_WINDOW_DAYS = 90
 PROJECTION_DAYS = 7
@@ -90,8 +92,9 @@ class ReportsService:
     sobre ese mismo conjunto. Asi dashboard = export = contexto de IA.
     """
 
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
+        self.tenant_id = tenant_id or DEFAULT_TENANT_ID
 
     def dashboard(
         self,
@@ -104,7 +107,7 @@ class ReportsService:
     ) -> dict:
         threshold = low_stock_lt if low_stock_lt is not None else settings.low_stock_threshold
 
-        all_orders = list(self.db.scalars(select(OrderModel)))
+        all_orders = list(self.db.scalars(select(OrderModel).where(OrderModel.tenant_id == self.tenant_id)))
         if status:
             all_orders = [o for o in all_orders if self._matches_status(o, status)]
         if branch_id:
@@ -158,8 +161,8 @@ class ReportsService:
             "pending_orders": statuses.get("pending_payment", 0),
             "revenue": str(revenue_total),
             "currency": settings.commerce_currency,
-            "products": self.db.scalar(select(func.count()).select_from(ProductModel).where(ProductModel.deleted_at.is_(None))),
-            "customers": self.db.scalar(select(func.count()).select_from(UserModel)),
+            "products": self.db.scalar(select(func.count()).select_from(ProductModel).where(ProductModel.tenant_id == self.tenant_id, ProductModel.deleted_at.is_(None))),
+            "customers": self.db.scalar(select(func.count(func.distinct(OrderModel.user_id))).where(OrderModel.tenant_id == self.tenant_id, OrderModel.user_id.is_not(None))) or 0,
             "low_stock": len(low_stock),
             "by_status": dict(Counter(o.status for o in windowed_all)),
             "daily_sales": [{"date": d, "total": str(total)} for d, total in daily],
@@ -358,7 +361,11 @@ class ReportsService:
             return set()
         return set(
             self.db.scalars(
-                select(ProductModel.id).where(ProductModel.id.in_(ids), ProductModel.category_id == category_id)
+                select(ProductModel.id).where(
+                    ProductModel.id.in_(ids),
+                    ProductModel.category_id == category_id,
+                    ProductModel.tenant_id == self.tenant_id,
+                )
             )
         )
 
@@ -434,7 +441,10 @@ class ReportsService:
         product_ids = {uuid.UUID(item["product_id"]) for order in paid for item in order.items}
         if not product_ids:
             return []
-        products = self.db.scalars(select(ProductModel).where(ProductModel.id.in_(product_ids)))
+        products = self.db.scalars(select(ProductModel).where(
+            ProductModel.id.in_(product_ids),
+            ProductModel.tenant_id == self.tenant_id,
+        ))
         category_by_product = {str(p.id): p.category.name for p in products}
         totals: dict[str, Decimal] = {}
         quantities: dict[str, int] = {}
@@ -450,7 +460,10 @@ class ReportsService:
         branch_ids = {order.branch_id for order, _, _ in lines}
         if not branch_ids:
             return []
-        branches = self.db.scalars(select(BranchModel).where(BranchModel.id.in_(branch_ids)))
+        branches = self.db.scalars(select(BranchModel).where(
+            BranchModel.id.in_(branch_ids),
+            BranchModel.tenant_id == self.tenant_id,
+        ))
         name_by_id = {b.id: b.name for b in branches}
         totals: dict[str, Decimal] = {}
         counts: dict[str, set] = {}
@@ -472,7 +485,12 @@ class ReportsService:
             .join(ProductModel, ProductVariantModel.product_id == ProductModel.id)
             .join(StockModel, StockModel.variant_id == ProductVariantModel.id)
             .join(BranchModel, BranchModel.id == StockModel.branch_id)
-            .where(StockModel.quantity < threshold, ProductModel.deleted_at.is_(None))
+            .where(
+                BranchModel.tenant_id == self.tenant_id,
+                ProductModel.tenant_id == self.tenant_id,
+                StockModel.quantity < threshold,
+                ProductModel.deleted_at.is_(None),
+            )
             .order_by(StockModel.quantity.asc())
         )
         if branch_id:
@@ -497,7 +515,7 @@ class ReportsService:
         return rows
 
     def _reservations_by_status(self, branch_id: uuid.UUID | None, start: datetime | None, end: datetime | None) -> list[dict]:
-        query = select(ReservationModel)
+        query = select(ReservationModel).where(ReservationModel.tenant_id == self.tenant_id)
         if branch_id:
             query = query.where(ReservationModel.branch_id == branch_id)
         reservations = list(self.db.scalars(query))
@@ -554,7 +572,7 @@ class ReportsService:
         sobre el MISMO conjunto que el dashboard: una categoria solo suma sus
         lineas, los ingresos son cobros del periodo y ``sucursales`` usa pedidos
         pagados, igual que las tarjetas del centro de reportes."""
-        all_orders = list(self.db.scalars(select(OrderModel)))
+        all_orders = list(self.db.scalars(select(OrderModel).where(OrderModel.tenant_id == self.tenant_id)))
         if status:
             all_orders = [o for o in all_orders if self._matches_status(o, status)]
         if branch_id:
@@ -568,7 +586,7 @@ class ReportsService:
         if category_id and report in {"ventas", "pedidos", "pagos", "prendas_vendidas", "sucursales"}:
             kept = self._product_ids_by_category(all_orders, category_id)
 
-        branches = {b.id: b.name for b in self.db.scalars(select(BranchModel))}
+        branches = {b.id: b.name for b in self.db.scalars(select(BranchModel).where(BranchModel.tenant_id == self.tenant_id))}
         currency = settings.commerce_currency.upper()
 
         def order_contains_category(order: OrderModel) -> bool:
@@ -608,8 +626,8 @@ class ReportsService:
 
         if report == "prendas_vendidas":
             product_ids = {uuid.UUID(item["product_id"]) for o in windowed_paid for item in o.items}
-            products = {str(p.id): p for p in self.db.scalars(select(ProductModel).where(ProductModel.id.in_(product_ids)))} if product_ids else {}
-            variants = {v.id: v for v in self.db.scalars(select(ProductVariantModel))}
+            products = {str(p.id): p for p in self.db.scalars(select(ProductModel).where(ProductModel.id.in_(product_ids), ProductModel.tenant_id == self.tenant_id))} if product_ids else {}
+            variants = {v.id: v for v in self.db.scalars(select(ProductVariantModel).join(ProductModel, ProductModel.id == ProductVariantModel.product_id).where(ProductModel.tenant_id == self.tenant_id))}
             agg: dict[str, dict] = {}
             for o in windowed_paid:
                 items = o.items if kept is None else [item for item in o.items if self._product_in(item, kept)]
@@ -634,7 +652,11 @@ class ReportsService:
                      .join(ProductModel, ProductVariantModel.product_id == ProductModel.id)
                      .join(StockModel, StockModel.variant_id == ProductVariantModel.id)
                      .join(BranchModel, BranchModel.id == StockModel.branch_id)
-                     .where(ProductModel.deleted_at.is_(None)))
+                     .where(
+                         BranchModel.tenant_id == self.tenant_id,
+                         ProductModel.tenant_id == self.tenant_id,
+                         ProductModel.deleted_at.is_(None),
+                     ))
             if branch_id:
                 query = query.where(StockModel.branch_id == branch_id)
             if category_id:

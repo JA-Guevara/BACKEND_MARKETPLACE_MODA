@@ -8,6 +8,11 @@ class AuditEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    tenant_id: uuid.UUID | None = None
+    tenant_name: str | None = None
+    support_session_id: uuid.UUID | None = None
+    support_reason: str | None = None
+    actor_is_support: bool = False
     actor_user_id: uuid.UUID | None
     actor_name: str | None
     actor_email: str | None

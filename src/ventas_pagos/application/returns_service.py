@@ -23,21 +23,26 @@ from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantMo
 
 
 class ReturnsService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     # --- Consulta --------------------------------------------------------
 
     def del_pedido(self, order_id) -> list[OrderReturnModel]:
+        query = select(OrderReturnModel).where(OrderReturnModel.order_id == order_id)
+        if self.tenant_id is not None:
+            query = query.where(OrderReturnModel.tenant_id == self.tenant_id)
         return list(self.db.scalars(
-            select(OrderReturnModel).where(OrderReturnModel.order_id == order_id)
-            .order_by(OrderReturnModel.created_at.desc())
+            query.order_by(OrderReturnModel.created_at.desc())
         ))
 
     def mias(self, user, limit: int = 100, offset: int = 0) -> list[OrderReturnModel]:
+        query = select(OrderReturnModel).where(OrderReturnModel.user_id == user.id)
+        if self.tenant_id is not None:
+            query = query.where(OrderReturnModel.tenant_id == self.tenant_id)
         return list(self.db.scalars(
-            select(OrderReturnModel).where(OrderReturnModel.user_id == user.id)
-            .order_by(OrderReturnModel.created_at.desc()).offset(offset).limit(limit)
+            query.order_by(OrderReturnModel.created_at.desc()).offset(offset).limit(limit)
         ))
 
     def todas(
@@ -54,6 +59,8 @@ class ReturnsService:
         atiende devoluciones trabaja por sucursal y por estado, no leyendo todo.
         """
         consulta = select(OrderReturnModel)
+        if self.tenant_id is not None:
+            consulta = consulta.where(OrderReturnModel.tenant_id == self.tenant_id)
         if status:
             consulta = consulta.where(OrderReturnModel.status == status)
         if branch_id:
@@ -101,8 +108,13 @@ class ReturnsService:
         return contexto
 
     def obtener(self, return_id, user=None) -> OrderReturnModel:
-        devolucion = self.db.get(OrderReturnModel, return_id)
-        if not devolucion or (user is not None and devolucion.user_id != user.id):
+        query = select(OrderReturnModel).where(OrderReturnModel.id == return_id)
+        if user is not None:
+            query = query.where(OrderReturnModel.user_id == user.id)
+        if self.tenant_id is not None:
+            query = query.where(OrderReturnModel.tenant_id == self.tenant_id)
+        devolucion = self.db.scalar(query)
+        if not devolucion:
             raise NotFoundError("Devolucion no encontrada.")
         return devolucion
 
@@ -190,13 +202,14 @@ class ReturnsService:
         detalle[0]["replacement_size"] = opcion["size"]
         detalle[0]["replacement_color"] = opcion["color"]
         cambio = OrderReturnModel(
+            tenant_id=order.tenant_id,
             order_id=order.id, user_id=order.user_id or user.id, branch_id=order.branch_id,
             status="requested", reason=data.reason.strip(), items=detalle,
             refund_amount=Decimal(0), currency=order.currency,
             client_request_id=data.client_request_id,
         )
         try:
-            StockService(self.db).change(
+            StockService(self.db, self.tenant_id or order.tenant_id).change(
                 data.replacement_variant_id, order.branch_id, -data.quantity,
                 "exchange_hold", "Prenda apartada para un cambio solicitado.",
                 reference=order.number, actor_id=user.id,
@@ -238,6 +251,7 @@ class ReturnsService:
         except ValueError as error:
             raise ValidationError(str(error)) from error
         devolucion = OrderReturnModel(
+            tenant_id=order.tenant_id,
             order_id=order.id, user_id=order.user_id or (user.id if user else None),
             branch_id=order.branch_id, status="requested", reason=data.reason.strip(),
             items=detalle, refund_amount=self.monto_a_reintegrar(order, detalle), currency=order.currency,
@@ -286,6 +300,7 @@ class ReturnsService:
 
         ahora = datetime.now(timezone.utc)
         devolucion = OrderReturnModel(
+            tenant_id=order.tenant_id,
             order_id=order.id, user_id=order.user_id, branch_id=order.branch_id,
             status="completed", reason=data.reason.strip(), items=detalle,
             refund_amount=self.monto_a_reintegrar(order, detalle), currency=order.currency,
@@ -293,7 +308,7 @@ class ReturnsService:
             resolved_at=ahora, resolved_by=actor.id, client_request_id=data.client_request_id,
         )
         try:
-            inventario = StockService(self.db)
+            inventario = StockService(self.db, self.tenant_id or order.tenant_id)
             for item in sorted(detalle, key=lambda row: str(row["variant_id"])):
                 inventario.change(
                     uuid.UUID(item["variant_id"]), order.branch_id, int(item["quantity"]),
@@ -323,6 +338,8 @@ class ReturnsService:
     # --- Resolución ------------------------------------------------------
 
     def resolver(self, actor, devolucion: OrderReturnModel, data) -> OrderReturnModel:
+        if self.tenant_id and devolucion.tenant_id != self.tenant_id:
+            raise NotFoundError("Devolucion no encontrada.")
         devolucion = self.db.scalar(select(OrderReturnModel).where(
             OrderReturnModel.id == devolucion.id
         ).with_for_update().execution_options(populate_existing=True))
@@ -334,7 +351,7 @@ class ReturnsService:
         try:
             if data.status == "rejected" and self.es_cambio(devolucion):
                 item = devolucion.items[0]
-                StockService(self.db).change(
+                StockService(self.db, self.tenant_id or devolucion.tenant_id).change(
                     uuid.UUID(item["replacement_variant_id"]), devolucion.branch_id,
                     int(item["quantity"]), "exchange_release",
                     "Prenda liberada por cambio rechazado.",
@@ -347,7 +364,7 @@ class ReturnsService:
                         and devolucion.refund_amount > 0):
                     gateways.refund_order_return(order, devolucion)
                 # Las prendas vuelven recién cuando se reciben físicamente.
-                inventario = StockService(self.db)
+                inventario = StockService(self.db, self.tenant_id or devolucion.tenant_id)
                 for item in sorted(devolucion.items, key=lambda row: str(row["variant_id"])):
                     inventario.change(
                         uuid.UUID(item["variant_id"]), devolucion.branch_id, int(item["quantity"]),

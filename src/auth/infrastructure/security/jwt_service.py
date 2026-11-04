@@ -21,6 +21,26 @@ class JWTService:
         jti = secrets.token_hex(16)
         return self._encode(user_id, "refresh", expires_delta, jti=jti), jti, expires_at
 
+    def create_support_token(
+        self, user_id: str, tenant_id: str, session_id: str, expires_at: datetime
+    ) -> tuple[str, int]:
+        now = datetime.now(timezone.utc)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        payload: dict[str, Any] = {
+            "sub": str(user_id),
+            "type": "access",
+            "tid": str(tenant_id),
+            "ssid": str(session_id),
+            "act": {"sub": str(user_id), "role": "platform_admin"},
+            "scope": "support",
+            "iat": now,
+            "exp": expires_at,
+        }
+        token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        expires_in = max(0, int((expires_at - now).total_seconds()))
+        return token, expires_in
+
     def decode(self, token: str, expected_type: str) -> dict[str, Any]:
         try:
             payload = jwt.decode(

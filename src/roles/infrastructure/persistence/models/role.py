@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import Boolean, String, Table, Column, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -15,8 +17,9 @@ user_roles = Table(
 
 class RoleModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "roles"
-    __table_args__ = (UniqueConstraint("code"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_roles_tenant_code"),)
 
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=True, default=None)
     code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255))
@@ -29,3 +32,20 @@ class RoleModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     users: Mapped[list["UserModel"]] = relationship(
         secondary=user_roles, back_populates="roles"
     )
+
+    @property
+    def is_template(self) -> bool:
+        return self.tenant_id is None
+
+    @property
+    def users_count(self) -> int:
+        if hasattr(self, "_users_count"):
+            return self._users_count
+        try:
+            return len(self.users) if self.users else 0
+        except Exception:
+            return 0
+
+    @users_count.setter
+    def users_count(self, value: int) -> None:
+        self._users_count = value

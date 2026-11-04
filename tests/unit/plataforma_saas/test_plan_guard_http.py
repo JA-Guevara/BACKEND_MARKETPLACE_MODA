@@ -3,8 +3,14 @@ from src.plataforma_saas.infrastructure.models.subscription import SubscriptionM
 
 def test_basico_bloquea_ia_profesional_supera_guard(world):
     from src.roles.infrastructure.persistence.models.permission import PermissionModel
-    world.admin_role.permissions.append(PermissionModel(code='dashboard.read', name='Reportes', module='dashboard'))
-    world.db.commit()
+    perm = world.db.scalar(select(PermissionModel).where(PermissionModel.code == 'dashboard.read'))
+    if not perm:
+        perm = PermissionModel(code='dashboard.read', name='Reportes', module='dashboard')
+        world.admin_role.permissions.append(perm)
+        world.db.commit()
+    elif perm not in world.admin_role.permissions:
+        world.admin_role.permissions.append(perm)
+        world.db.commit()
     for route in ('interpret', 'explain', 'execute'):
         path = '/api/v1/analytics/assistant/' + route
         blocked = world.client.post(path, headers=world.headers(world.admins[0]), json={})

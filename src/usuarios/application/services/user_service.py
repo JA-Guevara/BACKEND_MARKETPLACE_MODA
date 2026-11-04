@@ -86,16 +86,29 @@ class UserService:
         self.db.commit()
         return self.get(user.id)
 
-    def set_roles(self, user_id: uuid.UUID, role_ids: list[uuid.UUID], actor: UserModel) -> UserModel:
+    def assign_roles(self, user_id: uuid.UUID, role_ids: list[uuid.UUID], actor: UserModel) -> UserModel:
         user = self.get(user_id)
         if user.id == actor.id and not role_ids:
             raise ConflictError("No puede retirarse todos sus propios roles.")
+        if self.tenant_id is not None:
+            visible_roles = self.roles.list_visible(self.tenant_id)
+            visible_ids = {r.id for r in visible_roles}
+            for rid in role_ids:
+                if rid not in visible_ids:
+                    target_role = self.roles.get_role(rid)
+                    if target_role and target_role.code == "platform_admin":
+                        from src.shared.exceptions.domain_exception import AuthorizationError
+                        raise AuthorizationError("No puede asignar roles de plataforma a una cuenta de empresa.")
+                    raise NotFoundError("Uno o mas roles no existen o no pertenecen a su empresa.")
         roles = self._resolve_roles(role_ids)
         self._tenant_roles(roles)
         user.roles = roles
         self._audit(actor, "users.roles_updated", user, "Roles del usuario actualizados.")
         self.db.commit()
         return self.get(user.id)
+
+    def set_roles(self, user_id: uuid.UUID, role_ids: list[uuid.UUID], actor: UserModel) -> UserModel:
+        return self.assign_roles(user_id, role_ids, actor)
 
     def deactivate(self, user_id: uuid.UUID, actor: UserModel) -> UserModel:
         user = self.get(user_id)

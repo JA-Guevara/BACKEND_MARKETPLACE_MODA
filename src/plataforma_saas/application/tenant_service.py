@@ -23,6 +23,33 @@ from src.shared.exceptions.domain_exception import ConflictError, NotFoundError
 from src.shared.responses.pagination import Page
 
 
+PLANTILLA_CATALOGO = {
+    "sizes": [
+        {"code": "XS", "name": "Extra Small", "sort_order": 1},
+        {"code": "S", "name": "Small", "sort_order": 2},
+        {"code": "M", "name": "Medium", "sort_order": 3},
+        {"code": "L", "name": "Large", "sort_order": 4},
+        {"code": "XL", "name": "Extra Large", "sort_order": 5},
+    ],
+    "colors": [
+        {"name": "Negro", "hex_code": "#111111"},
+        {"name": "Blanco", "hex_code": "#FFFFFF"},
+        {"name": "Azul", "hex_code": "#2F5F8A"},
+        {"name": "Rojo", "hex_code": "#A7352D"},
+        {"name": "Beige", "hex_code": "#D8C7A8"},
+    ],
+    "categories": [
+        {"name": "Vestidos", "slug": "vestidos"},
+        {"name": "Poleras", "slug": "poleras"},
+        {"name": "Pantalones", "slug": "pantalones"},
+        {"name": "Abrigos", "slug": "abrigos"},
+    ],
+    "seasons": [
+        {"name": "Todo el año"},
+    ],
+}
+
+
 class TenantService:
     def __init__(self, db: Session, actor: UserModel):
         self.db, self.actor = db, actor
@@ -84,6 +111,18 @@ class TenantService:
         self.db.commit()
         return response
 
+    def _sembrar_catalogo(self, tenant_id: UUID) -> None:
+        from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ColorModel, SeasonModel, SizeModel
+        for s in PLANTILLA_CATALOGO["sizes"]:
+            self.db.add(SizeModel(tenant_id=tenant_id, code=s["code"], name=s["name"], sort_order=s["sort_order"]))
+        for c in PLANTILLA_CATALOGO["colors"]:
+            self.db.add(ColorModel(tenant_id=tenant_id, name=c["name"], hex_code=c["hex_code"]))
+        for cat in PLANTILLA_CATALOGO["categories"]:
+            self.db.add(CategoryModel(tenant_id=tenant_id, name=cat["name"], slug=cat["slug"]))
+        for sea in PLANTILLA_CATALOGO["seasons"]:
+            self.db.add(SeasonModel(tenant_id=tenant_id, name=sea["name"]))
+        self.db.flush()
+
     def _audit(self, tenant, action, description):
         RecordAuditEvent(self.db).execute(actor_user_id=self.actor.id, action=action, entity_type="tenant", entity_id=str(tenant.id), description=description)
 
@@ -104,6 +143,7 @@ class TenantService:
         tenant = TenantModel(**data.model_dump(exclude={"admin", "plan_code", "start_date"}), status="ACTIVA")
         try:
             self.repository.add(tenant)
+            self._sembrar_catalogo(tenant.id)
             admin = UserModel(tenant_id=tenant.id, email=str(data.admin.email).lower(), first_name=data.admin.first_name,
                 last_name=data.admin.last_name, password_hash=auth.create_unusable_password_hash(), roles=[role], is_verified=False)
             self.repository.add(admin)

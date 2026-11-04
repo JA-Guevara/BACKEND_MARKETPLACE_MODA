@@ -13,7 +13,8 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
-from src.shared.exceptions.domain_exception import NotFoundError
+from src.infrastructure.security.tenancy import TenantScope, get_public_tenant_id, get_tenant_context
+from src.shared.exceptions.domain_exception import ConflictError, NotFoundError
 from src.shared.responses.api_response import ApiResponse
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductModel
 from src.ventas_pagos.infrastructure.engagement_models import FavoriteModel, PromotionModel
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/commerce", tags=['PAQ-04 · Ventas y pagos'])
 User = Annotated[UserModel, Depends(get_current_user)]
 PromotionReader = Annotated[UserModel, Depends(require_permissions("commerce.read"))]
 PromotionWriter = Annotated[UserModel, Depends(require_permissions("commerce.write"))]
+TenantCtx = Annotated[TenantScope, Depends(get_tenant_context)]
 
 
 class PromotionInput(BaseModel):
@@ -80,45 +82,81 @@ def promotion_data(row: PromotionModel) -> dict:
     }
 
 
-def _validate_scope(db: Session, data: PromotionInput) -> None:
-    if data.category_id and not db.get(CategoryModel, data.category_id):
-        raise NotFoundError("La categoría seleccionada no existe.")
-    if data.product_id and not db.get(ProductModel, data.product_id):
-        raise NotFoundError("La prenda seleccionada no existe.")
+def _validate_scope(db: Session, data: PromotionInput, tenant_id: uuid.UUID) -> None:
+    if data.category_id:
+        category = db.get(CategoryModel, data.category_id)
+        if not category or category.tenant_id != tenant_id:
+            raise NotFoundError("La categoría seleccionada no existe.")
+    if data.product_id:
+        product = db.get(ProductModel, data.product_id)
+        if not product or product.tenant_id != tenant_id or product.deleted_at:
+            raise NotFoundError("La prenda seleccionada no existe.")
 
 
 @router.get("/admin/promotions")
-def promotions(actor: PromotionReader, db: Session = Depends(get_db), active: bool | None = Query(None)):
-    query = select(PromotionModel).order_by(PromotionModel.created_at.desc())
-    if active is not None: query = query.where(PromotionModel.is_active.is_(active))
+def promotions(actor: PromotionReader, ctx: TenantCtx, db: Session = Depends(get_db), active: bool | None = Query(None)):
+    query = select(PromotionModel).where(PromotionModel.tenant_id == ctx.tenant_id).order_by(PromotionModel.created_at.desc())
+    if active is not None:
+        query = query.where(PromotionModel.is_active.is_(active))
     return ApiResponse(message="Promociones obtenidas.", data=[promotion_data(row) for row in db.scalars(query)])
 
 
 @router.post("/admin/promotions", status_code=status.HTTP_201_CREATED)
-def create_promotion(data: PromotionInput, actor: PromotionWriter, db: Session = Depends(get_db)):
-    _validate_scope(db, data)
-    row = PromotionModel(**data.model_dump(), code=data.code.upper() if data.code else None, created_by=actor.id)
-    db.add(row); db.commit(); db.refresh(row)
+def create_promotion(data: PromotionInput, actor: PromotionWriter, ctx: TenantCtx, db: Session = Depends(get_db)):
+    _validate_scope(db, data, ctx.tenant_id)
+    if data.code:
+        existing = db.scalar(select(PromotionModel).where(
+            PromotionModel.tenant_id == ctx.tenant_id,
+            PromotionModel.code == data.code.upper(),
+        ))
+        if existing:
+            raise ConflictError("Ya existe una promoción con ese código.")
+    fields = data.model_dump()
+    if data.code:
+        fields["code"] = data.code.upper()
+    row = PromotionModel(
+        **fields,
+        tenant_id=ctx.tenant_id,
+        created_by=actor.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
     return ApiResponse(message="Promoción creada.", data=promotion_data(row))
 
 
 @router.patch("/admin/promotions/{promotion_id}")
-def update_promotion(promotion_id: uuid.UUID, data: PromotionUpdate, actor: PromotionWriter, db: Session = Depends(get_db)):
-    row = db.get(PromotionModel, promotion_id)
-    if not row: raise NotFoundError("Promoción no encontrada.")
-    _validate_scope(db, data)
-    for key, value in data.model_dump().items(): setattr(row, key, value.upper() if key == "code" and value else value)
-    db.commit(); db.refresh(row)
+def update_promotion(promotion_id: uuid.UUID, data: PromotionUpdate, actor: PromotionWriter, ctx: TenantCtx, db: Session = Depends(get_db)):
+    row = db.scalar(select(PromotionModel).where(
+        PromotionModel.id == promotion_id,
+        PromotionModel.tenant_id == ctx.tenant_id,
+    ))
+    if not row:
+        raise NotFoundError("Promoción no encontrada.")
+    _validate_scope(db, data, ctx.tenant_id)
+    if data.code:
+        existing = db.scalar(select(PromotionModel).where(
+            PromotionModel.tenant_id == ctx.tenant_id,
+            PromotionModel.code == data.code.upper(),
+            PromotionModel.id != promotion_id,
+        ))
+        if existing:
+            raise ConflictError("Ya existe una promoción con ese código.")
+    for key, value in data.model_dump().items():
+        setattr(row, key, value.upper() if key == "code" and value else value)
+    db.commit()
+    db.refresh(row)
     return ApiResponse(message="Promoción actualizada.", data=promotion_data(row))
 
 
 @router.get("/favorites")
-def favorites(user: User, db: Session = Depends(get_db)):
+def favorites(user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
     rows = db.scalars(select(FavoriteModel).where(FavoriteModel.user_id == user.id).order_by(FavoriteModel.created_at.desc())).all()
     result = []
     for row in rows:
         product = db.get(ProductModel, row.product_id)
-        if not product or product.deleted_at: continue
+        if not product or product.deleted_at or product.tenant_id != tenant_id:
+            continue
         result.append({
             "id": str(row.id), "product_id": str(product.id), "slug": product.slug, "name": product.name,
             "base_price": str(product.base_price), "image_url": product.images[0].url if product.images else None,
@@ -128,7 +166,10 @@ def favorites(user: User, db: Session = Depends(get_db)):
 
 
 @router.get("/favorites/{product_id}")
-def favorite(product_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
+def favorite(product_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    product = db.get(ProductModel, product_id)
+    if not product or product.deleted_at or product.tenant_id != tenant_id:
+        raise NotFoundError("Prenda no disponible.")
     row = db.scalar(select(FavoriteModel).where(FavoriteModel.user_id == user.id, FavoriteModel.product_id == product_id))
     return ApiResponse(message="Favorito consultado.", data={
         "is_favorite": bool(row), "stock_alert": row.stock_alert if row else True, "price_alert": row.price_alert if row else True,
@@ -136,9 +177,10 @@ def favorite(product_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
 
 
 @router.put("/favorites/{product_id}")
-def save_favorite(product_id: uuid.UUID, data: FavoriteInput, user: User, db: Session = Depends(get_db)):
+def save_favorite(product_id: uuid.UUID, data: FavoriteInput, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
     product = db.get(ProductModel, product_id)
-    if not product or not product.is_active or product.deleted_at: raise NotFoundError("Prenda no disponible.")
+    if not product or not product.is_active or product.deleted_at or product.tenant_id != tenant_id:
+        raise NotFoundError("Prenda no disponible.")
     row = db.scalar(select(FavoriteModel).where(FavoriteModel.user_id == user.id, FavoriteModel.product_id == product_id))
     if row is None:
         row = FavoriteModel(user_id=user.id, product_id=product.id, observed_price=product.base_price)
@@ -149,8 +191,12 @@ def save_favorite(product_id: uuid.UUID, data: FavoriteInput, user: User, db: Se
 
 
 @router.delete("/favorites/{product_id}")
-def delete_favorite(product_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
+def delete_favorite(product_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
     row = db.scalar(select(FavoriteModel).where(FavoriteModel.user_id == user.id, FavoriteModel.product_id == product_id))
-    if row: db.delete(row); db.commit()
+    if row:
+        product = db.get(ProductModel, product_id)
+        if product and product.tenant_id != tenant_id:
+            raise NotFoundError("Prenda no disponible.")
+        db.delete(row)
+        db.commit()
     return ApiResponse(message="Prenda eliminada de favoritos.", data={"is_favorite": False})
-

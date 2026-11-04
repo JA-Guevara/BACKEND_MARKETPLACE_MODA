@@ -9,6 +9,8 @@ class AuditContext:
     user_agent: str | None
     request_id: str | None = None
     actor_user_id: UUID | None = None
+    tenant_id: UUID | None = None
+    support_session_id: UUID | None = None
 
 
 _context: ContextVar[AuditContext | None] = ContextVar('audit_context', default=None)
@@ -29,9 +31,23 @@ def set_audit_actor(user_id: UUID) -> None:
         context.actor_user_id = user_id
 
 
+def set_audit_scope(tenant_id: UUID | None, support_session_id: UUID | None) -> None:
+    context = _context.get()
+    if context is not None:
+        context.tenant_id = tenant_id
+        context.support_session_id = support_session_id
+
+
 def get_audit_actor() -> UUID | None:
     context = _context.get()
     return context.actor_user_id if context else None
+
+
+def get_audit_scope() -> tuple[UUID | None, UUID | None]:
+    context = _context.get()
+    if context:
+        return context.tenant_id, context.support_session_id
+    return None, None
 
 
 def get_audit_request_id() -> str | None:

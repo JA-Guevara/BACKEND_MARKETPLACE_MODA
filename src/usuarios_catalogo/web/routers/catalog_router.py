@@ -55,28 +55,28 @@ def public_product(slug: str, tenant_id: uuid.UUID = Depends(get_public_tenant_i
 
 
 @router.get("/categories", response_model=ApiResponse[list[CategoryResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
-def public_categories(db: Session = Depends(get_db)):
-    return ApiResponse(message="Categorias obtenidas.", data=CatalogRepository(db).list_reference(CategoryModel))
+def public_categories(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return ApiResponse(message="Categorias obtenidas.", data=CatalogRepository(db, tenant_id).list_reference(CategoryModel))
 
 
 @router.get("/sizes", response_model=ApiResponse[list[SizeResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
-def public_sizes(db: Session = Depends(get_db)):
-    return ApiResponse(message="Tallas obtenidas.", data=CatalogRepository(db).list_reference(SizeModel))
+def public_sizes(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return ApiResponse(message="Tallas obtenidas.", data=CatalogRepository(db, tenant_id).list_reference(SizeModel))
 
 
 @router.get("/colors", response_model=ApiResponse[list[ColorResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
-def public_colors(db: Session = Depends(get_db)):
-    return ApiResponse(message="Colores obtenidos.", data=CatalogRepository(db).list_reference(ColorModel))
+def public_colors(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return ApiResponse(message="Colores obtenidos.", data=CatalogRepository(db, tenant_id).list_reference(ColorModel))
 
 
 @router.get("/seasons", response_model=ApiResponse[list[SeasonResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
-def public_seasons(db: Session = Depends(get_db)):
-    return ApiResponse(message="Temporadas obtenidas.", data=CatalogRepository(db).list_reference(SeasonModel))
+def public_seasons(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return ApiResponse(message="Temporadas obtenidas.", data=CatalogRepository(db, tenant_id).list_reference(SeasonModel))
 
 
 @router.get("/collections", response_model=ApiResponse[list[CollectionResponse]], tags=['PAQ-01 · Usuarios y catálogo'])
-def public_collections(db: Session = Depends(get_db)):
-    return ApiResponse(message="Colecciones obtenidas.", data=CatalogRepository(db).list_reference(CollectionModel))
+def public_collections(tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    return ApiResponse(message="Colecciones obtenidas.", data=CatalogRepository(db, tenant_id).list_reference(CollectionModel))
 
 
 @router.get("/admin/products", response_model=ApiResponse[Page[ProductResponse]])
@@ -289,96 +289,96 @@ def set_product_suppliers(product_id: uuid.UUID, data: SetProductSuppliersReques
 
 
 @router.get("/admin/categories", response_model=ApiResponse[list[CategoryResponse]])
-def admin_categories(actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
-    return ApiResponse(message="Categorias obtenidas.", data=CatalogRepository(db).list_reference(CategoryModel, include_inactive))
+def admin_categories(ctx: TenantScope, actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
+    return ApiResponse(message="Categorias obtenidas.", data=CatalogRepository(db, ctx.tenant_id).list_reference(CategoryModel, include_inactive))
 
 
 @router.post("/admin/categories", response_model=ApiResponse[CategoryResponse], status_code=status.HTTP_201_CREATED)
-def create_category(data: CategoryCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Categoria creada.", data=CatalogService(db).create_category(data, actor))
+def create_category(data: CategoryCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Categoria creada.", data=CatalogService(db, ctx.tenant_id).create_category(data, actor))
 
 
 @router.patch("/admin/categories/{entity_id}", response_model=ApiResponse[CategoryResponse])
-def update_category(entity_id: uuid.UUID, data: CategoryUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Categoria actualizada.", data=CatalogService(db).update_category(entity_id, data, actor))
+def update_category(entity_id: uuid.UUID, data: CategoryUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Categoria actualizada.", data=CatalogService(db, ctx.tenant_id).update_category(entity_id, data, actor))
 
 
 @router.get("/admin/sizes", response_model=ApiResponse[list[SizeResponse]])
-def admin_sizes(actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
-    return ApiResponse(message="Tallas obtenidas.", data=CatalogRepository(db).list_reference(SizeModel, include_inactive))
+def admin_sizes(ctx: TenantScope, actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
+    return ApiResponse(message="Tallas obtenidas.", data=CatalogRepository(db, ctx.tenant_id).list_reference(SizeModel, include_inactive))
 
 
 @router.post("/admin/sizes", response_model=ApiResponse[SizeResponse], status_code=status.HTTP_201_CREATED)
-def create_size(data: SizeCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Talla creada.", data=CatalogService(db).create_size(data, actor))
+def create_size(data: SizeCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Talla creada.", data=CatalogService(db, ctx.tenant_id).create_size(data, actor))
 
 
 @router.patch("/admin/sizes/{entity_id}", response_model=ApiResponse[SizeResponse])
-def update_size(entity_id: uuid.UUID, data: SizeUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Talla actualizada.", data=CatalogService(db).update_size(entity_id, data, actor))
+def update_size(entity_id: uuid.UUID, data: SizeUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Talla actualizada.", data=CatalogService(db, ctx.tenant_id).update_size(entity_id, data, actor))
 
 
 @router.get("/admin/colors", response_model=ApiResponse[list[ColorResponse]])
-def admin_colors(actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
-    return ApiResponse(message="Colores obtenidos.", data=CatalogRepository(db).list_reference(ColorModel, include_inactive))
+def admin_colors(ctx: TenantScope, actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
+    return ApiResponse(message="Colores obtenidos.", data=CatalogRepository(db, ctx.tenant_id).list_reference(ColorModel, include_inactive))
 
 
 @router.post("/admin/colors", response_model=ApiResponse[ColorResponse], status_code=status.HTTP_201_CREATED)
-def create_color(data: ColorCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Color creado.", data=CatalogService(db).create_color(data, actor))
+def create_color(data: ColorCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Color creado.", data=CatalogService(db, ctx.tenant_id).create_color(data, actor))
 
 
 @router.patch("/admin/colors/{entity_id}", response_model=ApiResponse[ColorResponse])
-def update_color(entity_id: uuid.UUID, data: ColorUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Color actualizado.", data=CatalogService(db).update_color(entity_id, data, actor))
+def update_color(entity_id: uuid.UUID, data: ColorUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Color actualizado.", data=CatalogService(db, ctx.tenant_id).update_color(entity_id, data, actor))
 
 
 @router.get("/admin/seasons", response_model=ApiResponse[list[SeasonResponse]])
-def admin_seasons(actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
-    return ApiResponse(message="Temporadas obtenidas.", data=CatalogRepository(db).list_reference(SeasonModel, include_inactive))
+def admin_seasons(ctx: TenantScope, actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
+    return ApiResponse(message="Temporadas obtenidas.", data=CatalogRepository(db, ctx.tenant_id).list_reference(SeasonModel, include_inactive))
 
 
 @router.post("/admin/seasons", response_model=ApiResponse[SeasonResponse], status_code=status.HTTP_201_CREATED)
-def create_season(data: SeasonCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Temporada creada.", data=CatalogService(db).create_season(data, actor))
+def create_season(data: SeasonCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Temporada creada.", data=CatalogService(db, ctx.tenant_id).create_season(data, actor))
 
 
 @router.patch("/admin/seasons/{entity_id}", response_model=ApiResponse[SeasonResponse])
-def update_season(entity_id: uuid.UUID, data: SeasonUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Temporada actualizada.", data=CatalogService(db).update_season(entity_id, data, actor))
+def update_season(entity_id: uuid.UUID, data: SeasonUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Temporada actualizada.", data=CatalogService(db, ctx.tenant_id).update_season(entity_id, data, actor))
 
 
 @router.get("/admin/collections", response_model=ApiResponse[list[CollectionResponse]])
-def admin_collections(actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
-    return ApiResponse(message="Colecciones obtenidas.", data=CatalogRepository(db).list_reference(CollectionModel, include_inactive))
+def admin_collections(ctx: TenantScope, actor: CatalogReader, include_inactive: bool = True, db: Session = Depends(get_db)):
+    return ApiResponse(message="Colecciones obtenidas.", data=CatalogRepository(db, ctx.tenant_id).list_reference(CollectionModel, include_inactive))
 
 
 @router.post("/admin/collections", response_model=ApiResponse[CollectionResponse], status_code=status.HTTP_201_CREATED)
-def create_collection(data: CollectionCreate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Coleccion creada.", data=CatalogService(db).create_collection(data, actor))
+def create_collection(data: CollectionCreate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Coleccion creada.", data=CatalogService(db, ctx.tenant_id).create_collection(data, actor))
 
 
 @router.patch("/admin/collections/{entity_id}", response_model=ApiResponse[CollectionResponse])
-def update_collection(entity_id: uuid.UUID, data: CollectionUpdate, actor: CatalogWriter, db: Session = Depends(get_db)):
-    return ApiResponse(message="Coleccion actualizada.", data=CatalogService(db).update_collection(entity_id, data, actor))
+def update_collection(entity_id: uuid.UUID, data: CollectionUpdate, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+    return ApiResponse(message="Coleccion actualizada.", data=CatalogService(db, ctx.tenant_id).update_collection(entity_id, data, actor))
 
 
 def _register_reference_state_routes(path: str, model, response_model):
     @router.get(f"/admin/{path}/{{entity_id}}", response_model=ApiResponse[response_model], name=f"get_{path}")
-    def get_reference(entity_id: uuid.UUID, actor: CatalogReader, db: Session = Depends(get_db)):
-        return ApiResponse(message="Registro obtenido.", data=CatalogService(db).require_reference(model, entity_id))
+    def get_reference(entity_id: uuid.UUID, ctx: TenantScope, actor: CatalogReader, db: Session = Depends(get_db)):
+        return ApiResponse(message="Registro obtenido.", data=CatalogService(db, ctx.tenant_id).require_reference(model, entity_id))
 
     @router.post(f"/admin/{path}/{{entity_id}}/activate", response_model=ApiResponse[response_model], name=f"activate_{path}")
-    def activate(entity_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-        return ApiResponse(message="Registro activado.", data=CatalogService(db).set_reference_active(model, entity_id, True, actor))
+    def activate(entity_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+        return ApiResponse(message="Registro activado.", data=CatalogService(db, ctx.tenant_id).set_reference_active(model, entity_id, True, actor))
 
     @router.post(f"/admin/{path}/{{entity_id}}/deactivate", response_model=ApiResponse[response_model], name=f"deactivate_{path}")
-    def deactivate(entity_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-        return ApiResponse(message="Registro desactivado.", data=CatalogService(db).set_reference_active(model, entity_id, False, actor))
+    def deactivate(entity_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+        return ApiResponse(message="Registro desactivado.", data=CatalogService(db, ctx.tenant_id).set_reference_active(model, entity_id, False, actor))
 
     @router.delete(f"/admin/{path}/{{entity_id}}", response_model=ApiResponse[None], name=f"delete_{path}")
-    def delete(entity_id: uuid.UUID, actor: CatalogWriter, db: Session = Depends(get_db)):
-        CatalogService(db).delete_reference(model, entity_id, actor)
+    def delete(entity_id: uuid.UUID, ctx: TenantScope, actor: CatalogWriter, db: Session = Depends(get_db)):
+        CatalogService(db, ctx.tenant_id).delete_reference(model, entity_id, actor)
         return ApiResponse(message="Registro eliminado.")
 
 

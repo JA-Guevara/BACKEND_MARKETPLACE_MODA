@@ -42,11 +42,12 @@ class MultiExportService:
     """Ejecuta la exportacion multiple autorizada y devuelve el contenido listo
     para enviar: (payload, media_type, filename, summary)."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
 
     def _report_bundle(self, key: str, filters: ReportFilters) -> dict:
-        title, headers, rows = ReportsService(self.db).export_report(
+        title, headers, rows = ReportsService(self.db, self.tenant_id).export_report(
             key,
             filters.date_from,
             filters.date_to,
@@ -71,12 +72,20 @@ class MultiExportService:
     ) -> tuple[object, str, str, dict]:
         filters = filters or ReportFilters()
         # Filtros normalizados siempre desde el servidor.
-        start, end = ReportsService(self.db)._window(filters.date_from, filters.date_to)
+        start, end = ReportsService(self.db, self.tenant_id)._window(filters.date_from, filters.date_to)
         period_text = (
             f"{start.isoformat() if start else 'inicio'} a {end.isoformat() if end else 'hoy'}"
         )
-        branch = self.db.scalar(select(BranchModel).where(BranchModel.id == filters.branch_id)) if filters.branch_id else None
-        category = self.db.scalar(select(CategoryModel).where(CategoryModel.id == filters.category_id)) if filters.category_id else None
+        branch_query = select(BranchModel).where(BranchModel.id == filters.branch_id)
+        if self.tenant_id:
+            branch_query = branch_query.where(BranchModel.tenant_id == self.tenant_id)
+        branch = self.db.scalar(branch_query) if filters.branch_id else None
+
+        cat_query = select(CategoryModel).where(CategoryModel.id == filters.category_id)
+        if self.tenant_id:
+            cat_query = cat_query.where(CategoryModel.tenant_id == self.tenant_id)
+        category = self.db.scalar(cat_query) if filters.category_id else None
+
         filtro_text = _filter_text(filters, self.db, branch.name if branch else None, category.name if category else None)
 
         bundles = [self._report_bundle(key, filters) for key in reports]

@@ -18,7 +18,7 @@ El corte está puesto a propósito en este punto y conviene respetarlo:
 * Los contextvars de bitácora no viajan solos: `Thread` no copia el contexto
   (solo lo hace `anyio.to_thread.run_sync`). Por eso la IP, el user-agent, el
   `request_id` y el actor ya resuelto se leen en el hilo del request y viajan
-  como datos del trabajo. Sin esto, `docs/API_CONTRACT.md` dejaría de cumplirse
+  como datos del trabajo. Sin esto, `docs/backend/API_CONTRACT.md` dejaría de cumplirse
   para los eventos de correo, que aparecerían sin IP en GET /audit-log.
 """
 import atexit

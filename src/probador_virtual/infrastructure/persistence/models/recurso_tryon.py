@@ -30,6 +30,9 @@ class TryOnAssetModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "virtual_tryon_assets"
     __table_args__ = (UniqueConstraint("product_id", "color_id", name="tryon_producto_color"),)
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001")
+    )
     product_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True
     )

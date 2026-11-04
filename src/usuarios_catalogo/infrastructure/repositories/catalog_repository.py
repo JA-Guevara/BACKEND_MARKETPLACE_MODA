@@ -18,19 +18,34 @@ class CatalogRepository:
         return entity
 
     def get_category(self, entity_id: uuid.UUID) -> CategoryModel | None:
-        return self.db.get(CategoryModel, entity_id)
+        stmt = select(CategoryModel).where(CategoryModel.id == entity_id)
+        if self.tenant_id:
+            stmt = stmt.where(CategoryModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def get_size(self, entity_id: uuid.UUID) -> SizeModel | None:
-        return self.db.get(SizeModel, entity_id)
+        stmt = select(SizeModel).where(SizeModel.id == entity_id)
+        if self.tenant_id:
+            stmt = stmt.where(SizeModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def get_color(self, entity_id: uuid.UUID) -> ColorModel | None:
-        return self.db.get(ColorModel, entity_id)
+        stmt = select(ColorModel).where(ColorModel.id == entity_id)
+        if self.tenant_id:
+            stmt = stmt.where(ColorModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def get_season(self, entity_id: uuid.UUID) -> SeasonModel | None:
-        return self.db.get(SeasonModel, entity_id)
+        stmt = select(SeasonModel).where(SeasonModel.id == entity_id)
+        if self.tenant_id:
+            stmt = stmt.where(SeasonModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def get_collection(self, entity_id: uuid.UUID) -> CollectionModel | None:
-        return self.db.get(CollectionModel, entity_id)
+        stmt = select(CollectionModel).where(CollectionModel.id == entity_id)
+        if self.tenant_id:
+            stmt = stmt.where(CollectionModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def get_product(self, entity_id: uuid.UUID, include_deleted: bool = False) -> ProductModel | None:
         stmt = select(ProductModel).options(
@@ -50,22 +65,40 @@ class CatalogRepository:
         return self.db.scalar(stmt)
 
     def find_category_slug(self, slug: str) -> CategoryModel | None:
-        return self.db.scalar(select(CategoryModel).where(func.lower(CategoryModel.slug) == slug.lower()))
+        stmt = select(CategoryModel).where(func.lower(CategoryModel.slug) == slug.lower())
+        if self.tenant_id:
+            stmt = stmt.where(CategoryModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def find_size_code(self, code: str) -> SizeModel | None:
-        return self.db.scalar(select(SizeModel).where(func.lower(SizeModel.code) == code.lower()))
+        stmt = select(SizeModel).where(func.lower(SizeModel.code) == code.lower())
+        if self.tenant_id:
+            stmt = stmt.where(SizeModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def find_color_name(self, name: str) -> ColorModel | None:
-        return self.db.scalar(select(ColorModel).where(func.lower(ColorModel.name) == name.lower()))
+        stmt = select(ColorModel).where(func.lower(ColorModel.name) == name.lower())
+        if self.tenant_id:
+            stmt = stmt.where(ColorModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def find_color_hex(self, hex_code: str) -> ColorModel | None:
-        return self.db.scalar(select(ColorModel).where(func.lower(ColorModel.hex_code) == hex_code.lower()))
+        stmt = select(ColorModel).where(func.lower(ColorModel.hex_code) == hex_code.lower())
+        if self.tenant_id:
+            stmt = stmt.where(ColorModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def find_season_name(self, name: str) -> SeasonModel | None:
-        return self.db.scalar(select(SeasonModel).where(func.lower(SeasonModel.name) == name.lower()))
+        stmt = select(SeasonModel).where(func.lower(SeasonModel.name) == name.lower())
+        if self.tenant_id:
+            stmt = stmt.where(SeasonModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def find_collection(self, name: str, season_id: uuid.UUID | None) -> CollectionModel | None:
-        return self.db.scalar(select(CollectionModel).where(func.lower(CollectionModel.name) == name.lower(), CollectionModel.season_id == season_id))
+        stmt = select(CollectionModel).where(func.lower(CollectionModel.name) == name.lower(), CollectionModel.season_id == season_id)
+        if self.tenant_id:
+            stmt = stmt.where(CollectionModel.tenant_id == self.tenant_id)
+        return self.db.scalar(stmt)
 
     def find_variant_sku(self, sku: str) -> ProductVariantModel | None:
         return self.db.scalar(select(ProductVariantModel).where(func.lower(ProductVariantModel.sku) == sku.lower()))
@@ -84,10 +117,15 @@ class CatalogRepository:
 
     def list_reference(self, model, include_inactive: bool = False):
         stmt = select(model)
+        if hasattr(model, 'tenant_id') and self.tenant_id:
+            stmt = stmt.where(model.tenant_id == self.tenant_id)
         if not include_inactive:
             stmt = stmt.where(model.is_active.is_(True))
         order = model.sort_order if model is SizeModel else model.name
         return list(self.db.scalars(stmt.order_by(order)))
+
+    def list_dictionary(self, model: type, *, only_active: bool = False) -> list:
+        return self.list_reference(model, include_inactive=not only_active)
 
     def list_products(
         self,

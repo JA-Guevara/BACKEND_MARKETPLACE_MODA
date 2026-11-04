@@ -10,8 +10,9 @@ from src.infrastructure.database.base import Base, TimestampMixin, UUIDPrimaryKe
 
 class CategoryModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "categories"
-    __table_args__ = (UniqueConstraint("slug"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "slug", name="uq_categories_tenant_slug"),)
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     slug: Mapped[str] = mapped_column(String(140), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text)
@@ -21,8 +22,9 @@ class CategoryModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class SizeModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "sizes"
-    __table_args__ = (UniqueConstraint("code"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_sizes_tenant_code"),)
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     code: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -31,8 +33,12 @@ class SizeModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class ColorModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "colors"
-    __table_args__ = (UniqueConstraint("name"), UniqueConstraint("hex_code"))
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_colors_tenant_name"),
+        UniqueConstraint("tenant_id", "hex_code", name="uq_colors_tenant_hex_code"),
+    )
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     hex_code: Mapped[str] = mapped_column(String(7), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -40,8 +46,9 @@ class ColorModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class SeasonModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "seasons"
-    __table_args__ = (UniqueConstraint("name"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_seasons_tenant_name"),)
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text)
     start_date: Mapped[date | None] = mapped_column(Date)
@@ -51,8 +58,9 @@ class SeasonModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class CollectionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "collections"
-    __table_args__ = (UniqueConstraint("name", "season_id"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "name", "season_id", name="uq_collections_tenant_name"),)
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text)
     season_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("seasons.id", ondelete="RESTRICT"), index=True)

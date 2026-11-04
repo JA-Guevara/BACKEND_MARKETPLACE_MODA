@@ -30,16 +30,17 @@ class OrganizationRepository:
         return list(self.db.scalars(stmt))
 
     def get_supplier(self, entity_id: uuid.UUID, include_deleted: bool = False) -> SupplierModel | None:
-        stmt = select(SupplierModel).where(SupplierModel.id == entity_id)
+        stmt = select(SupplierModel).where(SupplierModel.id == entity_id, *([SupplierModel.tenant_id == self.tenant_id] if self.tenant_id else []))
         if not include_deleted:
             stmt = stmt.where(SupplierModel.deleted_at.is_(None))
         return self.db.scalar(stmt)
 
     def find_supplier_by_tax_id(self, tax_id: str) -> SupplierModel | None:
-        return self.db.scalar(select(SupplierModel).where(SupplierModel.tax_id == tax_id.upper()))
+        stmt = select(SupplierModel).where(SupplierModel.tax_id == tax_id.upper(), *([SupplierModel.tenant_id == self.tenant_id] if self.tenant_id else []))
+        return self.db.scalar(stmt)
 
     def list_suppliers(self, search: str | None, include_inactive: bool, include_deleted: bool) -> list[SupplierModel]:
-        stmt = select(SupplierModel)
+        stmt = select(SupplierModel).where(*([SupplierModel.tenant_id == self.tenant_id] if self.tenant_id else []))
         if search:
             term = f"%{search.strip()}%"
             stmt = stmt.where(or_(SupplierModel.business_name.ilike(term), SupplierModel.trade_name.ilike(term), SupplierModel.tax_id.ilike(term)))

@@ -24,6 +24,7 @@ class CartItemModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class OrderModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "commerce_orders"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001"))
     number: Mapped[str] = mapped_column(String(40), unique=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
     sales_channel: Mapped[str] = mapped_column(String(10), default="web", server_default="web")
@@ -84,6 +85,7 @@ class OrderReturnModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """
 
     __tablename__ = "commerce_order_returns"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001"))
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("commerce_orders.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)

@@ -31,7 +31,7 @@ pip install -r requirements.txt
 
 Cree un archivo `.env` en la raiz del backend con `DATABASE_URL`, `JWT_SECRET_KEY`, `CORS_ORIGINS`,
 `FRONTEND_URL`, las variables `SMTP_*`, `OPERATIONS_EMAIL` y las claves de Stripe. La lista completa
-esta en `docs/PROJECT_GUIDE.md`, seccion 6. El `.env` no se versiona y no debe contener credenciales
+esta en `../docs/backend/PROJECT_GUIDE.md`, seccion 6. El `.env` no se versiona y no debe contener credenciales
 de ejemplo en un entorno real.
 
 ## Migraciones
@@ -222,12 +222,13 @@ Configure en Railway al menos `DATABASE_URL`, `JWT_SECRET_KEY`, `APP_ENV=product
 - `/api/v1/public/branches`: sucursales visibles sin autenticacion.
 - `/health`: estado del servicio.
 
-## Documentacion del proyecto
+## Documentacion del proyecto (Centralizada en `docs/`)
 
-- `docs/PROJECT_GUIDE.md`: alcance, arquitectura, modelo de datos, seguridad, migraciones y reglas transaccionales.
-- `docs/API_CONTRACT.md`: contrato por endpoint, permisos, objetos de entrada, respuestas y ejemplos.
-- `docs/TRAZABILIDAD_RF.md`: dónde está implementado cada RF y cada CU en los tres proyectos, y qué falta.
-- `../frontend_marketplace_moda/docs/PROJECT_GUIDE.md` y `../mobile_marketplace_moda/docs/PROJECT_GUIDE.md`: los otros dos proyectos.
+- `../docs/backend/PROJECT_GUIDE.md`: alcance, arquitectura multiempresa (TenantScope), modelo de datos, seguridad, migraciones y reglas transaccionales.
+- `../docs/backend/API_CONTRACT.md`: contrato por endpoint, soporte temporal RFC 8693, permisos, objetos de entrada, respuestas y ejemplos.
+- `../docs/backend/TRAZABILIDAD_RF.md`: dónde está implementado cada RF y cada CU en los tres proyectos, y qué falta.
+- `../docs/backend/ESTADO_ACTUAL_ENDPOINTS_Y_TRAZABILIDAD.md`: inventario y trazabilidad exhaustiva de endpoints del backend.
+- `../docs/frontend/PROJECT_GUIDE.md` y `../docs/movil/PROJECT_GUIDE.md`: guías de arquitectura frontend y móvil.
 
 ## Roles iniciales
 

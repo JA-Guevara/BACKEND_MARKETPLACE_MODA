@@ -24,6 +24,9 @@ from src.tryon_ai_jobs.domain import (
 class TryOnJobModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "tryon_ai_jobs"
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001")
+    )
     # Quién pidió la foto: también es el dueño de la consulta, la cancelación y
     # la eliminación. Nadie más puede verla.
     user_id: Mapped[uuid.UUID] = mapped_column(

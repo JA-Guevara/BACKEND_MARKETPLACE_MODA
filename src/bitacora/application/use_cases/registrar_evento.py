@@ -4,7 +4,13 @@ from sqlalchemy.orm import Session
 
 from src.bitacora.infrastructure.persistence.models.evento_bitacora import AuditEventModel
 from src.bitacora.infrastructure.persistence.repositories.bitacora_repository import AuditRepository
-from src.shared.context.audit_context import get_audit_actor, get_audit_request_id, get_audit_ip_address, get_audit_user_agent
+from src.shared.context.audit_context import (
+    get_audit_actor,
+    get_audit_ip_address,
+    get_audit_request_id,
+    get_audit_scope,
+    get_audit_user_agent,
+)
 
 
 class RecordAuditEvent:
@@ -22,13 +28,19 @@ class RecordAuditEvent:
         metadata: dict | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        tenant_id: uuid.UUID | None = None,
     ) -> AuditEventModel:
         actor_user_id = actor_user_id or get_audit_actor()
+        ctx_tenant_id, ctx_support_session_id = get_audit_scope()
+        tenant_id = tenant_id or ctx_tenant_id
+        support_session_id = ctx_support_session_id
         metadata = dict(metadata or {})
         if get_audit_request_id():
             metadata["request_id"] = get_audit_request_id()
         return self.repository.record(
             AuditEventModel(
+                tenant_id=tenant_id,
+                support_session_id=support_session_id,
                 actor_user_id=actor_user_id,
                 action=action,
                 entity_type=entity_type,

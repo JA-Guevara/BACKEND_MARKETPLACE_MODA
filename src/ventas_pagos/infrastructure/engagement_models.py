@@ -18,14 +18,16 @@ class PromotionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "commerce_promotions"
     __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_commerce_promotions_tenant_code"),
         CheckConstraint("discount_value >= 0", name="promotion_value_nonnegative"),
         CheckConstraint("minimum_order >= 0", name="promotion_minimum_nonnegative"),
         CheckConstraint("max_uses IS NULL OR max_uses > 0", name="promotion_max_uses_positive"),
         CheckConstraint("per_user_limit IS NULL OR per_user_limit > 0", name="promotion_per_user_positive"),
     )
 
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001"))
     name: Mapped[str] = mapped_column(String(160), nullable=False)
-    code: Mapped[str | None] = mapped_column(String(50), unique=True, index=True)
+    code: Mapped[str | None] = mapped_column(String(50), index=True)
     description: Mapped[str | None] = mapped_column(String(500))
     discount_type: Mapped[str] = mapped_column(String(20), nullable=False)  # percent, fixed, free_shipping
     discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0, nullable=False)

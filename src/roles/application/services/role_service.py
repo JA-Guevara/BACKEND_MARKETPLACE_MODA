@@ -1,56 +1,102 @@
 import uuid
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.roles.infrastructure.http.schemas import PermissionCreate, PermissionUpdate, RoleCreate, RoleUpdate
 from src.roles.infrastructure.persistence.models.permission import PermissionModel
-from src.roles.infrastructure.persistence.models.role import RoleModel
+from src.roles.infrastructure.persistence.models.role import RoleModel, user_roles
 from src.roles.infrastructure.persistence.repositories.role_repository import RoleRepository
-from src.shared.exceptions.domain_exception import ConflictError, NotFoundError
+from src.shared.exceptions.domain_exception import (
+    ConflictError,
+    NotFoundError,
+    PermissionOutOfScopeError,
+    SystemRoleLockedError,
+)
 
 
 class RoleService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None) -> None:
         self.db = db
+        self.tenant_id = tenant_id
         self.repository = RoleRepository(db)
         self.audit = RecordAuditEvent(db)
 
+    def list_roles(self, include_inactive: bool = False) -> list[RoleModel]:
+        return self.repository.list_visible(self.tenant_id, include_inactive=include_inactive)
+
+    def get_role(self, role_id: uuid.UUID) -> RoleModel:
+        role = self._get_role(role_id)
+        if self.tenant_id is not None:
+            count_stmt = (
+                select(func.count(user_roles.c.user_id))
+                .select_from(user_roles.join(UserModel, UserModel.id == user_roles.c.user_id))
+                .where(
+                    user_roles.c.role_id == role.id,
+                    UserModel.tenant_id == self.tenant_id,
+                    UserModel.deleted_at.is_(None),
+                )
+            )
+        else:
+            count_stmt = (
+                select(func.count(user_roles.c.user_id))
+                .select_from(user_roles.join(UserModel, UserModel.id == user_roles.c.user_id))
+                .where(
+                    user_roles.c.role_id == role.id,
+                    UserModel.deleted_at.is_(None),
+                )
+            )
+        role.users_count = self.db.scalar(count_stmt) or 0
+        return role
+
     def create_role(self, data: RoleCreate, actor: UserModel) -> RoleModel:
-        if self.repository.get_role_by_code(data.code):
+        if self.repository.get_role_by_code(data.code, tenant_id=self.tenant_id):
             raise ConflictError("Ya existe un rol con ese codigo.")
+        permissions = self._resolve_permissions(data.permission_ids)
+        if self.tenant_id is not None:
+            for perm in permissions:
+                if perm.scope != "tenant":
+                    raise PermissionOutOfScopeError()
         role = RoleModel(
+            tenant_id=self.tenant_id,
             code=data.code,
             name=data.name.strip(),
             description=data.description,
-            permissions=self._resolve_permissions(data.permission_ids),
+            permissions=permissions,
         )
         self.repository.add(role)
         self._audit(actor, "roles.create", "role", role.id, "Rol creado.")
         self.db.commit()
+        role.users_count = 0
         return self.repository.get_role(role.id) or role
 
     def update_role(self, role_id: uuid.UUID, data: RoleUpdate, actor: UserModel) -> RoleModel:
         role = self._get_role(role_id)
-        self._protect_platform_role(role, actor)
+        self._assert_editable(role)
         for field, value in data.model_dump(exclude_unset=True).items():
             setattr(role, field, value.strip() if isinstance(value, str) else value)
         self._audit(actor, "roles.update", "role", role.id, "Rol actualizado.")
         self.db.commit()
-        return self.repository.get_role(role.id) or role
+        return self.get_role(role.id)
 
     def set_permissions(self, role_id: uuid.UUID, permission_ids: list[uuid.UUID], actor: UserModel) -> RoleModel:
         role = self._get_role(role_id)
-        self._protect_platform_role(role, actor)
-        role.permissions = self._resolve_permissions(permission_ids)
+        self._assert_editable(role)
+        permissions = self._resolve_permissions(permission_ids)
+        if self.tenant_id is not None:
+            for perm in permissions:
+                if perm.scope != "tenant":
+                    raise PermissionOutOfScopeError()
+        role.permissions = permissions
         self._audit(actor, "roles.permissions_updated", "role", role.id, "Permisos del rol actualizados.")
         self.db.commit()
-        return self.repository.get_role(role.id) or role
+        return self.get_role(role.id)
 
     def deactivate_role(self, role_id: uuid.UUID, actor: UserModel) -> RoleModel:
         role = self._get_role(role_id)
-        self._ensure_mutable_role(role)
+        self._assert_editable(role)
         role.is_active = False
         self._audit(actor, "roles.deactivate", "role", role.id, "Rol desactivado.")
         self.db.commit()
@@ -58,7 +104,7 @@ class RoleService:
 
     def activate_role(self, role_id: uuid.UUID, actor: UserModel) -> RoleModel:
         role = self._get_role(role_id)
-        self._protect_platform_role(role, actor)
+        self._assert_editable(role)
         role.is_active = True
         self._audit(actor, "roles.activate", "role", role.id, "Rol activado.")
         self.db.commit()
@@ -66,7 +112,7 @@ class RoleService:
 
     def delete_role(self, role_id: uuid.UUID, actor: UserModel) -> None:
         role = self._get_role(role_id)
-        self._ensure_mutable_role(role)
+        self._assert_editable(role)
         if role.users:
             raise ConflictError("No se puede eliminar un rol asignado a usuarios.")
         self._audit(actor, "roles.delete", "role", role.id, "Rol eliminado.")
@@ -106,22 +152,27 @@ class RoleService:
         self.db.delete(permission)
         self.db.commit()
 
+    def _assert_editable(self, role: RoleModel) -> None:
+        if role.is_template or role.is_system:
+            raise SystemRoleLockedError()
+        if self.tenant_id is not None and role.tenant_id != self.tenant_id:
+            raise NotFoundError("Rol no encontrado.")
+
     def _resolve_permissions(self, permission_ids: list[uuid.UUID]) -> list[PermissionModel]:
         permissions = [self.repository.get_permission(permission_id) for permission_id in set(permission_ids)]
         if any(permission is None or not permission.is_active for permission in permissions):
             raise NotFoundError("Uno o mas permisos no existen o estan inactivos.")
         return list(permissions)
 
-    @staticmethod
-    def _protect_platform_role(role, actor):
-        if role.code == 'platform_admin' and actor.tenant_id is not None:
-            from src.shared.exceptions.domain_exception import AuthorizationError
-            raise AuthorizationError('Una empresa no puede modificar el rol de plataforma.')
-
     def _get_role(self, role_id: uuid.UUID) -> RoleModel:
         role = self.repository.get_role(role_id)
         if not role:
             raise NotFoundError("Rol no encontrado.")
+        if self.tenant_id is not None:
+            if role.tenant_id is not None and role.tenant_id != self.tenant_id:
+                raise NotFoundError("Rol no encontrado.")
+            if role.tenant_id is None and role.code in ("platform_admin", "client"):
+                raise NotFoundError("Rol no encontrado.")
         return role
 
     def _get_permission(self, permission_id: uuid.UUID) -> PermissionModel:
@@ -129,11 +180,6 @@ class RoleService:
         if not permission:
             raise NotFoundError("Permiso no encontrado.")
         return permission
-
-    @staticmethod
-    def _ensure_mutable_role(role: RoleModel) -> None:
-        if role.is_system:
-            raise ConflictError("Los roles del sistema no pueden eliminarse ni desactivarse.")
 
     def _audit(self, actor: UserModel, action: str, entity_type: str, entity_id: uuid.UUID, description: str) -> None:
         self.audit.execute(

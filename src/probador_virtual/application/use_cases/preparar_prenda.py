@@ -222,8 +222,10 @@ class PrepararPrenda:
             .first()
         )
         if recurso is None:
-            recurso = TryOnAssetModel(product_id=product_id, color_id=color_id, source_image_url=fuente)
+            recurso = TryOnAssetModel(tenant_id=producto.tenant_id, product_id=product_id, color_id=color_id, source_image_url=fuente)
             self.db.add(recurso)
+        else:
+            recurso.tenant_id = producto.tenant_id
         recurso.source_image_url = fuente
         recurso.mode = MODO_2_5D
 

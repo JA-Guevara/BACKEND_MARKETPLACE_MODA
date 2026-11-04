@@ -1,9 +1,11 @@
+import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
+from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.shared.context.audit_context import get_audit_actor
-from src.shared.exceptions.domain_exception import ConflictError, ValidationError
+from src.shared.exceptions.domain_exception import ConflictError, NotFoundError, ValidationError
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
 from src.ventas_pagos.infrastructure.models import StockModel, StockMovementModel
 
@@ -15,10 +17,22 @@ class StockService:
     Locking the variant also serializes creation of a missing stock row.
     """
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, tenant_id: uuid.UUID | None = None):
         self.db = db
+        self.tenant_id = tenant_id
+
+    def _validate_tenant(self, variant_id, branch_id):
+        if not self.tenant_id:
+            return
+        branch = self.db.get(BranchModel, branch_id)
+        if branch and (branch.deleted_at or branch.tenant_id != self.tenant_id):
+            raise NotFoundError("Sucursal no encontrada en la empresa.")
+        variant = self.db.get(ProductVariantModel, variant_id)
+        if variant and variant.product and (variant.product.deleted_at or variant.product.tenant_id != self.tenant_id):
+            raise NotFoundError("Variante no encontrada en la empresa.")
 
     def locked_stock(self, variant_id, branch_id):
+        self._validate_tenant(variant_id, branch_id)
         self.db.execute(select(ProductVariantModel.id).where(
             ProductVariantModel.id == variant_id).with_for_update())
         return self.db.scalar(select(StockModel).where(

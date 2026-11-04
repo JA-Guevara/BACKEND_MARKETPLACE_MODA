@@ -73,9 +73,10 @@ class AssistantTools:
     """Caso de uso del asistente: valida la herramienta, la ejecuta con datos
     reales autorizados y registra la accion en bitacora."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, tenant_id=None) -> None:
         self.db = db
-        self.service = MultiExportService(db)
+        self.tenant_id = tenant_id
+        self.service = MultiExportService(db, tenant_id)
 
     def execute(
         self,
@@ -114,6 +115,7 @@ class AssistantTools:
                 entity_id="+".join(params.reports),
                 description="El asistente ejecuto la herramienta export_report con los filtros visibles.",
                 actor_user_id=actor.id,
+                tenant_id=self.tenant_id,
                 metadata={
                     "tool": "export_report",
                     "actor_email": actor.email,
