@@ -25,6 +25,8 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 import os
+import shutil
+import subprocess
 import sys
 
 from alembic import command
@@ -178,11 +180,37 @@ def _validar_backup(path: Path | None) -> None:
         raise SystemExit(
             "Para aplicar en una base no local se requiere --backup-archivo con un pg_dump reciente."
         )
-    if not path.exists() or path.stat().st_size == 0:
+    if not path.is_file() or path.stat().st_size == 0:
         raise SystemExit(f"El respaldo no existe o esta vacio: {path}")
     age_seconds = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
     if age_seconds > 24 * 3600:
         raise SystemExit(f"El respaldo tiene mas de 24 horas: {path}")
+
+    # Una fecha reciente y un archivo no vacio no prueban que sea un dump.
+    # PG_RESTORE permite seleccionar el binario cuando no esta en PATH.
+    executable = shutil.which(os.environ.get("PG_RESTORE", "pg_restore"))
+    if executable is None:
+        raise SystemExit("No se encontro pg_restore. Agregarlo a PATH o configurar PG_RESTORE.")
+    try:
+        result = subprocess.run(
+            [executable, "--list", str(path.resolve())],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit("No se pudo validar el respaldo con pg_restore --list.") from exc
+    if result.returncode != 0:
+        raise SystemExit("pg_restore --list rechazo el respaldo; no se aplicaran cambios.")
+
+    entries = [line.split() for line in result.stdout.splitlines() if not line.startswith(";")]
+    has_version_table = any(entry[3:6] == ["TABLE", "public", "alembic_version"] for entry in entries)
+    has_version_data = any(entry[3:7] == ["TABLE", "DATA", "public", "alembic_version"] for entry in entries)
+    if not has_version_table or not has_version_data:
+        raise SystemExit("El respaldo debe incluir la tabla public.alembic_version y sus datos.")
 
 
 def _es_local(engine) -> bool:
