@@ -105,9 +105,16 @@ class Settings(BaseSettings):
     def validate_runtime(self) -> "Settings":
         from src.infrastructure.database.safety import require_environment_match
 
-        require_environment_match(self.app_env, self.database_url, self.production_db_host)
+        try:
+            require_environment_match(self.app_env, self.database_url, self.production_db_host)
+        except RuntimeError as error:
+            raise RuntimeError(
+                "config_invalid: revisa APP_ENV, DATABASE_URL y PRODUCTION_DB_HOST. "
+                "Para el servicio de producción en Railway configura APP_ENV=production; "
+                f"para local/test usa una base local. {error}"
+            ) from None
         if self.app_env.lower() == "production" and self.jwt_secret_key.startswith("development-only"):
-            raise ValueError("JWT_SECRET_KEY must be replaced in production.")
+            raise RuntimeError("config_invalid: JWT_SECRET_KEY debe reemplazarse en producción.")
         # Railway proporciona el dominio público del servicio. Si no se
         # configuró una base propia, las imágenes nuevas deben apuntar a ese
         # dominio, nunca al localhost guardado como valor local por defecto.

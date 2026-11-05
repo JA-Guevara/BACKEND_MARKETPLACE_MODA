@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.engine import make_url
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
@@ -79,6 +80,56 @@ class OpsService:
             query = query.where(PlatformBackup.alembic_revision == revision)
         return self.db.scalar(query.order_by(PlatformBackup.finished_at.desc(), PlatformBackup.id.desc()).limit(1))
 
+    def config_checks(self) -> list[dict[str, str]]:
+        """Diagnóstico para operadores: solo nombres, nunca valores de entorno."""
+        result: list[dict[str, str]] = []
+
+        def add(code: str, level: str, message: str) -> None:
+            result.append({"code": code, "level": level, "message": message})
+
+        production_host = (settings.production_db_host or "").strip().lower().rstrip(".")
+        production_target = os.getenv("RAILWAY_ENVIRONMENT_NAME", "").lower() == "production"
+        try:
+            target = make_url(settings.database_url)
+            host = (target.host or "").lower().rstrip(".")
+            if production_host:
+                production_target = production_target or host == production_host
+                direct = re.fullmatch(r"db\.([a-z0-9-]+)\.supabase\.co", production_host)
+                if direct and host.endswith(".pooler.supabase.com"):
+                    production_target = production_target or (target.username or "").rpartition(".")[2] == direct[1]
+        except (ValueError, TypeError):
+            pass
+        if settings.app_env != "production" and production_target:
+            add("app_env_not_production", "error", "APP_ENV no es production para el destino productivo. Configura APP_ENV=production en Railway.")
+        secret = settings.backup_report_token
+        if not secret or not secret.get_secret_value().strip():
+            add("backup_report_token_missing", "warning", "Falta BACKUP_REPORT_TOKEN: no se podrán registrar copias verificadas.")
+        forwarded = {part.strip().lower() for part in os.getenv("FORWARDED_ALLOW_IPS", "").split(",") if part.strip()}
+        if settings.app_env == "production" and (not forwarded or forwarded.issubset({"localhost", "127.0.0.1", "::1"})):
+            add("forwarded_ips_untrusted", "warning", "FORWARDED_ALLOW_IPS no declara el proxy de producción. Las cuotas podrían compartir la IP del proxy.")
+        if os.getenv("MIGRACION_SIN_RESPALDO_AUTORIZADA", "").strip():
+            add("migration_exception_active", "error", "MIGRACION_SIN_RESPALDO_AUTORIZADA sigue definida. Quítala después de la publicación.")
+        try:
+            multiple_workers = int(os.getenv("WEB_CONCURRENCY", "1")) > 1
+        except ValueError:
+            multiple_workers = True
+        if settings.rate_limit_enabled and multiple_workers:
+            add("workers_multiple", "error", "WEB_CONCURRENCY debe ser 1 con RATE_LIMIT_ENABLED. El limitador local no comparte cuotas entre workers.")
+        backup = self.ultimo_verificado()
+        stale = True
+        if backup:
+            finished = backup.finished_at
+            if finished.tzinfo is None:
+                finished = finished.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - finished).total_seconds()
+            stale = age < 0 or age > 26 * 3600
+        if stale:
+            add("backup_stale", "warning", "No hay una copia verificada vigente o la última tiene más de 26 h.")
+        if not settings.sentry_dsn or not settings.sentry_dsn.get_secret_value().strip():
+            add("sentry_missing", "info", "Rastreo de errores sin configurar (opcional).")
+        priorities = {"error": 0, "warning": 1, "info": 2}
+        return sorted(result, key=lambda item: priorities[item["level"]])
+
     def estado(self, *, version: str | None = None, rate_limited: int | None = None,
                errors_5xx: int = 0, rate_limited_by_policy: dict[str, int] | None = None) -> dict:
         now = datetime.now(timezone.utc)
@@ -116,6 +167,7 @@ class OpsService:
             "migraciones_pendientes": revisions != (head,),
             "ultimo_respaldo": backup,
             "mantenimiento": settings.maintenance_mode,
+            "config_checks": self.config_checks(),
             "contadores": {
                 "rate_limited": rate_limited,
                 "errors_5xx": errors_5xx,
