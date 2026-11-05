@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+import hashlib
 import time
 from typing import Any, Literal, Optional
 import uuid
@@ -73,7 +74,8 @@ class ReportesIAService:
         req = ReportRequestModel(
             tenant_id=self.tenant_id,
             user_id=self.user_id,
-            prompt_text=texto,
+            prompt_sha256=hashlib.sha256(texto.encode("utf-8")).hexdigest(),
+            prompt_length=len(texto),
             interpreted_spec=spec_dict,
             source=canal,
             definition_code=result.spec.definition_code if result.spec else None,
@@ -201,7 +203,7 @@ class ReportesIAService:
             history_items.append({
                 "id": str(it.id),
                 "created_at": it.created_at.isoformat(),
-                "prompt_text": it.prompt_text,
+                "prompt_length": it.prompt_length,
                 "title": title,
                 "definition_code": it.definition_code,
                 "user_name": users_map.get(it.user_id, "Sistema"),

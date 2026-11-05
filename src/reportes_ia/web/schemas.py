@@ -61,7 +61,7 @@ class DefinitionOut(BaseModel):
 class HistoryItemOut(BaseModel):
     id: str
     created_at: str
-    prompt_text: str
+    prompt_length: int
     title: str
     definition_code: Optional[str] = None
     user_name: str
