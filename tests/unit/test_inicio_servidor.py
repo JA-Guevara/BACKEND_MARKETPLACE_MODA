@@ -103,3 +103,17 @@ def test_wrapper_serve_conserva_la_preparacion_del_arranque(monkeypatch):
     railway_entrypoint.main()
     prepare.assert_called_once_with()
     execute.assert_called_once()
+
+
+def test_limitador_en_railway_comparte_una_sola_cuota(monkeypatch):
+    from src.infrastructure.config.settings import settings
+
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_ID", "railway-prueba")
+    monkeypatch.setenv("WEB_CONCURRENCY", "3")
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(iniciar_servidor.os, "chdir", Mock())
+    monkeypatch.setattr(railway_entrypoint, "preparar", Mock())
+    execute = Mock()
+    monkeypatch.setattr(iniciar_servidor.os, "execv", execute)
+    iniciar_servidor.main()
+    assert execute.call_args.args[1][-2:] == ["--workers", "1"]

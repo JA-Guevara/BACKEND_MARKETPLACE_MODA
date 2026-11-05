@@ -25,6 +25,7 @@ sqlite3.register_adapter(UUID, lambda u: str(u))
 # Las pruebas nunca deben usar servicios configurados en el .env del equipo.
 os.environ["DATABASE_URL"] = "postgresql://test:test@127.0.0.1:1/fashionstore_test"
 os.environ["APP_ENV"] = "test"
+os.environ["RATE_LIMIT_ENABLED"] = "false"
 os.environ["EMAIL_BACKGROUND"] = "false"
 os.environ["SMTP_HOST"] = ""
 os.environ["AI_API_KEY"] = ""

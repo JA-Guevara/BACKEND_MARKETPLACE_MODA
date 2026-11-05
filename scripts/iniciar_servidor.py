@@ -16,6 +16,11 @@ def main():
         # También protege los servicios que ejecutan el arranque directamente.
         from scripts.railway_entrypoint import preparar
         os.environ["ALLOW_REMOTE_DB"] = "1"
+        from src.infrastructure.config.settings import settings
+        if settings.rate_limit_enabled:
+            # El limitador local debe compartir todas las peticiones. Varias
+            # réplicas necesitan un almacén distribuido antes de habilitarse.
+            workers = 1
         print("Preparando base de datos en Railway (arranque compatible).", flush=True)
         preparar()
     else:

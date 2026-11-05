@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 from src.config.routes import api_router
 from src.infrastructure.config.settings import settings
 from src.infrastructure.http.environment import EnvironmentHeaderMiddleware
+from src.infrastructure.http.security_headers import SecurityHeadersMiddleware
+from src.infrastructure.security.rate_limit import RateLimitMiddleware
 from src.infrastructure.cors.config import configure_cors
 from src.infrastructure.http.maintenance import MaintenanceMiddleware, maintenance_response
 from src.notificaciones.infrastructure.email.cola import apagar_cola
@@ -78,8 +80,10 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(AuditContextMiddleware)
     app.add_middleware(MaintenanceMiddleware)
+    app.add_middleware(RateLimitMiddleware)
     configure_cors(app)
     app.add_middleware(EnvironmentHeaderMiddleware, env=settings.app_env)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
     @app.get("/health", tags=["system"])
