@@ -53,3 +53,6 @@ api_router.include_router(exchanges_router)
 
 from src.reportes_ia.web.router import router as ai_reports_router
 api_router.include_router(ai_reports_router)
+
+from src.integraciones.web.router import router as integrations_router
+api_router.include_router(integrations_router)
