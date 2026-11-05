@@ -622,3 +622,32 @@ class PlatformUsersService:
         )
         self.db.commit()
         return self._to_response(user)
+
+    def activar_admin(self, user_id: UUID) -> GlobalUserResponse:
+        user = self._get_user(user_id)
+        user.is_active = True
+        self._audit("platform.admin_activated", user, f"Super administrador reactivado: {user.email}")
+        self.db.commit()
+        return self._to_response(user)
+
+    def eliminar_admin(self, user_id: UUID) -> bool:
+        if self.actor and self.actor.id == user_id:
+            raise ConflictError("No puedes eliminar tu propia cuenta de super administrador.")
+        active_admins = (
+            self.db.execute(
+                select(UserModel).where(
+                    UserModel.tenant_id.is_(None),
+                    UserModel.deleted_at.is_(None),
+                    UserModel.is_active.is_(True),
+                    UserModel.roles.any(RoleModel.code == "platform_admin"),
+                )
+            ).scalars().all()
+        )
+        if len(active_admins) <= 1 and any(u.id == user_id for u in active_admins):
+            raise LastPlatformAdminError("No se puede eliminar el único super administrador activo de la plataforma.")
+        user = self._get_user(user_id)
+        user.deleted_at = datetime.now(timezone.utc)
+        user.is_active = False
+        self._audit("platform.admin_deleted", user, f"Super administrador eliminado: {user.email}")
+        self.db.commit()
+        return True

@@ -43,3 +43,9 @@ def deactivate_plan(plan_id: UUID, actor: Writer, db: Session = Depends(get_db))
 @router.post("/{plan_id}/activate", response_model=ApiResponse[PlanResponse])
 def activate_plan(plan_id: UUID, actor: Writer, db: Session = Depends(get_db)):
     return ApiResponse(message="Operación completada.", data=PlanService(db, actor).activar(plan_id))
+
+
+@router.delete("/{plan_id}", response_model=ApiResponse[bool])
+def delete_plan(plan_id: UUID, actor: Writer, db: Session = Depends(get_db)):
+    PlanService(db, actor).eliminar(plan_id)
+    return ApiResponse(message="Plan eliminado exitosamente.", data=True)

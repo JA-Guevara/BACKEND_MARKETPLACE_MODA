@@ -242,3 +242,56 @@ def deactivate_admin(
         message="Administrador desactivado.",
         data=service.desactivar_admin(user_id),
     )
+
+
+@router.post("/admins/{user_id}/activate", response_model=ApiResponse[GlobalUserResponse])
+def activate_admin(
+    user_id: UUID,
+    actor: Writer,
+    db: Session = Depends(get_db),
+):
+    service = PlatformUsersService(db, actor)
+    return ApiResponse(
+        message="Administrador reactivado exitosamente.",
+        data=service.activar_admin(user_id),
+    )
+
+
+@router.patch("/admins/{user_id}", response_model=ApiResponse[GlobalUserResponse])
+def update_admin(
+    user_id: UUID,
+    body: GlobalUserUpdate,
+    actor: Writer,
+    db: Session = Depends(get_db),
+):
+    service = PlatformUsersService(db, actor)
+    return ApiResponse(
+        message="Administrador actualizado exitosamente.",
+        data=service.actualizar(user_id, body),
+    )
+
+
+@router.delete("/admins/{user_id}", response_model=ApiResponse[bool])
+def delete_admin(
+    user_id: UUID,
+    actor: Writer,
+    db: Session = Depends(get_db),
+):
+    service = PlatformUsersService(db, actor)
+    return ApiResponse(
+        message="Administrador eliminado exitosamente.",
+        data=service.eliminar_admin(user_id),
+    )
+
+
+@router.post("/admins/{user_id}/reset-password", response_model=ApiResponse[GlobalUserResponse])
+def reset_admin_password(
+    user_id: UUID,
+    actor: Writer,
+    db: Session = Depends(get_db),
+):
+    service = PlatformUsersService(db, actor)
+    return ApiResponse(
+        message="Enlace de restablecimiento enviado.",
+        data=service.restablecer_contrasena(user_id),
+    )

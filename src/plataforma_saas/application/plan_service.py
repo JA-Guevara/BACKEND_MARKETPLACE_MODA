@@ -184,3 +184,18 @@ class PlanService:
 
     def desactivar(self, plan_id):
         return self._set_active(plan_id, False)
+
+    def eliminar(self, plan_id):
+        plan = self._plan(plan_id)
+        subs_count = self.db.scalar(
+            select(func.count()).select_from(SubscriptionModel).where(SubscriptionModel.plan_id == plan.id)
+        ) or 0
+        if subs_count > 0:
+            raise ConflictError(
+                f"No se puede eliminar el plan '{plan.name}' porque tiene {subs_count} suscripciones asociadas. Puedes desactivarlo."
+            )
+        before = self._response(plan).model_dump(mode="json")
+        self.db.delete(plan)
+        self._audit(plan, "plans.deleted", before, reason="Plan eliminado por el administrador.")
+        self.db.commit()
+        return True
