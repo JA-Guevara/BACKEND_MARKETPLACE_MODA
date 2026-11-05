@@ -17,6 +17,7 @@ from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_platform_permissions
 from src.plataforma_saas.application.jobs.runner import TareasProgramadas
 from src.plataforma_saas.application.ops_service import OpsService
+from src.plataforma_saas.web.schemas.ops_status import OpsStatusOut
 from src.plataforma_saas.infrastructure.models.ops import JobRunModel
 from src.shared.exceptions.domain_exception import AuthenticationError
 from src.shared.responses.api_response import ApiResponse
@@ -165,7 +166,7 @@ def list_backups(
     return ApiResponse(data=Page[BackupOut].model_validate(OpsService(db).listar_respaldos(page, page_size)))
 
 
-@router.get("/status", response_model=ApiResponse[dict])
+@router.get("/status", response_model=ApiResponse[OpsStatusOut])
 def operations_status(request: Request, actor: Reader, db: Session = Depends(get_db)):
     result = OpsService(db).estado(
         version=request.app.version,
