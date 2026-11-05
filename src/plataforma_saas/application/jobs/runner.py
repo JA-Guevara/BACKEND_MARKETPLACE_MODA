@@ -161,4 +161,14 @@ class TareasProgramadas:
 
         runs.append(self._run_job("support.expire", _job_support, ahora))
 
+        # 4. invoices.issue
+        def _job_invoices(now: datetime) -> dict:
+            from src.plataforma_saas.application.billing_service import BillingService
+
+            billing = BillingService(self.db)
+            issued = billing.emitir_invoices_pendientes(now)
+            return {"issued_invoices": issued}
+
+        runs.append(self._run_job("invoices.issue", _job_invoices, ahora))
+
         return runs

@@ -56,7 +56,7 @@ def require_environment_match(
     url = _parse_url(database_url)
     if app_env in {"local", "test"}:
         if not _is_local(url):
-            raise RuntimeError(f"Conexión remota bloqueada para APP_ENV={app_env}.")
+            raise RuntimeError(f"Conexión remota bloqueada para APP_ENV={app_env}. Requiere APP_ENV=production.")
         return
     if app_env == "production":
         if not os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip():

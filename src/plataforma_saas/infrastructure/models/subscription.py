@@ -1,6 +1,7 @@
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID
-from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.infrastructure.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
@@ -39,3 +40,29 @@ class SubscriptionNoticeModel(UUIDPrimaryKeyMixin, Base):
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     subscription: Mapped[SubscriptionModel] = relationship()
+
+
+class SubscriptionInvoiceModel(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "subscription_invoices"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "period_start", name="uq_subscription_invoices_sub_period"),
+        Index("ix_subscription_invoices_tenant_id", "tenant_id"),
+        Index("ix_subscription_invoices_subscription_id", "subscription_id"),
+    )
+    number: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    subscription_id: Mapped[UUID] = mapped_column(ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), default="BOB", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="issued", nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_reference: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    tenant: Mapped[TenantModel] = relationship()
+    subscription: Mapped[SubscriptionModel] = relationship()
+

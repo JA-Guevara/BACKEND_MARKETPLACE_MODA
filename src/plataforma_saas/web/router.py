@@ -10,6 +10,7 @@ from src.plataforma_saas.web.routers.subscriptions_router import platform_router
 from src.plataforma_saas.web.routers.support_router import router as support_router
 from src.plataforma_saas.web.routers.sandbox_router import router as sandbox_router
 from src.plataforma_saas.web.routers.storefront_router import router as storefront_router
+from src.plataforma_saas.application.billing_service import billing_platform_router, billing_tenant_router
 
 plataforma_router = APIRouter()
 for router in (
@@ -25,5 +26,7 @@ for router in (
     modules_router,
     sandbox_router,
     storefront_router,
+    billing_tenant_router,
+    billing_platform_router,
 ):
     plataforma_router.include_router(router)
