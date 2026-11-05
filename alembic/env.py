@@ -41,16 +41,27 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _run_migrations(connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_online() -> None:
+    # Permite que un script externo abra la transaccion y pase la conexion
+    # (necesario para corregir el sello de produccion y migrar de forma atomica).
+    external_connection = config.attributes.get("connection")
+    if external_connection is not None:
+        _run_migrations(external_connection)
+        return
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
-        with context.begin_transaction():
-            context.run_migrations()
+        _run_migrations(connection)
 
 
 if context.is_offline_mode():

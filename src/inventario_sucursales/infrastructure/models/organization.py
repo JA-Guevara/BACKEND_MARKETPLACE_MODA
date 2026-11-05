@@ -41,7 +41,10 @@ class SupplierModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class BranchModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "branches"
-    __table_args__ = (UniqueConstraint("tenant_id", "code"), UniqueConstraint("tenant_id", "city_id", "name"))
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_branches_tenant_id"),
+        UniqueConstraint("tenant_id", "city_id", "name", name="uq_branches_tenant_city_name"),
+    )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     code: Mapped[str] = mapped_column(String(30), nullable=False, index=True)

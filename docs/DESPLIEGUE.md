@@ -2,7 +2,7 @@
 
 - **Proyecto:** FashionStore SaaS Multi-Tenant
 - **Versión:** 2.0 (Segundo Parcial)
-- **Cabeza Alembic Oficial:** `20261108_0030` (cadena única y lineal)
+- **Cabeza Alembic Oficial:** `20261109_0031` (cadena única y lineal; repara el sello fantasma de producción)
 - **Plataforma de Despliegue:** Railway (Backend + PostgreSQL) / Vercel o Netlify (Frontend PWA)
 
 ---
@@ -55,7 +55,10 @@ La cadena de revisiones Alembic es estrictamente lineal para garantizar cero bif
 | 11 | `20261108_0026` | CU-09 | Consultas asistidas por IA y catálogo (`report_requests`) |
 | 12 | `20261108_0027` | CU-11 | Motor de ofertas, descuentos y cupones (`commerce_promotions`) |
 | 13 | `20261108_0028` | CU-12 | Registro de dispositivos offline y auditoría (`registered_devices`) |
-| 14 | `20261108_0030` (HEAD) | Cierre | Unificación de esquemas e índices multi-tenant |
+| 14 | `20261109_0031` (HEAD) | Cierre | Reconcilia el esquema de producción: completa tablas/columnas/permisos faltantes, corrige índices y elimina la tabla temporal vacía `_rs_catalog_copies` |
+
+> [!IMPORTANT]
+> Producción quedó sellada con `20261108_0030`, una revisión que **no existe** en el repositorio, y con un esquema mixto. Antes de un `alembic upgrade head` normal hay que ejecutar `python scripts/reconciliar_produccion.py --aplicar --backup-archivo <respaldo>`. El script corrige el sello a `20261108_0028` y aplica `20261109_0031` en una sola transacción. Sin ese paso, `alembic current` falla con `Can't locate revision identified by '20261108_0030'`.
 
 ---
 
@@ -71,7 +74,7 @@ La cadena de revisiones Alembic es estrictamente lineal para garantizar cero bif
    ```powershell
    .venv\Scripts\alembic.exe heads
    ```
-   *Debe retornar exactamente: `20261108_0030 (head)`.*
+   *Debe retornar exactamente: `20261109_0031 (head)`.*
 
 ### Fase 2: Respaldo de Producción y Ensayo en QA
 3. ⛔ **RESPALDO DE BASE DE DATOS (Requiere confirmación explícita)**:

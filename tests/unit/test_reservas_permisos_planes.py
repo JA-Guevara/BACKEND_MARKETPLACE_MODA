@@ -18,9 +18,17 @@ def declared_permissions():
 
 
 def test_las_migraciones_no_reutilizan_uuid_de_otro_permiso():
+    """Un UUID puede repetirse solo si es el mismo permiso.
+
+    Las migraciones de reparacion (0031) vuelven a declarar permisos ya
+    reservados por 0026/0030 para poder sembrarlos en una base que quedo a
+    medio migrar. Eso es seguro mientras el UUID siga apuntando al mismo
+    codigo; lo que no puede pasar es que un UUID identifique dos permisos.
+    """
     identifiers = {}
     for source, permission_id, code in declared_permissions():
-        assert permission_id not in identifiers, (source, code, identifiers.get(permission_id))
+        previous = identifiers.get(permission_id)
+        assert previous is None or previous[1] == code, (source, code, previous)
         identifiers[permission_id] = (source, code)
 
 
