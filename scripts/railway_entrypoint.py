@@ -53,8 +53,9 @@ def _registrar_excepcion(connection, revision: str | None, head: str, fecha: str
 
 def preparar() -> None:
     from src.infrastructure.config.settings import settings
-    from src.infrastructure.database.safety import require_local_database
+    from src.infrastructure.database.safety import require_environment_match, require_local_database
 
+    require_environment_match(settings.app_env, settings.database_url, settings.production_db_host)
     require_local_database(settings.database_url)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "alembic"))

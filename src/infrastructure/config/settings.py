@@ -1,5 +1,6 @@
 from functools import lru_cache
 import os
+from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,7 +14,8 @@ class Settings(BaseSettings):
     default_tenant_slug: str = "fashionstore"
     invitation_token_expire_hours: int = 72
     app_name: str = "FashionStore API"
-    app_env: str = "development"
+    app_env: Literal["local", "test", "staging", "production"] = "local"
+    production_db_host: str | None = None
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
     backup_report_token: SecretStr | None = None
@@ -22,6 +24,11 @@ class Settings(BaseSettings):
     maintenance_mode: bool = Field(
         False, validation_alias=AliasChoices("MODO_MANTENIMIENTO", "maintenance_mode")
     )
+    rate_limit_enabled: bool = True
+    sentry_dsn: SecretStr | None = None
+    mfa_encryption_key: SecretStr | None = None
+    mfa_required_platform: bool = True
+    media_backend: Literal["local", "s3"] = "local"
     sync_batch_max: int = 50
     sync_status_max: int = 200
     database_url: str = "postgresql://postgres:postgres@localhost:5432/fashionstore"
@@ -94,7 +101,10 @@ class Settings(BaseSettings):
         return "/" + value.strip("/")
 
     @model_validator(mode="after")
-    def validate_production_secret(self) -> "Settings":
+    def validate_runtime(self) -> "Settings":
+        from src.infrastructure.database.safety import require_environment_match
+
+        require_environment_match(self.app_env, self.database_url, self.production_db_host)
         if self.app_env.lower() == "production" and self.jwt_secret_key.startswith("development-only"):
             raise ValueError("JWT_SECRET_KEY must be replaced in production.")
         # Railway proporciona el dominio público del servicio. Si no se

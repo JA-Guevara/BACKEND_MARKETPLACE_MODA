@@ -5,7 +5,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from src.infrastructure.config.settings import settings
-from src.infrastructure.database.safety import require_local_database
+from src.infrastructure.database.safety import require_environment_match, require_local_database
 from src.infrastructure.database.base import Base
 from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel, WebhookEventModel
 from src.ventas_pagos.infrastructure.engagement_models import FavoriteModel, PromotionModel, PromotionUseModel
@@ -63,6 +63,7 @@ def run_migrations_online() -> None:
     # (necesario para corregir el sello de produccion y migrar de forma atomica).
     external_connection = config.attributes.get("connection")
     if external_connection is not None:
+        require_environment_match(settings.app_env, external_connection.engine.url, settings.production_db_host)
         require_local_database(external_connection.engine.url)
         _run_migrations(external_connection)
         return
