@@ -4,9 +4,14 @@ import os
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine, func, select, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 from starlette.testclient import TestClient
 
 from src.main import create_app
+from src.infrastructure.database.safety import require_local_database
+from src.infrastructure.database.session import get_db
 from src.operacion_offline.infrastructure.models.sync import SyncOperationModel
 from tests.unit.plataforma_saas.conftest import create_world
 
@@ -15,9 +20,34 @@ from tests.unit.plataforma_saas.conftest import create_world
 def saas_world():
     if not os.getenv("TEST_DATABASE_URL"):
         pytest.skip("Requiere PostgreSQL real configurado en TEST_DATABASE_URL para concurrencia multi-hilo")
-    w = create_world()
-    w.client = TestClient(create_app())
-    return w
+    url = make_url(os.environ["TEST_DATABASE_URL"])
+    require_local_database(url, allow_remote=False)
+    name = 'ps_sync_qa_' + uuid4().hex
+    admin = create_engine(url, isolation_level='AUTOCOMMIT')
+    engine = None
+    w = None
+    try:
+        with admin.connect() as c:
+            c.execute(text(f'CREATE DATABASE "{name}"'))
+        engine = create_engine(url.set(database=name))
+        w = create_world(engine=engine)
+        app = create_app()
+
+        def separate_session():
+            with Session(engine, expire_on_commit=False) as db:
+                yield db
+
+        app.dependency_overrides[get_db] = separate_session
+        w.client = TestClient(app)
+        yield w
+    finally:
+        if w is not None:
+            w.db.close()
+        if engine is not None:
+            engine.dispose()
+        with admin.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        admin.dispose()
 
 
 def test_concurrencia_sync_idempotente(saas_world):
@@ -65,3 +95,6 @@ def test_concurrencia_sync_idempotente(saas_world):
     assert res1["status"] == "CONFIRMED"
     assert res2["status"] == "CONFIRMED"
     assert (res1["replay"] or res2["replay"]) is True
+    assert w.db.scalar(select(func.count()).select_from(SyncOperationModel).where(
+        SyncOperationModel.client_request_id == crid,
+    )) == 1
