@@ -63,7 +63,10 @@ def test_sync_batch_exitoso_y_replay_idempotente(saas_world):
     }
 
     headers = w.headers(w.admins[0])
+    headers["X-Request-ID"] = "f82ba1dd-3ee5-460b-8256-e04d8927c5f1"
     res = w.client.post("/api/v1/sync/batch", headers=headers, json=batch_body)
+    assert res.headers["X-Request-ID"] == headers["X-Request-ID"]
+    assert res.json()["data"]["request_id"] == headers["X-Request-ID"]
     assert res.status_code == 200, res.text
     data = res.json()["data"]
     assert len(data["results"]) == 2

@@ -12,6 +12,7 @@ from src.infrastructure.config.settings import settings
 from src.infrastructure.http.environment import EnvironmentHeaderMiddleware
 from src.infrastructure.http.security_headers import SecurityHeadersMiddleware
 from src.infrastructure.security.rate_limit import RateLimitMiddleware
+from src.infrastructure.observability.logging import RequestIdMiddleware, configurar_logging, iniciar_sentry
 from src.infrastructure.cors.config import configure_cors
 from src.infrastructure.http.maintenance import MaintenanceMiddleware, maintenance_response
 from src.notificaciones.infrastructure.email.cola import apagar_cola
@@ -47,7 +48,7 @@ class AuditContextMiddleware:
             token = set_audit_context(
                 client[0] if client else None,
                 user_agent.decode("latin-1")[:500] if user_agent else None,
-                str(uuid4()),
+                scope.get("state", {}).get("request_id") or uuid4().hex,
             )
         try:
             await self.app(scope, receive, send)
@@ -66,6 +67,8 @@ async def ciclo_de_vida(_: FastAPI):
     en que se puede drenar. No hay nada que preparar al arrancar: la cola se crea
     sola con el primer aviso.
     """
+    configurar_logging(settings)
+    iniciar_sentry(settings)
     yield
     apagar_cola()
 
@@ -83,6 +86,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware)
     configure_cors(app)
     app.add_middleware(EnvironmentHeaderMiddleware, env=settings.app_env)
+    app.add_middleware(RequestIdMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
@@ -99,6 +103,26 @@ def create_app() -> FastAPI:
         La respuesta no cambia: mismo 200 y mismo {"status": "ok"}.
         """
         return {"status": "ok"}
+
+    @app.get("/health/ready", tags=["system"])
+    def ready():
+        from alembic.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+        from pathlib import Path
+        from sqlalchemy import text
+        from src.infrastructure.database.session import engine
+
+        try:
+            head = ScriptDirectory(str(Path(__file__).resolve().parents[1] / "alembic")).get_current_head()
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+                revisions = MigrationContext.configure(connection).get_current_heads()
+            if revisions != (head,):
+                raise RuntimeError("schema_not_ready")
+        except (SQLAlchemyError, RuntimeError):
+            return JSONResponse(status_code=503, content={"success": False,
+                "error": {"code": "not_ready", "message": "El servicio aún no está listo."}})
+        return {"status": "ready", "revision": head, "version": app.version}
 
     @app.exception_handler(AppException)
     async def handle_app_exception(_: Request, exc: AppException) -> JSONResponse:
@@ -135,8 +159,8 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(SQLAlchemyError)
-    async def handle_database_error(_: Request, exc: SQLAlchemyError) -> JSONResponse:
-        reference = uuid4().hex[:12]
+    async def handle_database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+        reference = getattr(request.state, "request_id", uuid4().hex)
         original = getattr(exc, "orig", None)
         diagnostic = getattr(original, "diag", None)
         logging.getLogger(__name__).error(

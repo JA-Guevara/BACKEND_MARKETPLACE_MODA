@@ -11,5 +11,5 @@ def configure_cors(app: FastAPI) -> None:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["Retry-After", "X-App-Env", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
+        expose_headers=["Retry-After", "X-App-Env", "X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
     )

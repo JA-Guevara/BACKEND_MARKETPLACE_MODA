@@ -38,6 +38,7 @@ from src.shared.exceptions.domain_exception import (
     NotFoundError,
     ValidationError,
 )
+from src.shared.context.audit_context import get_audit_request_id
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, ProductVariantModel
 from src.ventas_pagos.application.stock_service import StockService
 from src.ventas_pagos.domain.promociones import precio_final, vigente_en
@@ -306,7 +307,7 @@ class SyncService:
             started_at=started_at,
             client_version=data.client_version,
             client_ip=client_ip,
-            request_id=str(uuid.uuid4()),
+            request_id=get_audit_request_id() or str(uuid.uuid4()),
         )
         self.db.add(batch)
         self.db.flush()

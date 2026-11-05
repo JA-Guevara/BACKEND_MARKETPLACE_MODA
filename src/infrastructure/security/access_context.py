@@ -132,6 +132,8 @@ def get_access_context(
 
     set_audit_actor(user.id)
     set_audit_scope(tenant_id, support_session_id)
+    request.state.tenant_id = str(tenant_id) if tenant_id is not None else None
+    request.state.actor_id = str(user.id)
 
     return AccessContext(
         user=user,
