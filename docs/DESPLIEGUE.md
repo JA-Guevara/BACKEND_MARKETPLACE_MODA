@@ -22,6 +22,7 @@
 
 ### Backend (Railway / Producción)
 - `DATABASE_URL`: Cadena de conexión PostgreSQL (con pooler o directa IPv4).
+- `ALLOW_REMOTE_DB=1`: autorización explícita de conexión remota para el servicio Railway. Sin ella, el motor y Alembic rechazan hosts remotos. No definirla en desarrollo local. Configurarla únicamente dentro de la ventana de liberación autorizada; cambiar variables del servicio puede provocar un redespliegue.
 - `JWT_SECRET_KEY`: Llave para la firma y verificación de tokens HS256 / RFC 8693.
 - `AI_API_KEY`: Credencial del proveedor LLM (Gemini / OpenAI compatible).
 - `AI_MODEL`: Modelo utilizado para generación de reportes y NL2SQL (`gemini-2.5-flash` o equivalente).
@@ -59,6 +60,10 @@ La cadena de revisiones Alembic es estrictamente lineal para garantizar cero bif
 
 > [!IMPORTANT]
 > Producción quedó sellada con `20261108_0030`, una revisión que **no existe** en el repositorio, y con un esquema mixto. Antes de un `alembic upgrade head` normal hay que ejecutar `python scripts/reconciliar_produccion.py --aplicar --backup-archivo <respaldo>`. El script corrige el sello a `20261108_0028` y aplica `20261109_0031` en una sola transacción. Sin ese paso, `alembic current` falla con `Can't locate revision identified by '20261108_0030'`.
+
+**Puerta vigente (05/11):** solo están autorizados el respaldo y el ensayo local. El respaldo debe generarse con `pg_dump -Fc -n public --no-owner --no-privileges` usando el pooler de sesión (5432), guardarse fuera de los repositorios y validarse con `pg_restore --list`. El runner exige tabla y datos de `public.alembic_version` y una antigüedad menor a 24 horas (`PG_RESTORE` permite indicar el ejecutable). Después de restaurar y reconciliar una copia local, deben coincidir su esquema y sus datos de referencia con el camino limpio. Solo entonces solicitar una confirmación conjunta para reconciliar producción, consolidar `main`, hacer push y desplegar. No reiniciar el servicio mientras siga el sello fantasma.
+
+Si se vuelve al código anterior tras confirmar `0031`, restaurar primero el respaldo bajo una ventana de recuperación autorizada. El código anterior no reconoce esa revisión. La restauración descarta escrituras posteriores al respaldo.
 
 ---
 
