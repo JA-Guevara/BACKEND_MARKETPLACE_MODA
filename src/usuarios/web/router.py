@@ -2,6 +2,8 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
@@ -9,6 +11,8 @@ from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.tenancy import TenantScope
 from src.infrastructure.security.authorization import require_permissions
+from src.inventario_sucursales.application.services.user_branch_service import UserBranchService
+from src.inventario_sucursales.infrastructure.models.organization import UserBranchModel
 from src.shared.responses.api_response import ApiResponse
 from src.shared.responses.pagination import Page
 from src.usuarios.application.services.user_service import UserService
@@ -26,6 +30,43 @@ from src.usuarios.infrastructure.http.schemas import (
 router = APIRouter(prefix="/users", tags=['PAQ-01 · Usuarios y catálogo'])
 UserReader = Annotated[UserModel, Depends(require_permissions("users.read"))]
 UserWriter = Annotated[UserModel, Depends(require_permissions("users.write"))]
+
+
+class BranchAssignmentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    branch_ids: list[uuid.UUID] = Field(default_factory=list)
+    default_branch_id: uuid.UUID | None = None
+
+
+class BranchAssignmentOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    is_default: bool
+
+
+def _branch_assignments(db: Session, tenant_id: uuid.UUID, user_id: uuid.UUID, branches) -> list[BranchAssignmentOut]:
+    defaults = set(
+        db.scalars(
+            select(UserBranchModel.branch_id).where(
+                UserBranchModel.tenant_id == tenant_id,
+                UserBranchModel.user_id == user_id,
+                UserBranchModel.is_default.is_(True),
+            )
+        ).all()
+    )
+    if not defaults and branches:
+        defaults = {branches[0].id}
+    return [
+        BranchAssignmentOut(
+            id=branch.id,
+            code=branch.code,
+            name=branch.name,
+            is_default=branch.id in defaults,
+        )
+        for branch in branches
+    ]
 
 
 @router.get("", response_model=ApiResponse[Page[UserResponse]])
@@ -68,6 +109,34 @@ def update_user(user_id: uuid.UUID, data: UserUpdate, ctx: TenantScope, actor: U
 @router.put("/{user_id}/roles", response_model=ApiResponse[UserResponse])
 def set_roles(user_id: uuid.UUID, data: AssignRolesRequest, ctx: TenantScope, actor: UserWriter, db: Session = Depends(get_db)):
     return ApiResponse(message="Roles actualizados.", data=UserService(db, ctx.tenant_id).assign_roles(user_id, data.role_ids, actor))
+
+
+@router.get("/{user_id}/branches", response_model=ApiResponse[list[BranchAssignmentOut]])
+def get_user_branches(user_id: uuid.UUID, ctx: TenantScope, actor: UserReader, db: Session = Depends(get_db)):
+    user = UserService(db, ctx.tenant_id).get(user_id)
+    branches = UserBranchService(db, ctx.tenant_id, actor.id).autorizadas(user)
+    return ApiResponse(
+        message="Sucursales autorizadas del usuario obtenidas.",
+        data=_branch_assignments(db, ctx.tenant_id, user.id, branches),
+    )
+
+
+@router.put("/{user_id}/branches", response_model=ApiResponse[list[BranchAssignmentOut]])
+def set_user_branches(
+    user_id: uuid.UUID,
+    data: BranchAssignmentIn,
+    ctx: TenantScope,
+    actor: UserWriter,
+    db: Session = Depends(get_db),
+):
+    user = UserService(db, ctx.tenant_id).get(user_id)
+    branches = UserBranchService(db, ctx.tenant_id, actor.id).asignar(
+        user.id, data.branch_ids, data.default_branch_id
+    )
+    return ApiResponse(
+        message="Sucursales autorizadas del usuario actualizadas.",
+        data=_branch_assignments(db, ctx.tenant_id, user.id, branches),
+    )
 
 
 @router.post("/{user_id}/deactivate", response_model=ApiResponse[UserResponse])

@@ -2,11 +2,14 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
+from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_platform_permissions
+from src.plataforma_saas.application.entitlement_service import EntitlementService
 from src.plataforma_saas.application.platform_roles_service import PlatformRolesService
 from src.plataforma_saas.web.schemas.governance import (
     PermissionCatalogItem,
@@ -18,6 +21,8 @@ from src.plataforma_saas.web.schemas.governance import (
 )
 from src.roles.application.services.role_service import RoleService
 from src.roles.infrastructure.http.schemas import RoleCreate, RoleResponse, RoleUpdate
+from src.roles.infrastructure.persistence.models.permission import PermissionModel
+from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
 from src.shared.responses.api_response import ApiResponse
 
 router = APIRouter(prefix="/platform", tags=["PAQ-06 · Consola SaaS"])
@@ -154,6 +159,59 @@ def update_tenant_role_from_console(
     service = RoleService(db, tenant_id=tenant_id)
     role = service.update_role(role_id, body, actor_id=actor.id)
     return ApiResponse(message="Rol de empresa actualizado.", data=RoleResponse.model_validate(role))
+
+
+@router.put("/tenants/{tenant_id}/roles/{role_id}/permissions", response_model=ApiResponse[RoleResponse])
+def update_tenant_role_permissions_from_console(
+    tenant_id: UUID,
+    role_id: UUID,
+    body: TemplatePermissionsIn,
+    actor: Writer,
+    db: Session = Depends(get_db),
+):
+    """Edita los permisos de un rol propio de una empresa desde la consola.
+
+    Solo se aceptan permisos de alcance ``tenant`` cuyos módulos estén
+    efectivamente habilitados para esa empresa. El motivo queda en la bitácora.
+    """
+    codes = list(dict.fromkeys(code.strip() for code in body.permission_codes if code.strip()))
+    permissions = list(
+        db.scalars(select(PermissionModel).where(PermissionModel.code.in_(codes))).all()
+    ) if codes else []
+    found = {permission.code for permission in permissions}
+    missing = sorted(set(codes) - found)
+    if missing:
+        raise NotFoundError(
+            "Uno o más permisos no existen.",
+            details={"permission_codes": missing},
+        )
+
+    allowed = EntitlementService(db).filtrar_permisos(tenant_id, frozenset(codes))
+    unavailable = sorted(set(codes) - set(allowed))
+    if unavailable:
+        raise ValidationError(
+            "Uno o más permisos pertenecen a módulos no habilitados para la empresa.",
+            code="permission_module_unavailable",
+            details={"permission_codes": unavailable},
+        )
+
+    service = RoleService(db, tenant_id=tenant_id)
+    role = service.set_permissions(role_id, [permission.id for permission in permissions], actor)
+
+    RecordAuditEvent(db).execute(
+        actor_user_id=actor.id,
+        action="platform.tenant_role_permissions_updated",
+        entity_type="role",
+        entity_id=str(role.id),
+        description=f"Permisos del rol '{role.name}' de la empresa actualizados.",
+        metadata={
+            "tenant_id": str(tenant_id),
+            "permission_codes": codes,
+            "reason": body.reason,
+        },
+    )
+    db.commit()
+    return ApiResponse(message="Permisos del rol de empresa actualizados.", data=RoleResponse.model_validate(role))
 
 
 # --- Catálogo de permisos ---

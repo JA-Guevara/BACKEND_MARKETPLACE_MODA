@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from src.auth.application.services.auth_service import AuthService
 from src.auth.infrastructure.http.schemas import (
     AuthUserResponse,
+    AuthorizedBranchSummary,
     ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginRequest,
@@ -26,6 +27,11 @@ from src.bitacora.infrastructure.persistence.models.evento_bitacora import Audit
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.access_context import AccessContext, get_access_context
 from src.infrastructure.security.tenancy import get_public_tenant_id
+from src.inventario_sucursales.application.services.user_branch_service import UserBranchService
+from src.inventario_sucursales.infrastructure.models.organization import (
+    BranchModel,
+    UserBranchModel,
+)
 from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.plataforma_saas.infrastructure.models.support_session import SupportSessionModel
 from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
@@ -39,6 +45,46 @@ router = APIRouter(prefix="/auth", tags=['PAQ-01 · Usuarios y catálogo'])
 def request_context(request: Request) -> tuple[str | None, str | None]:
     ip = request.client.host if request.client else None
     return ip, request.headers.get("user-agent")
+
+
+def _authorized_branches(db: Session, ctx: AccessContext) -> list[AuthorizedBranchSummary]:
+    if ctx.tenant_id is None:
+        return []
+    if ctx.is_support:
+        branches = list(
+            db.scalars(
+                select(BranchModel)
+                .where(
+                    BranchModel.tenant_id == ctx.tenant_id,
+                    BranchModel.is_active.is_(True),
+                    BranchModel.deleted_at.is_(None),
+                )
+                .order_by(BranchModel.code)
+            ).all()
+        )
+    else:
+        branches = UserBranchService(db, ctx.tenant_id, ctx.user.id).autorizadas(ctx.user)
+
+    defaults = set(
+        db.scalars(
+            select(UserBranchModel.branch_id).where(
+                UserBranchModel.tenant_id == ctx.tenant_id,
+                UserBranchModel.user_id == ctx.user.id,
+                UserBranchModel.is_default.is_(True),
+            )
+        ).all()
+    )
+    if not defaults and branches:
+        defaults = {branches[0].id}
+    return [
+        AuthorizedBranchSummary(
+            id=branch.id,
+            code=branch.code,
+            name=branch.name,
+            is_default=branch.id in defaults,
+        )
+        for branch in branches
+    ]
 
 
 @router.post("/register", response_model=ApiResponse[AuthUserResponse], status_code=status.HTTP_201_CREATED)
@@ -109,6 +155,7 @@ def me(ctx: AccessContext = Depends(get_access_context), db: Session = Depends(g
         response.tenant = TenantSummary.model_validate(SaasRepository(db).get_tenant(user.tenant_id))
         response.subscription = PlanGuard(db).resumen(user.tenant_id)
         db.commit()
+    response.authorized_branches = _authorized_branches(db, ctx)
     return ApiResponse(message="Usuario autenticado.", data=response)
 
 

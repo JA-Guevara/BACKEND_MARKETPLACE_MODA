@@ -98,6 +98,15 @@ class SubscriptionSummary(BaseModel):
     limits: dict[str, int]
 
 
+class AuthorizedBranchSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    name: str
+    is_default: bool = False
+
+
 class AuthUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -113,6 +122,7 @@ class AuthUserResponse(BaseModel):
     tenant: TenantSummary | None = None
     subscription: SubscriptionSummary | None = None
     support: Any | None = None
+    authorized_branches: list[AuthorizedBranchSummary] = Field(default_factory=list)
     last_login_at: datetime | None
     roles: list[RoleSummary] = Field(default_factory=list)
 
