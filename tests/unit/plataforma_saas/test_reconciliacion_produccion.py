@@ -81,6 +81,7 @@ def _crear_esquema_mixto(engine):
         "roles",
         metadata,
         sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("tenant_id", sa.Uuid(), nullable=True),
         sa.Column("code", sa.String(40), nullable=False),
         sa.Column("name", sa.String(80), nullable=False),
         sa.Column("description", sa.String(255), nullable=True),
@@ -294,5 +295,47 @@ def test_0031_repara_esquema_mixto_y_es_idempotente():
         with engine.connect() as connection:
             assert "_rs_catalog_copies" not in sa.inspect(connection).get_table_names()
             assert connection.scalar(sa.text("SELECT count(*) FROM catalog_templates")) == 4
+    finally:
+        engine.dispose()
+
+
+def test_0031_revoca_permisos_globales_de_roles_empresa_y_conserva_plataforma():
+    migration = _cargar_migracion()
+    engine = sa.create_engine("sqlite:///:memory:")
+    try:
+        _crear_esquema_mixto(engine)
+        with engine.begin() as connection:
+            # Reproducir asignaciones anteriores, incluso en un rol personalizado.
+            connection.execute(sa.text(
+                "INSERT INTO roles (id, tenant_id, code, name, audience, is_system, is_active, created_at, updated_at) "
+                "SELECT :id, id, 'custom', 'Personalizado', 'PLATFORM', 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
+                "FROM tenants LIMIT 1"
+            ), {"id": uuid4().hex})
+            for code in ("catalog_templates.write", "upgrade_requests.manage", "ml_models.manage"):
+                connection.execute(sa.text(
+                    "INSERT INTO permissions (id, code, name, module, scope, is_active, created_at, updated_at) "
+                    "VALUES (:id, :code, :code, 'platform', 'platform', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ), {"id": uuid4().hex, "code": code})
+            connection.execute(sa.text(
+                "INSERT INTO role_permissions (role_id, permission_id) "
+                "SELECT r.id, p.id FROM roles r, permissions p "
+                "WHERE p.scope = 'platform'"
+            ))
+
+        for _ in range(2):
+            with engine.begin() as connection:
+                with Operations.context(MigrationContext.configure(connection)):
+                    migration.upgrade()
+            with engine.connect() as connection:
+                assert connection.scalar(sa.text(
+                    "SELECT count(*) FROM role_permissions rp JOIN roles r ON r.id=rp.role_id "
+                    "JOIN permissions p ON p.id=rp.permission_id WHERE p.scope='platform' "
+                    "AND (r.audience <> 'PLATFORM' OR r.tenant_id IS NOT NULL)"
+                )) == 0
+                assert connection.scalar(sa.text(
+                    "SELECT count(*) FROM role_permissions rp JOIN roles r ON r.id=rp.role_id "
+                    "JOIN permissions p ON p.id=rp.permission_id "
+                    "WHERE r.code='platform_admin' AND p.scope='platform'"
+                )) == 3
     finally:
         engine.dispose()

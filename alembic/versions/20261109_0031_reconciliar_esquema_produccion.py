@@ -11,7 +11,8 @@ ejecuta esta migracion dentro de la misma transaccion.
 La migracion es idempotente. En una base que ya esta en ``20261108_0028`` solo:
 
 - agrega el indice ``ix_report_requests_user_id`` que declara el ORM;
-- elimina la tabla temporal vacia ``_rs_catalog_copies`` que dejo 0019.
+- elimina la tabla temporal vacia ``_rs_catalog_copies`` que dejo 0019;
+- revoca permisos de plataforma asignados a roles de empresa.
 
 El downgrade es deliberadamente conservador: no elimina objetos que pertenecen
 a migraciones anteriores, porque no puede distinguir si ya existian antes de
@@ -484,10 +485,24 @@ def _ensure_permissions(bind) -> None:
         sa.text(
             "INSERT INTO role_permissions (role_id, permission_id) "
             "SELECT r.id, p.id FROM roles r, permissions p "
-            "WHERE r.code IN ('platform_admin', 'superadmin') "
+            "WHERE r.code = 'platform_admin' AND r.audience = 'PLATFORM' "
             "AND p.code IN ('catalog_templates.write', 'upgrade_requests.manage') "
             "AND NOT EXISTS (SELECT 1 FROM role_permissions rp "
             "WHERE rp.role_id = r.id AND rp.permission_id = p.id)"
+        )
+    )
+
+    # 0024 y 0030 asignaban permisos globales a roles de empresa. Corregir
+    # tambien las asignaciones ya existentes, tanto en el camino limpio como
+    # en el esquema mixto; no alcanza con dejar de insertarlas.
+    tenant_role = "r.audience <> 'PLATFORM'"
+    if "tenant_id" in _column_names(bind, "roles"):
+        tenant_role += " OR r.tenant_id IS NOT NULL"
+    bind.execute(
+        sa.text(
+            "DELETE FROM role_permissions WHERE permission_id IN "
+            "(SELECT id FROM permissions WHERE scope = 'platform') "
+            f"AND role_id IN (SELECT r.id FROM roles r WHERE {tenant_role})"
         )
     )
 
