@@ -165,6 +165,8 @@ def operations_status(request: Request, actor: Reader, db: Session = Depends(get
     result = OpsService(db).estado(
         version=request.app.version,
         rate_limited=getattr(request.app.state, "rate_limited_count", None),
+        errors_5xx=getattr(request.app.state, "server_error_count", 0),
+        rate_limited_by_policy=getattr(request.app.state, "rate_limited_by_policy", {}),
     )
     return ApiResponse(data=result)
 

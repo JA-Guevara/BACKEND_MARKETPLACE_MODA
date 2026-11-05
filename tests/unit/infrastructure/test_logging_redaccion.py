@@ -51,8 +51,10 @@ def test_request_id_no_es_canal_de_inyeccion(value):
 
 
 def test_ready_no_expone_credenciales_si_base_no_disponible():
-    response = TestClient(create_app()).get('/health/ready')
+    client = TestClient(create_app())
+    response = client.get('/health/ready')
     assert response.status_code == 503
     assert response.json()['error']['code'] == 'not_ready'
     assert 'postgresql' not in response.text
     assert response.headers['X-Request-ID']
+    assert client.app.state.server_error_count == 1

@@ -79,7 +79,8 @@ class OpsService:
             query = query.where(PlatformBackup.alembic_revision == revision)
         return self.db.scalar(query.order_by(PlatformBackup.finished_at.desc(), PlatformBackup.id.desc()).limit(1))
 
-    def estado(self, *, version: str | None = None, rate_limited: int | None = None) -> dict:
+    def estado(self, *, version: str | None = None, rate_limited: int | None = None,
+               errors_5xx: int = 0, rate_limited_by_policy: dict[str, int] | None = None) -> dict:
         now = datetime.now(timezone.utc)
         revisions = MigrationContext.configure(self.db.connection()).get_current_heads()
         migration_dir = Path(__file__).resolve().parents[3] / "alembic"
@@ -117,6 +118,8 @@ class OpsService:
             "mantenimiento": settings.maintenance_mode,
             "contadores": {
                 "rate_limited": rate_limited,
+                "errors_5xx": errors_5xx,
+                "rate_limited_by_policy": rate_limited_by_policy or {},
                 "sync_rechazadas_24h": self.db.scalar(select(func.coalesce(func.sum(SyncBatchModel.rejected), 0)).where(
                     SyncBatchModel.finished_at > now - timedelta(hours=24),
                 )),

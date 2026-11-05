@@ -124,6 +124,9 @@ class RequestIdMiddleware:
         try:
             await self.app(scope, receive, traced)
         finally:
+            if status >= 500:
+                app_state = scope["app"].state
+                app_state.server_error_count = getattr(app_state, "server_error_count", 0) + 1
             if scope["path"] not in {"/health", "/health/ready"}:
                 route = scope.get("route")
                 logging.getLogger("fashionstore.access").info("request_completed", extra={
