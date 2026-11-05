@@ -24,7 +24,7 @@ class GarmentExchangeModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     difference_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal(0))
     payment_method: Mapped[str] = mapped_column(String(30), default="none")

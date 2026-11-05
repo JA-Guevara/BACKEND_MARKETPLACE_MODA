@@ -1,14 +1,15 @@
 from datetime import datetime, timezone
-from sqlalchemy import CHAR, Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, Numeric, String, Text, Uuid
+from sqlalchemy import CHAR, Boolean, Column, DateTime, Float, ForeignKey, Integer, Index, JSON, LargeBinary, Numeric, String, Text, Uuid
 from sqlalchemy.orm import relationship
 from src.infrastructure.database.base import Base
 
 
 class MLTrainingRunModel(Base):
     __tablename__ = "ml_training_runs"
+    __table_args__ = (Index("ix_ml_training_runs_tenant", "tenant_id"),)
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     model_type = Column(String(50), nullable=False)  # DEMAND, RFM, ANOMALY
     status = Column(String(30), nullable=False, default="RUNNING")  # RUNNING, COMPLETED, FAILED
     metrics = Column(JSON, nullable=True)
@@ -19,9 +20,10 @@ class MLTrainingRunModel(Base):
 
 class MLModelModel(Base):
     __tablename__ = "ml_models"
+    __table_args__ = (Index("ix_ml_models_tenant_active", "tenant_id", "is_active"),)
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(100), nullable=False)
     model_type = Column(String(50), nullable=False)
     version = Column(String(50), nullable=False)
@@ -37,11 +39,12 @@ class MLModelModel(Base):
 
 class MLPredictionModel(Base):
     __tablename__ = "ml_predictions"
+    __table_args__ = (Index("ix_ml_predictions_tenant_date", "tenant_id", "target_date"),)
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     model_id = Column(String(36), ForeignKey("ml_models.id", ondelete="CASCADE"), nullable=False)
-    target_date = Column(String(20), nullable=False, index=True)
+    target_date = Column(String(20), nullable=False)
     variant_id = Column(String(36), nullable=False)
     branch_id = Column(String(36), nullable=False)
     predicted_units = Column(Float, nullable=False)
@@ -53,9 +56,10 @@ class MLPredictionModel(Base):
 
 class MLCustomerSegmentModel(Base):
     __tablename__ = "ml_customer_segments"
+    __table_args__ = (Index("ix_ml_customer_segments_tenant", "tenant_id"),)
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     customer_id = Column(String(36), nullable=False)
     segment_name = Column(String(100), nullable=False)
     recency_days = Column(Integer, nullable=False)
@@ -67,11 +71,12 @@ class MLCustomerSegmentModel(Base):
 
 class MLAnomalyModel(Base):
     __tablename__ = "ml_anomalies"
+    __table_args__ = (Index("ix_ml_anomalies_tenant_date", "tenant_id", "sale_date"),)
 
     id = Column(String(36), primary_key=True)
-    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     branch_id = Column(String(36), nullable=False)
-    sale_date = Column(String(20), nullable=False, index=True)
+    sale_date = Column(String(20), nullable=False)
     anomaly_score = Column(Float, nullable=False)
     reason = Column(String(100), nullable=False)
     resolved = Column(Boolean, default=False, nullable=False)

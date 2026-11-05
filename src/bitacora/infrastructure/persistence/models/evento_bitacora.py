@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +13,10 @@ from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 
 class AuditEventModel(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_tenant_created", "tenant_id", "created_at"),
+        Index("ix_audit_events_tenant_entity", "tenant_id", "entity_type"),
+    )
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("tenants.id", ondelete="RESTRICT"), index=True, nullable=True

@@ -10,6 +10,7 @@ from src.infrastructure.database.base import Base, UUIDPrimaryKeyMixin, Timestam
 
 class SyncBatchModel(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "sync_batches"
+    __table_args__ = (sa.Index("ix_sync_batches_tenant_started", "tenant_id", "started_at"),)
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     device_id: Mapped[str] = mapped_column(String(64))

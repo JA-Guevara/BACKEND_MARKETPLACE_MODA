@@ -23,7 +23,7 @@ class ReportRequestModel(UUIDPrimaryKeyMixin, Base):
     audio_duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     source: Mapped[str] = mapped_column(String(20), default="TEXT", nullable=False)
     definition_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    status: Mapped[str] = mapped_column(String(30), default="EXECUTED", nullable=False)
+    status: Mapped[str | None] = mapped_column(String(30), default="EXECUTED", nullable=True)
     export_format: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     rows_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

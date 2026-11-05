@@ -20,6 +20,15 @@ from src.usuarios.infrastructure.persistence.models.usuario import AddressModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel, CashPointModel, CityModel, SupplierModel
 from src.usuarios_catalogo.infrastructure.models.catalog import ARAssetModel, CategoryModel, CollectionModel, ColorModel, ProductImageModel, ProductModel, ProductSupplierModel, ProductVariantModel, SeasonModel, SizeModel
 from src.reservas.infrastructure.persistence.models.reserva import ReservationModel
+# Registro explícito de todos los modelos para que autogenerate/alembic check
+# comparen el esquema completo, incluso módulos sin rutas importadas aquí.
+from src.analitica_ml.infrastructure import models as ml_models  # noqa: F401
+from src.dispositivos.infrastructure import models as device_models  # noqa: F401
+from src.operacion_offline.infrastructure.models import sync as sync_models  # noqa: F401
+from src.plataforma_saas.infrastructure.models import module, storefront  # noqa: F401
+from src.probador_virtual.infrastructure.persistence.models import recurso_tryon  # noqa: F401
+from src.reportes_ia.infrastructure import models as report_models  # noqa: F401
+from src.tryon_ai_jobs.infrastructure.persistence.models import tryon_job  # noqa: F401
 
 
 config = context.config

@@ -25,7 +25,7 @@ class TryOnJobModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "tryon_ai_jobs"
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("tenants.id"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001")
+        ForeignKey("tenants.id", ondelete="RESTRICT"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001")
     )
     # Quién pidió la foto: también es el dueño de la consulta, la cancelación y
     # la eliminación. Nadie más puede verla.
@@ -36,7 +36,7 @@ class TryOnJobModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True
     )
     color_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("colors.id", ondelete="RESTRICT"), index=True
+        ForeignKey("colors.id", ondelete="RESTRICT")
     )
     garment_type: Mapped[str | None] = mapped_column(String(40))
     body_region: Mapped[str | None] = mapped_column(String(20))

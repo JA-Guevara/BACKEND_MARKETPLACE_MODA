@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.infrastructure.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -22,13 +22,14 @@ class PromotionTargetModel(Base):
             "target_type IN ('PRODUCT', 'VARIANT', 'CATEGORY', 'SEASON', 'COLLECTION', 'ALL')",
             name="ck_promotion_targets_type",
         ),
+        Index("ix_promotion_targets_type_id", "target_type", "target_id"),
     )
 
     promotion_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("commerce_promotions.id", ondelete="CASCADE"), primary_key=True
     )
     target_type: Mapped[str] = mapped_column(String(12), primary_key=True)
-    target_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, index=True)
+    target_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
 
     promotion: Mapped["PromotionModel"] = relationship(back_populates="targets")
 
@@ -39,13 +40,14 @@ class PromotionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "commerce_promotions"
     __table_args__ = (
         UniqueConstraint("tenant_id", "code", name="uq_commerce_promotions_tenant_code"),
+        Index("ix_promotions_vigentes", "tenant_id", "is_active", "starts_at", "ends_at"),
         CheckConstraint("discount_value >= 0", name="promotion_value_nonnegative"),
         CheckConstraint("minimum_order >= 0", name="promotion_minimum_nonnegative"),
         CheckConstraint("max_uses IS NULL OR max_uses > 0", name="promotion_max_uses_positive"),
         CheckConstraint("per_user_limit IS NULL OR per_user_limit > 0", name="promotion_per_user_positive"),
     )
 
-    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="RESTRICT"), index=True, default=lambda: uuid.UUID("30000000-0000-0000-0000-000000000001"))
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     code: Mapped[str | None] = mapped_column(String(50), index=True)
     description: Mapped[str | None] = mapped_column(String(500))
