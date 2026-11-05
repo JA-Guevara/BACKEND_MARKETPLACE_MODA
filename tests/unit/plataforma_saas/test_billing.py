@@ -243,3 +243,13 @@ def test_http_billing_endpoints(world):
     assert res_paid.json()["data"]["status"] == "paid"
     assert res_paid.json()["data"]["paid_reference"] == "TRANSFER-BANCO-7788"
 
+    # Listar desde consola plataforma
+    res_platform_list = world.client.get(
+        f"/api/v1/platform/tenants/{tenant_a.id}/invoices",
+        headers=world.headers(world.platform_user),
+    )
+    assert res_platform_list.status_code == 200
+    assert len(res_platform_list.json()["data"]) == 1
+    assert res_platform_list.json()["data"][0]["status"] == "paid"
+
+

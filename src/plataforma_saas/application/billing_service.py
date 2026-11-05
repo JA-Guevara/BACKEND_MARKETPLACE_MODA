@@ -349,6 +349,23 @@ def download_my_invoice_pdf(
     )
 
 
+@billing_platform_router.get("", response_model=ApiResponse[list[InvoiceOut]])
+def list_tenant_invoices(
+    tenant_id: UUID,
+    actor: PlatformWriter,
+    db: Session = Depends(get_db),
+):
+    service = BillingService(db)
+    items = service.listar_por_empresa(tenant_id)
+    out: list[InvoiceOut] = []
+    for inv in items:
+        dto = InvoiceOut.model_validate(inv)
+        if inv.subscription and inv.subscription.plan:
+            dto.plan_name = inv.subscription.plan.name
+        out.append(dto)
+    return ApiResponse(data=out)
+
+
 @billing_platform_router.post("/{invoice_id}/mark-paid", response_model=ApiResponse[InvoiceOut])
 def mark_invoice_paid(
     tenant_id: UUID,
