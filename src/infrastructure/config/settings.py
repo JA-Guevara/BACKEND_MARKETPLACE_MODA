@@ -1,7 +1,7 @@
 from functools import lru_cache
 import os
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
+    backup_report_token: SecretStr | None = None
+    github_dispatch_token: SecretStr | None = None
+    github_repo: str | None = None
+    maintenance_mode: bool = Field(
+        False, validation_alias=AliasChoices("MODO_MANTENIMIENTO", "maintenance_mode")
+    )
     sync_batch_max: int = 50
     sync_status_max: int = 200
     database_url: str = "postgresql://postgres:postgres@localhost:5432/fashionstore"

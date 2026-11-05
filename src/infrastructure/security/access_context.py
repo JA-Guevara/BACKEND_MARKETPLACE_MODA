@@ -29,6 +29,15 @@ READ_ONLY_ALLOWED_POST_PATHS = (
 )
 
 
+def is_platform_account(user: UserModel) -> bool:
+    return user.tenant_id is None and any(
+        getattr(role, "tenant_id", None) is None
+        and (role.code == "platform_admin" or getattr(role, "audience", "TENANT") == "PLATFORM")
+        and getattr(role, "is_active", True)
+        for role in user.roles
+    )
+
+
 @dataclass(frozen=True)
 class AccessContext:
     user: UserModel
@@ -43,16 +52,7 @@ class AccessContext:
 
     @property
     def is_platform(self) -> bool:
-        return (
-            self.user.tenant_id is None
-            and not self.is_support
-            and any(
-                getattr(r, "tenant_id", None) is None
-                and (r.code == "platform_admin" or getattr(r, "audience", "TENANT") == "PLATFORM")
-                and getattr(r, "is_active", True)
-                for r in self.user.roles
-            )
-        )
+        return not self.is_support and is_platform_account(self.user)
 
 
 def tenant_scope_permissions(db: Session) -> frozenset[str]:

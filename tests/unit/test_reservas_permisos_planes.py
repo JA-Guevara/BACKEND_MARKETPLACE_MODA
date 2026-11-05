@@ -1,6 +1,7 @@
 """Evita colisiones reales encontradas al integrar las migraciones de los planes."""
 import ast
 from pathlib import Path
+from uuid import UUID
 
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "alembic/versions"
@@ -13,8 +14,15 @@ def declared_permissions():
             if isinstance(node, ast.Assign) and any(
                 isinstance(target, ast.Name) and target.id == "NEW_PERMISSIONS" for target in node.targets
             ):
-                for row in ast.literal_eval(node.value):
-                    yield path.name, row[0], row[1]
+                for row_node in node.value.elts:
+                    identifier = row_node.elts[0]
+                    if isinstance(identifier, ast.Call):
+                        assert isinstance(identifier.func, ast.Name) and identifier.func.id == "UUID"
+                        assert len(identifier.args) == 1 and not identifier.keywords
+                        identifier = identifier.args[0]
+                    # Solo inspección de literales: no importar ni ejecutar migraciones.
+                    permission_id = str(UUID(ast.literal_eval(identifier)))
+                    yield path.name, permission_id, ast.literal_eval(row_node.elts[1])
 
 
 def test_las_migraciones_no_reutilizan_uuid_de_otro_permiso():
@@ -44,6 +52,7 @@ def test_rangos_reservados_por_el_plan_maestro():
         "tenant_users.write": 51, "sandbox.manage": 52,
         "storefront.write": 53, "payment_methods.write": 54,
         "catalog_templates.write": 55, "upgrade_requests.manage": 56,
+        "platform.ops.read": 57, "platform.ops.write": 58, "tenant.data_export": 59,
     }
     for code, suffix in reserved.items():
         assert declared[code] == f"20000000-0000-0000-0000-{suffix:012d}", code

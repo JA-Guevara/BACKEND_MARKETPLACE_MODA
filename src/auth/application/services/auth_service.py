@@ -22,8 +22,9 @@ from src.auth.infrastructure.security.jwt_service import JWTService
 from src.auth.infrastructure.security.password_hasher import PasswordHasher
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.config.settings import settings
+from src.infrastructure.security.access_context import is_platform_account
 from src.roles.infrastructure.persistence.repositories.role_repository import RoleRepository
-from src.shared.exceptions.domain_exception import AuthenticationError, ConflictError
+from src.shared.exceptions.domain_exception import AuthenticationError, ConflictError, MaintenanceError
 
 
 class AuthService:
@@ -76,8 +77,18 @@ class AuthService:
         self.email.send_verification(user.email, raw_token)
         return self.users.get_by_id(user.id) or user
 
-    def login(self, email: str, password: str, *, ip_address: str | None, user_agent: str | None) -> TokenResponse:
+    def login(
+        self,
+        email: str,
+        password: str,
+        *,
+        ip_address: str | None,
+        user_agent: str | None,
+        platform_only: bool = False,
+    ) -> TokenResponse:
         user = self.users.get_by_email(email)
+        if platform_only and (user is None or not is_platform_account(user)):
+            raise MaintenanceError()
         now = datetime.now(timezone.utc)
         if not user:
             self.audit.execute(

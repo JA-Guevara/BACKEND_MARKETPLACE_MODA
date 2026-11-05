@@ -5,7 +5,7 @@
   },
   "deploy": {
     "preDeployCommand": [
-      "python -m scripts.railway_entrypoint prepare --reconciliar-sin-respaldo"
+      "python -m scripts.railway_entrypoint prepare"
     ],
     "startCommand": "python -m scripts.railway_entrypoint serve",
     "healthcheckPath": "/health",

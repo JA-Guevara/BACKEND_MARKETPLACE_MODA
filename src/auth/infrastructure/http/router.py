@@ -25,6 +25,7 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
 from src.bitacora.infrastructure.persistence.models.evento_bitacora import AuditEventModel
 from src.infrastructure.database.session import get_db
+from src.infrastructure.http.maintenance import maintenance_response
 from src.infrastructure.security.access_context import AccessContext, get_access_context
 from src.infrastructure.security.tenancy import get_public_tenant_id
 from src.inventario_sucursales.application.services.user_branch_service import UserBranchService
@@ -36,6 +37,7 @@ from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.plataforma_saas.infrastructure.models.support_session import SupportSessionModel
 from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
 from src.plataforma_saas.web.schemas.support import SupportSessionResponse
+from src.shared.exceptions.domain_exception import AuthenticationError, MaintenanceError
 from src.shared.responses.api_response import ApiResponse
 
 
@@ -97,7 +99,17 @@ def register(data: RegisterRequest, request: Request, tenant_id: UUID = Depends(
 @router.post("/login", response_model=ApiResponse[TokenResponse])
 def login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     ip, user_agent = request_context(request)
-    tokens = AuthService(db).login(str(data.email), data.password, ip_address=ip, user_agent=user_agent)
+    platform_only = getattr(request.state, "maintenance_platform_only", False)
+    try:
+        tokens = AuthService(db).login(
+            str(data.email), data.password, ip_address=ip, user_agent=user_agent, platform_only=platform_only
+        )
+    except (MaintenanceError, AuthenticationError):
+        if not platform_only:
+            raise
+        # La misma respuesta para cuentas de empresa, desconocidas y fallos
+        # de autenticación de plataforma evita revelar qué correo es operador.
+        return maintenance_response()
     return ApiResponse(message="Inicio de sesion exitoso.", data=tokens)
 
 

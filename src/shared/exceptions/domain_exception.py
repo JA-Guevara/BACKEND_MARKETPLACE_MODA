@@ -26,6 +26,14 @@ class ValidationError(AppException):
     code = "validation_error"
 
 
+class MaintenanceError(AppException):
+    status_code = 503
+    code = "maintenance"
+
+    def __init__(self) -> None:
+        super().__init__("Estamos realizando mantenimiento. Intenta de nuevo en unos minutos.")
+
+
 class SystemRoleLockedError(ConflictError):
     status_code = 409
     code = "system_role_locked"

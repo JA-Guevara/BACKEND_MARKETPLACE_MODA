@@ -25,7 +25,7 @@ from src.reservas.infrastructure.persistence.models.reserva import ReservationMo
 from src.analitica_ml.infrastructure import models as ml_models  # noqa: F401
 from src.dispositivos.infrastructure import models as device_models  # noqa: F401
 from src.operacion_offline.infrastructure.models import sync as sync_models  # noqa: F401
-from src.plataforma_saas.infrastructure.models import module, storefront  # noqa: F401
+from src.plataforma_saas.infrastructure.models import module, ops, storefront  # noqa: F401
 from src.probador_virtual.infrastructure.persistence.models import recurso_tryon  # noqa: F401
 from src.reportes_ia.infrastructure import models as report_models  # noqa: F401
 from src.tryon_ai_jobs.infrastructure.persistence.models import tryon_job  # noqa: F401

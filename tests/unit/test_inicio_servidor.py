@@ -66,7 +66,7 @@ def test_comando_legacy_railway_prepara_antes_de_arrancar_workers(monkeypatch):
     monkeypatch.setattr(iniciar_servidor.os, "execv",
                         lambda executable, command: calls.append(("serve", command)))
     iniciar_servidor.main()
-    assert calls[0] == ("prepare", {"sin_respaldo": True})
+    assert calls[0] == ("prepare", {})
     assert calls[1][0] == "serve"
     assert calls[1][1][-4:] == ["--port", "8080", "--workers", "3"]
 
@@ -94,12 +94,12 @@ def test_arranque_local_no_habilita_motor_remoto(monkeypatch):
 
 def test_wrapper_serve_conserva_la_preparacion_del_arranque(monkeypatch):
     monkeypatch.setenv("RAILWAY_ENVIRONMENT_ID", "railway-prueba")
-    monkeypatch.setattr(railway_entrypoint.sys, "argv", ["entry", "serve"])
+    monkeypatch.setattr("sys.argv", ["entry", "serve"])
     monkeypatch.setattr(iniciar_servidor.os, "chdir", Mock())
     prepare = Mock()
     monkeypatch.setattr(railway_entrypoint, "preparar", prepare)
     execute = Mock()
     monkeypatch.setattr(iniciar_servidor.os, "execv", execute)
     railway_entrypoint.main()
-    prepare.assert_called_once_with(sin_respaldo=True)
+    prepare.assert_called_once_with()
     execute.assert_called_once()

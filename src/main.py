@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from src.config.routes import api_router
 from src.infrastructure.config.settings import settings
 from src.infrastructure.cors.config import configure_cors
+from src.infrastructure.http.maintenance import MaintenanceMiddleware, maintenance_response
 from src.notificaciones.infrastructure.email.cola import apagar_cola
 from src.shared.context.audit_context import reset_audit_context, set_audit_context
 from src.shared.exceptions.base_exception import AppException
@@ -74,8 +75,9 @@ def create_app() -> FastAPI:
         openapi_tags=OPENAPI_PACKAGE_TAGS,
         lifespan=ciclo_de_vida,
     )
-    configure_cors(app)
     app.add_middleware(AuditContextMiddleware)
+    app.add_middleware(MaintenanceMiddleware)
+    configure_cors(app)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
     @app.get("/health", tags=["system"])
@@ -103,7 +105,9 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(RequestValidationError)
-    async def handle_request_validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+    async def handle_request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        if getattr(request.state, "maintenance_platform_only", False):
+            return maintenance_response()
         details = [
             {
                 "field": ".".join(str(part) for part in error["loc"] if part != "body"),
