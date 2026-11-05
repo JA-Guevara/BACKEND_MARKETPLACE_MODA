@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.plataforma_saas.application.entitlement_service import EntitlementService
 from src.plataforma_saas.domain.modulos import OverrideMode
+from src.plataforma_saas.domain.estados import LIMITES
 from src.plataforma_saas.infrastructure.models.module import (
     PlatformModuleModel,
     TenantLimitModel,
@@ -16,6 +17,7 @@ from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
 from src.plataforma_saas.web.schemas.governance import (
     TenantLimitOut,
+    EffectiveTenantLimitOut,
     TenantModuleOut,
 )
 from src.shared.exceptions.domain_exception import (
@@ -249,6 +251,31 @@ class TenantModuleService:
         self.db.commit()
 
         return TenantLimitOut.model_validate(limit)
+
+    def listar_limites(self, tenant_id: UUID) -> list[EffectiveTenantLimitOut]:
+        self._get_tenant(tenant_id)
+        repository = SaasRepository(self.db)
+        subscription = repository.open_subscription(tenant_id)
+        plan_limits = {feature.feature_code: feature.limit_value for feature in subscription.plan.features
+                       if feature.feature_code in LIMITES} if subscription else {}
+        overrides = {row.limit_code: row for row in self.db.scalars(select(TenantLimitModel).where(
+            TenantLimitModel.tenant_id == tenant_id, TenantLimitModel.revoked_at.is_(None)))}
+        now = datetime.now(timezone.utc)
+        result = []
+        for code in LIMITES:
+            override = overrides.get(code)
+            expires = override.expires_at if override else None
+            if expires and expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            active = override is not None and (expires is None or expires > now)
+            value = plan_limits.get(code)
+            result.append(EffectiveTenantLimitOut(limit_code=code, plan_value=value,
+                effective_value=override.value if active else value,
+                usage=repository.count_active_branches(tenant_id) if code == "max_active_branches" else 0,
+                source="EMPRESA" if active else "PLAN",
+                subscription_end_date=subscription.end_date if subscription else None,
+                override_active=active, override=TenantLimitOut.model_validate(override) if override else None))
+        return result
 
     def quitar_limite(self, limit_id: UUID, reason: str) -> None:
         limit = self.db.get(TenantLimitModel, limit_id)

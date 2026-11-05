@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -131,6 +131,19 @@ class TenantLimitIn(BaseModel):
     value: int
     days: int | None = None
     reason: str
+
+
+class EffectiveTenantLimitOut(BaseModel):
+    """Un cupo efectivo; el override puede estar vencido y ya no ser efectivo."""
+    model_config = ConfigDict(extra="forbid")
+    limit_code: str
+    plan_value: int | None
+    effective_value: int | None
+    usage: int
+    source: Literal["PLAN", "EMPRESA"]
+    subscription_end_date: date | None
+    override_active: bool
+    override: TenantLimitOut | None = None
 
 
 class GlobalUserCreate(BaseModel):

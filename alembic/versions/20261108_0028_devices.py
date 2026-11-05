@@ -108,35 +108,7 @@ def upgrade() -> None:
                 ],
             )
 
-    # 3. Registrar módulo devices_audit si existe tabla modules
     inspector = sa.inspect(bind)
-    if "modules" in inspector.get_table_names():
-        mod_table = sa.table(
-            "modules",
-            sa.column("id", sa.Uuid),
-            sa.column("code", sa.String),
-            sa.column("name", sa.String),
-            sa.column("description", sa.String),
-            sa.column("status", sa.String),
-            sa.column("is_core", sa.Boolean),
-            sa.column("created_at", sa.DateTime),
-        )
-        mod_exists = bind.execute(sa.select(mod_table.c.id).where(mod_table.c.code == "devices_audit")).scalar_one_or_none()
-        if not mod_exists:
-            op.bulk_insert(
-                mod_table,
-                [
-                    {
-                        "id": uuid.UUID("30000000-0000-0000-0000-000000000012"),
-                        "code": "devices_audit",
-                        "name": "Dispositivos y Auditoría",
-                        "description": "Monitoreo y bloqueo de terminales y bitácora del tenant",
-                        "status": "AVAILABLE",
-                        "is_core": False,
-                        "created_at": now,
-                    }
-                ],
-            )
 
     # 4. Asignar permisos a roles de administrador
     roles_table = sa.table(

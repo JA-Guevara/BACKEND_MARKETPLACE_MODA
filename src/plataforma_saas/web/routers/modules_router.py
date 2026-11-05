@@ -9,7 +9,6 @@ from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_platform_permissions
 from src.plataforma_saas.application.entitlement_service import EntitlementService
 from src.plataforma_saas.application.module_service import ModuleService
-from src.plataforma_saas.application.sandbox_service import SandboxService
 from src.plataforma_saas.application.tenant_module_service import TenantModuleService
 from src.plataforma_saas.web.schemas.governance import (
     ModuleDetail,
@@ -18,15 +17,13 @@ from src.plataforma_saas.web.schemas.governance import (
     ModulePermissionsIn,
     ModuleUpdate,
     PlanImpact,
-    PreviewIn,
     RevokeIn,
-    SandboxOut,
     TenantLimitIn,
+    EffectiveTenantLimitOut,
     TenantLimitOut,
     TenantModuleGrant,
     TenantModuleOut,
 )
-from src.plataforma_saas.web.schemas.support import SupportSessionStartResponse
 from src.shared.responses.api_response import ApiResponse
 
 router = APIRouter(tags=["PAQ-06 · Plataforma SaaS · Módulos y gobierno"])
@@ -36,7 +33,6 @@ ModulesWriteUser = Annotated[UserModel, Depends(require_platform_permissions("mo
 PlansWriteUser = Annotated[UserModel, Depends(require_platform_permissions("plans.write"))]
 TenantsReadUser = Annotated[UserModel, Depends(require_platform_permissions("tenants.read"))]
 SubscriptionsWriteUser = Annotated[UserModel, Depends(require_platform_permissions("subscriptions.write"))]
-SandboxUser = Annotated[UserModel, Depends(require_platform_permissions("sandbox.manage"))]
 
 
 # --- Módulos globales ---
@@ -149,6 +145,12 @@ def revoke_tenant_module(
 
 # --- Límites por empresa ---
 
+@router.get("/platform/tenants/{tenant_id}/limits", response_model=ApiResponse[list[EffectiveTenantLimitOut]])
+def list_tenant_limits(tenant_id: UUID, actor: TenantsReadUser, db: Session = Depends(get_db)):
+    return ApiResponse(message="Límites efectivos de la empresa obtenidos.",
+                       data=TenantModuleService(db, actor).listar_limites(tenant_id))
+
+
 @router.post(
     "/platform/tenants/{tenant_id}/limits",
     response_model=ApiResponse[TenantLimitOut],
@@ -180,33 +182,3 @@ def revoke_tenant_limit(
 ):
     TenantModuleService(db, actor).quitar_limite(limit_id, reason=data.reason)
     return ApiResponse(message="Límite revocado.")
-
-
-# --- Sandbox / Empresa Demo ---
-
-@router.get("/platform/sandbox", response_model=ApiResponse[SandboxOut])
-def get_sandbox(
-    actor: SandboxUser,
-    db: Session = Depends(get_db),
-):
-    result = SandboxService(db, actor).estado()
-    return ApiResponse(message="Estado de empresa demo obtenido.", data=result)
-
-
-@router.post("/platform/sandbox/preview", response_model=ApiResponse[SupportSessionStartResponse])
-def preview_sandbox(
-    data: PreviewIn,
-    actor: SandboxUser,
-    db: Session = Depends(get_db),
-):
-    result = SandboxService(db, actor).vista_previa(data.module_code)
-    return ApiResponse(message="Sesión de vista previa iniciada en empresa demo.", data=result)
-
-
-@router.post("/platform/sandbox/reset", response_model=ApiResponse[SandboxOut])
-def reset_sandbox(
-    actor: SandboxUser,
-    db: Session = Depends(get_db),
-):
-    result = SandboxService(db, actor).restablecer(confirm=True)
-    return ApiResponse(message="Empresa demo restablecida.", data=result)
