@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
+from src.reportes_ia.application.cache_interpretaciones import cache_interpretaciones
 from src.reportes_ia.application.ejecutor import Ejecutor, ReportResult
 from src.reportes_ia.application.exportador import Exportador
 from src.reportes_ia.application.interprete import Interprete
@@ -47,27 +48,34 @@ class ReportesIAService:
         ]
 
     def interpretar(self, texto: str, canal: str = "TEXT", hoy: date | None = None) -> dict[str, Any]:
-        # Cargar catálogo contextual de la empresa
-        branches = [
-            {"id": str(b.id), "name": b.name}
-            for b in self.db.scalars(
-                select(BranchModel).where(BranchModel.tenant_id == self.tenant_id, BranchModel.deleted_at.is_(None))
-            ).all()
-        ]
-        categories = [
-            {"id": str(c.id), "name": c.name}
-            for c in self.db.scalars(select(CategoryModel).where(CategoryModel.tenant_id == self.tenant_id)).all()
-        ]
-        products = [
-            {"id": str(p.id), "name": p.name}
-            for p in self.db.scalars(
-                select(ProductModel).where(ProductModel.tenant_id == self.tenant_id, ProductModel.is_active.is_(True))
-            ).all()[:300]
-        ]
-        catalogo = {"branches": branches, "categories": categories, "products": products}
+        cached_dict = cache_interpretaciones.get(self.tenant_id, texto)
+        if cached_dict:
+            result: InterpretResult = InterpretResult.model_validate(cached_dict)
+            result.interpreter = "CACHE"
+        else:
+            # Cargar catálogo contextual de la empresa
+            branches = [
+                {"id": str(b.id), "name": b.name}
+                for b in self.db.scalars(
+                    select(BranchModel).where(BranchModel.tenant_id == self.tenant_id, BranchModel.deleted_at.is_(None))
+                ).all()
+            ]
+            categories = [
+                {"id": str(c.id), "name": c.name}
+                for c in self.db.scalars(select(CategoryModel).where(CategoryModel.tenant_id == self.tenant_id)).all()
+            ]
+            products = [
+                {"id": str(p.id), "name": p.name}
+                for p in self.db.scalars(
+                    select(ProductModel).where(ProductModel.tenant_id == self.tenant_id, ProductModel.is_active.is_(True))
+                ).all()[:300]
+            ]
+            catalogo = {"branches": branches, "categories": categories, "products": products}
 
-        interprete = Interprete(catalogo)
-        result: InterpretResult = interprete.interpretar(texto, hoy)
+            interprete = Interprete(catalogo)
+            result: InterpretResult = interprete.interpretar(texto, hoy)
+            if result.status == "READY" and result.spec:
+                cache_interpretaciones.set(self.tenant_id, texto, result)
 
         # Registrar solicitud en la base de datos
         spec_dict = result.spec.model_dump(mode="json") if result.spec else {}
