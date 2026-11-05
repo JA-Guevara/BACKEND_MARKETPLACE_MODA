@@ -11,6 +11,7 @@ from src.plataforma_saas.web.routers.support_router import router as support_rou
 from src.plataforma_saas.web.routers.sandbox_router import router as sandbox_router
 from src.plataforma_saas.web.routers.storefront_router import router as storefront_router
 from src.plataforma_saas.application.billing_service import billing_platform_router, billing_tenant_router
+from src.plataforma_saas.web.routers.public_signup_router import router as public_signup_router
 
 plataforma_router = APIRouter()
 for router in (
@@ -28,5 +29,6 @@ for router in (
     storefront_router,
     billing_tenant_router,
     billing_platform_router,
+    public_signup_router,
 ):
     plataforma_router.include_router(router)
