@@ -36,6 +36,7 @@ os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
 
 from src.infrastructure.config.settings import settings  # noqa: E402
+from src.infrastructure.database.safety import require_local_database  # noqa: E402
 
 
 REVISION_FANTASMA = "20261108_0030"
@@ -214,6 +215,7 @@ def main() -> int:
     parser.add_argument("--backup-archivo", type=Path, help="Ruta del pg_dump reciente que respalda la operacion.")
     args = parser.parse_args()
 
+    require_local_database(settings.database_url)
     engine = create_engine(settings.database_url)
     try:
         # El preflight debe cerrar su transaccion antes de escribir: sus SELECT

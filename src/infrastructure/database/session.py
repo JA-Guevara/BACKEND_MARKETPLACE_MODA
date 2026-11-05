@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.infrastructure.config.settings import settings
+from src.infrastructure.database.safety import require_local_database
 
 
 def opciones_de_pool(database_url: str) -> dict[str, Any]:
@@ -29,6 +30,7 @@ def opciones_de_pool(database_url: str) -> dict[str, Any]:
     }
 
 
+require_local_database(settings.database_url)
 engine = create_engine(settings.database_url, pool_pre_ping=True, **opciones_de_pool(settings.database_url))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 

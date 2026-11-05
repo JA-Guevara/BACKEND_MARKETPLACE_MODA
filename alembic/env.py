@@ -5,6 +5,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from src.infrastructure.config.settings import settings
+from src.infrastructure.database.safety import require_local_database
 from src.infrastructure.database.base import Base
 from src.ventas_pagos.infrastructure.models import StockModel, CartItemModel, OrderModel, WebhookEventModel
 from src.ventas_pagos.infrastructure.engagement_models import FavoriteModel, PromotionModel, PromotionUseModel
@@ -22,6 +23,7 @@ from src.reservas.infrastructure.persistence.models.reserva import ReservationMo
 
 
 config = context.config
+require_local_database(settings.database_url)
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 if config.config_file_name:
     fileConfig(config.config_file_name)
@@ -52,6 +54,7 @@ def run_migrations_online() -> None:
     # (necesario para corregir el sello de produccion y migrar de forma atomica).
     external_connection = config.attributes.get("connection")
     if external_connection is not None:
+        require_local_database(external_connection.engine.url)
         _run_migrations(external_connection)
         return
 
