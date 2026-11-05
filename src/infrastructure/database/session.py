@@ -1,11 +1,53 @@
 from collections.abc import Generator
+import os
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.infrastructure.config.settings import settings
 from src.infrastructure.database.safety import require_environment_match, require_local_database
+
+
+def is_rls_enabled() -> bool:
+    """Indica si Row Level Security (RLS) está activo según la variable de entorno."""
+    return os.getenv("RLS_ENABLED", "false").lower() in ("1", "true", "yes")
+
+
+def set_rls_context(
+    db: Session,
+    tenant_id: UUID | str | None = None,
+    is_platform: bool = False,
+    access_context: Any = None,
+) -> None:
+    """Configura las variables de sesión PostgreSQL para Row Level Security por transacción.
+
+    Usa SET LOCAL para que funcione de forma segura con poolers en modo transacción (PgBouncer/Supabase).
+    """
+    if access_context is not None:
+        tenant_id = getattr(access_context, "tenant_id", None)
+        is_platform = getattr(access_context, "is_platform", False)
+
+    dialect_name = getattr(getattr(db.bind, "dialect", None), "name", "")
+    if dialect_name != "postgresql":
+        return
+
+    try:
+        if is_platform:
+            db.execute(text("SET LOCAL app.platform = '1'"))
+            db.execute(text("SET LOCAL app.tenant_id = ''"))
+        elif tenant_id:
+            db.execute(
+                text("SET LOCAL app.tenant_id = :tenant"),
+                {"tenant": str(tenant_id)},
+            )
+            db.execute(text("SET LOCAL app.platform = '0'"))
+        else:
+            db.execute(text("SET LOCAL app.tenant_id = ''"))
+            db.execute(text("SET LOCAL app.platform = '0'"))
+    except Exception:
+        pass
 
 
 def opciones_de_pool(database_url: str) -> dict[str, Any]:
@@ -36,9 +78,36 @@ engine = create_engine(settings.database_url, pool_pre_ping=True, **opciones_de_
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
+@event.listens_for(Session, "after_begin")
+def _apply_rls_after_begin(session: Session, transaction: Any, connection: Any) -> None:
+    if not is_rls_enabled():
+        return
+    if getattr(connection.dialect, "name", "") != "postgresql":
+        return
+    try:
+        from src.shared.context.audit_context import get_audit_scope
+        tenant_id, _ = get_audit_scope()
+        if tenant_id:
+            connection.execute(
+                text("SET LOCAL app.tenant_id = :tenant"),
+                {"tenant": str(tenant_id)},
+            )
+            connection.execute(text("SET LOCAL app.platform = '0'"))
+    except Exception:
+        pass
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
+        if is_rls_enabled():
+            try:
+                from src.shared.context.audit_context import get_audit_scope
+                tenant_id, _ = get_audit_scope()
+                if tenant_id:
+                    set_rls_context(db, tenant_id=tenant_id)
+            except Exception:
+                pass
         yield db
     finally:
         db.close()
