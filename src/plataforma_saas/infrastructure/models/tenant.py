@@ -34,5 +34,8 @@ class TenantModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     seo_description: Mapped[str | None] = mapped_column(String(160), nullable=True)
     city: Mapped[str | None] = mapped_column(String(80), nullable=True)
     is_featured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    support_access_mode: Mapped[str] = mapped_column(
+        String(20), default="require_approval", server_default="require_approval", nullable=False
+    )
 
     subscriptions: Mapped[list["SubscriptionModel"]] = relationship(back_populates="tenant")

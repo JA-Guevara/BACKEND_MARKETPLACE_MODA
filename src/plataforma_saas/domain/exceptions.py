@@ -173,3 +173,27 @@ class UpgradeRequestOpenError(ConflictError):
     code = "upgrade_request_open"
     def __init__(self, message: str = "Ya existe una solicitud abierta para este tipo."):
         super().__init__(message)
+
+
+class SupportRequestExpiredError(ConflictError):
+    status_code = 410
+    code = "support_request_expired"
+
+    def __init__(self, message: str = "La solicitud de soporte ha expirado tras 10 minutos."):
+        super().__init__(message)
+
+
+class SupportRejectedError(AuthorizationError):
+    status_code = 403
+    code = "support_rejected"
+
+    def __init__(self, message: str = "La empresa rechazó la solicitud de soporte."):
+        super().__init__(message)
+
+
+class SubscriptionReadOnlyError(AuthorizationError):
+    status_code = 403
+    code = "subscription_read_only"
+
+    def __init__(self, message: str = "La suscripción está en modo solo lectura: las escrituras no están permitidas."):
+        super().__init__(message)

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.infrastructure.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -24,7 +24,16 @@ class SupportSessionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    status: Mapped[str] = mapped_column(String(25), default="active", server_default="active", nullable=False)
+    approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    request_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_emergency: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+
     def is_active(self, now: datetime) -> bool:
+        if getattr(self, "status", "active") not in ("active", "approved"):
+            return False
         if self.ended_at is not None:
             return False
         exp = self.expires_at

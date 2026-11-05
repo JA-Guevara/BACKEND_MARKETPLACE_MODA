@@ -11,7 +11,17 @@ class SupportSessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(min_length=10, max_length=300)
-    duration_minutes: Literal[15, 60, 120, 240] = 60
+    duration_minutes: Literal[15, 30, 60, 120, 240] = 60
+    mode: str = "WRITE"
+    landing_module: str | None = None
+
+
+class SupportSessionCreateWithTenant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    reason: str = Field(min_length=10, max_length=300)
+    duration_minutes: Literal[15, 30, 60, 120, 240] = 60
     mode: str = "WRITE"
     landing_module: str | None = None
 
@@ -43,16 +53,43 @@ class SupportSessionResponse(BaseModel):
     end_reason: str | None = None
     actions_count: int = 0
     is_active: bool = False
+    status: str = "active"
+    approved_by_user_id: uuid.UUID | None = None
+    approved_at: datetime | None = None
+    decision_reason: str | None = None
+    request_expires_at: datetime | None = None
+    is_emergency: bool = False
 
 
 class SupportSessionStart(BaseModel):
     session: SupportSessionResponse
-    access_token: str
+    access_token: str | None = None
     token_type: str = "bearer"
-    expires_in: int
-    tenant: TenantSummary
+    expires_in: int = 0
+    tenant: TenantSummary | None = None
     subscription: SubscriptionSummary | None = None
-    permissions: list[str]
+    permissions: list[str] = Field(default_factory=list)
 
 
 SupportSessionStartResponse = SupportSessionStart
+
+
+class SupportApprovalRequest(BaseModel):
+    minutes: Literal[15, 30, 60] = 30
+
+
+class SupportRejectionRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=255)
+
+
+class SupportPolicyUpdate(BaseModel):
+    mode: Literal["require_approval", "allow_read_only"]
+
+
+class SupportEmergencyCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    reason: str = Field(min_length=20, max_length=300)
+    duration_minutes: Literal[15, 30] = 30
+    landing_module: str | None = None

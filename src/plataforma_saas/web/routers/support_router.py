@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
@@ -10,7 +10,9 @@ from src.infrastructure.security.access_context import AccessContext, get_access
 from src.infrastructure.security.authorization import require_platform_permissions
 from src.plataforma_saas.application.support_service import SupportService
 from src.plataforma_saas.web.schemas.support import (
+    SupportEmergencyCreate,
     SupportSessionCreate,
+    SupportSessionCreateWithTenant,
     SupportSessionExtend,
     SupportSessionResponse,
     SupportSessionStart,
@@ -23,6 +25,7 @@ from src.shared.responses.pagination import Page
 
 router = APIRouter(tags=["PAQ-06 · Plataforma SaaS"])
 SupportAccessUser = Annotated[UserModel, Depends(require_platform_permissions("support.access"))]
+SupportEmergencyUser = Annotated[UserModel, Depends(require_platform_permissions("support.emergency"))]
 PlatformAuditUser = Annotated[UserModel, Depends(require_platform_permissions("platform_audit.read"))]
 
 
@@ -42,6 +45,7 @@ def start_support_session(
     data: SupportSessionCreate,
     actor: SupportAccessUser,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ):
     ip, ua = _request_client_info(request)
@@ -53,8 +57,92 @@ def start_support_session(
         landing_module=data.landing_module,
         ip=ip,
         ua=ua,
+        require_consent=False,
     )
+    if result.session.status == "pending_approval":
+        response.status_code = status.HTTP_202_ACCEPTED
+        return ApiResponse(message="Solicitud enviada a la empresa para aprobación.", data=result)
+    response.status_code = status.HTTP_201_CREATED
     return ApiResponse(message="Sesión de soporte iniciada.", data=result)
+
+
+@router.post(
+    "/platform/support/sessions",
+    response_model=ApiResponse[SupportSessionStart],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_support_session(
+    data: SupportSessionCreateWithTenant,
+    actor: SupportAccessUser,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    ip, ua = _request_client_info(request)
+    result = SupportService(db, actor).iniciar(
+        tenant_id=data.tenant_id,
+        reason=data.reason,
+        duration_minutes=data.duration_minutes,
+        mode=data.mode,
+        landing_module=data.landing_module,
+        ip=ip,
+        ua=ua,
+        require_consent=True,
+    )
+    if result.session.status == "pending_approval":
+        response.status_code = status.HTTP_202_ACCEPTED
+        return ApiResponse(message="Solicitud enviada a la empresa para aprobación.", data=result)
+    response.status_code = status.HTTP_201_CREATED
+    return ApiResponse(message="Sesión de soporte iniciada.", data=result)
+
+
+@router.get(
+    "/platform/support/sessions/{session_id}",
+    response_model=ApiResponse[SupportSessionResponse],
+)
+def get_support_session(
+    session_id: uuid.UUID,
+    actor: SupportAccessUser,
+    db: Session = Depends(get_db),
+):
+    result = SupportService(db, actor).obtener(session_id)
+    return ApiResponse(message="Detalle de sesión de soporte obtenido.", data=result)
+
+
+@router.post(
+    "/platform/support/sessions/{session_id}/enter",
+    response_model=ApiResponse[SupportSessionStart],
+)
+def enter_support_session(
+    session_id: uuid.UUID,
+    actor: SupportAccessUser,
+    db: Session = Depends(get_db),
+):
+    result = SupportService(db, actor).entrar(session_id)
+    return ApiResponse(message="Acceso a la sesión de soporte concedido.", data=result)
+
+
+@router.post(
+    "/platform/support/sessions/emergency",
+    response_model=ApiResponse[SupportSessionStart],
+    status_code=status.HTTP_201_CREATED,
+)
+def emergency_support_session(
+    data: SupportEmergencyCreate,
+    actor: SupportEmergencyUser,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    ip, ua = _request_client_info(request)
+    result = SupportService(db, actor).emergencia(
+        tenant_id=data.tenant_id,
+        reason=data.reason,
+        minutes=data.duration_minutes,
+        landing_module=data.landing_module,
+        ip=ip,
+        ua=ua,
+    )
+    return ApiResponse(message="Sesión de soporte de emergencia iniciada.", data=result)
 
 
 @router.post(

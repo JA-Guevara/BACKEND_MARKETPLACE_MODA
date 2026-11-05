@@ -15,6 +15,8 @@ from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.plataforma_saas.domain.exceptions import (
     SupportLimitExceededError,
     SupportReasonInvalidError,
+    SupportRejectedError,
+    SupportRequestExpiredError,
     SupportSessionExpiredError,
     TenantInactiveError,
     TenantNotFoundError,
@@ -25,8 +27,21 @@ from src.plataforma_saas.web.schemas.support import (
     SupportSessionResponse,
     SupportSessionStart,
 )
-from src.shared.exceptions.domain_exception import AuthorizationError, NotFoundError
+from src.shared.exceptions.domain_exception import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 from src.shared.responses.pagination import Page
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 class SupportService:
@@ -44,6 +59,7 @@ class SupportService:
         landing_module: str | None = None,
         ip: str | None = None,
         ua: str | None = None,
+        require_consent: bool = True,
     ) -> SupportSessionStart:
         tenant = self.db.get(TenantModel, tenant_id)
         if not tenant:
@@ -69,7 +85,24 @@ class SupportService:
                 s.ended_at = now
                 s.end_reason = "revoked"
 
-        expires_at = now + timedelta(minutes=duration_minutes)
+        # PX0.2: Regla de consentimiento
+        # si support_access_mode = require_approval o alcance ≠ solo lectura:
+        # crea status=pending_approval, request_expires_at = ahora + 10 min
+        # allow_read_only solo exime al alcance de solo lectura
+        policy_mode = getattr(tenant, "support_access_mode", "require_approval")
+        requires_approval = require_consent and (
+            (policy_mode == "require_approval") or (mode != "READ_ONLY")
+        )
+
+        if requires_approval:
+            status = "pending_approval"
+            request_expires_at = now + timedelta(minutes=10)
+            expires_at = now + timedelta(minutes=duration_minutes)
+        else:
+            status = "active"
+            request_expires_at = None
+            expires_at = now + timedelta(minutes=duration_minutes)
+
         session = SupportSessionModel(
             tenant_id=tenant_id,
             platform_user_id=self.actor.id,
@@ -81,21 +114,25 @@ class SupportService:
             expires_at=expires_at,
             ip_address=ip,
             user_agent=ua,
+            status=status,
+            request_expires_at=request_expires_at,
+            is_emergency=False,
         )
         self.db.add(session)
         self.db.flush()
 
-        is_ro = (mode == "READ_ONLY")
-        token, expires_in = JWTService().create_support_token(
-            str(self.actor.id), str(tenant_id), str(session.id), expires_at, read_only=is_ro
+        action = "support.request_created" if requires_approval else "support.session_started"
+        desc = (
+            f"Solicitud de acceso de soporte enviada para {tenant.legal_name} (modo {mode})."
+            if requires_approval
+            else f"Sesión de soporte iniciada para {tenant.legal_name} (modo {mode})."
         )
-
         audit_event = self.audit.execute(
             actor_user_id=self.actor.id,
-            action="support.session_started",
+            action=action,
             entity_type="support_session",
             entity_id=str(session.id),
-            description=f"Sesión de soporte iniciada para {tenant.legal_name} (modo {mode}).",
+            description=desc,
             tenant_id=tenant_id,
             ip_address=ip,
             user_agent=ua,
@@ -103,11 +140,29 @@ class SupportService:
         audit_event.support_session_id = session.id
         self.db.commit()
 
-        permissions = sorted(list(tenant_scope_permissions(self.db)))
         tenant_summary = TenantSummary.model_validate(tenant)
         sub_summary = PlanGuard(self.db).resumen(tenant_id)
-
         session_resp = self._to_response(session, actions_count=1)
+
+        # Regla PX0.2: El token de soporte (RFC 8693) solo se emite para sesiones aprobadas o de emergencia
+        # Una solicitud pendiente nunca da acceso
+        if requires_approval:
+            return SupportSessionStart(
+                session=session_resp,
+                access_token=None,
+                token_type="bearer",
+                expires_in=0,
+                tenant=tenant_summary,
+                subscription=sub_summary,
+                permissions=[],
+            )
+
+        is_ro = (mode == "READ_ONLY")
+        token, expires_in = JWTService().create_support_token(
+            str(self.actor.id), str(tenant_id), str(session.id), expires_at, read_only=is_ro
+        )
+        permissions = sorted(list(tenant_scope_permissions(self.db)))
+
         return SupportSessionStart(
             session=session_resp,
             access_token=token,
@@ -317,4 +372,227 @@ class SupportService:
             end_reason=session.end_reason,
             actions_count=actions_count,
             is_active=session.is_active(now),
+            status=getattr(session, "status", "active"),
+            approved_by_user_id=getattr(session, "approved_by_user_id", None),
+            approved_at=getattr(session, "approved_at", None),
+            decision_reason=getattr(session, "decision_reason", None),
+            request_expires_at=getattr(session, "request_expires_at", None),
+            is_emergency=getattr(session, "is_emergency", False),
         )
+
+    def obtener(self, session_id: uuid.UUID) -> SupportSessionResponse:
+        session = self.db.get(SupportSessionModel, session_id)
+        if not session:
+            raise NotFoundError("Sesión de soporte no encontrada.")
+        now = datetime.now(timezone.utc)
+        if (
+            getattr(session, "status", None) == "pending_approval"
+            and session.request_expires_at
+            and _as_utc(session.request_expires_at) < now
+        ):
+            session.status = "request_expired"
+            self.db.commit()
+        return self._to_response(session)
+
+    def entrar(self, session_id: uuid.UUID) -> SupportSessionStart:
+        session = self.db.get(SupportSessionModel, session_id)
+        if not session:
+            raise NotFoundError("Sesión de soporte no encontrada.")
+        if session.platform_user_id != self.actor.id:
+            raise AuthorizationError("Solo el administrador que solicitó el acceso puede ingresar a la sesión.")
+
+        now = datetime.now(timezone.utc)
+        status = getattr(session, "status", "active")
+        if status == "pending_approval":
+            if session.request_expires_at and _as_utc(session.request_expires_at) < now:
+                session.status = "request_expired"
+                self.db.commit()
+                raise SupportRequestExpiredError("La solicitud de soporte expiró sin respuesta.")
+            raise ConflictError("La solicitud aún espera la aprobación de la empresa.")
+
+        if status == "rejected":
+            raise SupportRejectedError(f"La empresa rechazó la solicitud: {session.decision_reason or 'Sin motivo'}")
+
+        if status == "request_expired":
+            raise SupportRequestExpiredError("La solicitud de soporte expiró.")
+
+        if not session.is_active(now):
+            raise SupportSessionExpiredError("La sesión de soporte ya ha expirado o finalizado.")
+
+        is_ro = (session.mode == "READ_ONLY")
+        token, expires_in = JWTService().create_support_token(
+            str(self.actor.id), str(session.tenant_id), str(session.id), session.expires_at, read_only=is_ro
+        )
+        permissions = sorted(list(tenant_scope_permissions(self.db)))
+        tenant = self.db.get(TenantModel, session.tenant_id)
+        tenant_summary = TenantSummary.model_validate(tenant) if tenant else None
+        sub_summary = PlanGuard(self.db).resumen(session.tenant_id)
+        session_resp = self._to_response(session)
+
+        return SupportSessionStart(
+            session=session_resp,
+            access_token=token,
+            token_type="bearer",
+            expires_in=expires_in,
+            tenant=tenant_summary,
+            subscription=sub_summary,
+            permissions=permissions,
+        )
+
+    def aprobar(
+        self, session_id: uuid.UUID, actor_empresa: UserModel, minutes: int = 30
+    ) -> SupportSessionResponse:
+        session = self.db.get(SupportSessionModel, session_id)
+        if not session:
+            raise NotFoundError("Solicitud de soporte no encontrada.")
+
+        # Solo la empresa dueña (RN03)
+        if str(session.tenant_id) != str(actor_empresa.tenant_id):
+            raise AuthorizationError("No tiene permiso para aprobar solicitudes de otra empresa.")
+
+        now = datetime.now(timezone.utc)
+        if session.request_expires_at and _as_utc(session.request_expires_at) < now:
+            session.status = "request_expired"
+            self.db.commit()
+            raise SupportRequestExpiredError("La solicitud de soporte expiró tras 10 minutos.")
+
+        if session.status != "pending_approval":
+            raise ConflictError(f"La solicitud ya no está pendiente (estado actual: {session.status}).")
+
+        session.status = "approved"
+        session.approved_by_user_id = actor_empresa.id
+        session.approved_at = now
+        session.duration_minutes = minutes
+        session.started_at = now
+        session.expires_at = now + timedelta(minutes=minutes)
+
+        self.audit.execute(
+            actor_user_id=actor_empresa.id,
+            action="support.approved",
+            entity_type="support_session",
+            entity_id=str(session.id),
+            description=f"Acceso de soporte aprobado por {minutes} minutos.",
+            tenant_id=session.tenant_id,
+        )
+        self.db.commit()
+        return self._to_response(session)
+
+    def rechazar(
+        self, session_id: uuid.UUID, actor_empresa: UserModel, reason: str
+    ) -> SupportSessionResponse:
+        session = self.db.get(SupportSessionModel, session_id)
+        if not session:
+            raise NotFoundError("Solicitud de soporte no encontrada.")
+
+        # Solo la empresa dueña (RN03)
+        if str(session.tenant_id) != str(actor_empresa.tenant_id):
+            raise AuthorizationError("No tiene permiso para rechazar solicitudes de otra empresa.")
+
+        now = datetime.now(timezone.utc)
+        if session.status != "pending_approval":
+            raise ConflictError(f"La solicitud ya no está pendiente (estado actual: {session.status}).")
+
+        session.status = "rejected"
+        session.decision_reason = reason.strip()
+        session.ended_at = now
+        session.end_reason = "rejected"
+
+        self.audit.execute(
+            actor_user_id=actor_empresa.id,
+            action="support.rejected",
+            entity_type="support_session",
+            entity_id=str(session.id),
+            description=f"Acceso de soporte rechazado: {reason.strip()}",
+            tenant_id=session.tenant_id,
+        )
+        self.db.commit()
+        return self._to_response(session)
+
+    def emergencia(
+        self,
+        tenant_id: uuid.UUID,
+        reason: str,
+        minutes: int = 30,
+        landing_module: str | None = None,
+        ip: str | None = None,
+        ua: str | None = None,
+    ) -> SupportSessionStart:
+        tenant = self.db.get(TenantModel, tenant_id)
+        if not tenant:
+            raise TenantNotFoundError()
+        if tenant.status != "ACTIVA":
+            raise TenantInactiveError()
+
+        clean_reason = reason.strip()
+        if len(clean_reason) < 20:
+            raise SupportReasonInvalidError("El motivo de emergencia debe tener al menos 20 caracteres.")
+        if minutes > 30:
+            raise SupportLimitExceededError("El acceso de emergencia no puede superar los 30 minutos.")
+
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(minutes=minutes)
+
+        session = SupportSessionModel(
+            tenant_id=tenant_id,
+            platform_user_id=self.actor.id,
+            reason=clean_reason,
+            duration_minutes=minutes,
+            mode="WRITE",
+            landing_module=landing_module,
+            started_at=now,
+            expires_at=expires_at,
+            ip_address=ip,
+            user_agent=ua,
+            status="active",
+            is_emergency=True,
+        )
+        self.db.add(session)
+        self.db.flush()
+
+        token, expires_in = JWTService().create_support_token(
+            str(self.actor.id), str(tenant_id), str(session.id), expires_at, read_only=False
+        )
+
+        audit_event = self.audit.execute(
+            actor_user_id=self.actor.id,
+            action="support.emergency",
+            entity_type="support_session",
+            entity_id=str(session.id),
+            description=f"Acceso de emergencia iniciado para {tenant.legal_name}: {clean_reason}",
+            tenant_id=tenant_id,
+            ip_address=ip,
+            user_agent=ua,
+        )
+        audit_event.support_session_id = session.id
+        self.db.commit()
+
+        permissions = sorted(list(tenant_scope_permissions(self.db)))
+        tenant_summary = TenantSummary.model_validate(tenant)
+        sub_summary = PlanGuard(self.db).resumen(tenant_id)
+        session_resp = self._to_response(session, actions_count=1)
+
+        return SupportSessionStart(
+            session=session_resp,
+            access_token=token,
+            token_type="bearer",
+            expires_in=expires_in,
+            tenant=tenant_summary,
+            subscription=sub_summary,
+            permissions=permissions,
+        )
+
+    def actualizar_politica(self, tenant_id: uuid.UUID, mode: str) -> dict:
+        tenant = self.db.get(TenantModel, tenant_id)
+        if not tenant:
+            raise TenantNotFoundError()
+        if mode not in ("require_approval", "allow_read_only"):
+            raise ValidationError("Modo de política inválido. Debe ser 'require_approval' o 'allow_read_only'.")
+        tenant.support_access_mode = mode
+        self.db.commit()
+        return {"support_access_mode": mode}
+
+    def obtener_politica(self, tenant_id: uuid.UUID) -> dict:
+        tenant = self.db.get(TenantModel, tenant_id)
+        if not tenant:
+            raise TenantNotFoundError()
+        return {"support_access_mode": getattr(tenant, "support_access_mode", "require_approval")}
