@@ -105,7 +105,7 @@ def test_wrapper_serve_conserva_la_preparacion_del_arranque(monkeypatch):
     execute.assert_called_once()
 
 
-def test_limitador_en_railway_comparte_una_sola_cuota(monkeypatch):
+def test_limitador_en_railway_rechaza_workers_multiples(monkeypatch):
     from src.infrastructure.config.settings import settings
 
     monkeypatch.setenv("RAILWAY_ENVIRONMENT_ID", "railway-prueba")
@@ -115,5 +115,6 @@ def test_limitador_en_railway_comparte_una_sola_cuota(monkeypatch):
     monkeypatch.setattr(railway_entrypoint, "preparar", Mock())
     execute = Mock()
     monkeypatch.setattr(iniciar_servidor.os, "execv", execute)
-    iniciar_servidor.main()
-    assert execute.call_args.args[1][-2:] == ["--workers", "1"]
+    with pytest.raises(RuntimeError, match="config_invalid.*WEB_CONCURRENCY"):
+        iniciar_servidor.main()
+    execute.assert_not_called()
