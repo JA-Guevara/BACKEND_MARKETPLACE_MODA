@@ -5,9 +5,9 @@
   },
   "deploy": {
     "preDeployCommand": [
-      "python -m alembic upgrade head"
+      "python -m scripts.railway_entrypoint prepare --reconciliar-sin-respaldo"
     ],
-    "startCommand": "python -m scripts.iniciar_servidor",
+    "startCommand": "python -m scripts.railway_entrypoint serve",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",

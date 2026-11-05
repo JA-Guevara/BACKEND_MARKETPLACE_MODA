@@ -4,9 +4,13 @@ Uso seguro (solo lectura, muestra el plan):
 
     python scripts/reconciliar_produccion.py
 
-Aplicar en produccion (exige un pg_dump reciente):
+Aplicar en produccion (por defecto exige un pg_dump reciente):
 
     python scripts/reconciliar_produccion.py --aplicar --backup-archivo RUTA\\respaldo.dump
+
+Excepcion autorizada expresamente por el usuario el 05/11/2026:
+
+    python -m scripts.reconciliar_produccion --aplicar --sin-respaldo
 
 El script:
 1. Verifica que la version actual sea ``20261108_0030`` (sello fantasma de
@@ -240,8 +244,12 @@ def _verificar_post(connection) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--aplicar", action="store_true", help="Ejecuta los cambios (sin esto es solo lectura).")
-    parser.add_argument("--backup-archivo", type=Path, help="Ruta del pg_dump reciente que respalda la operacion.")
+    backup = parser.add_mutually_exclusive_group()
+    backup.add_argument("--backup-archivo", type=Path, help="Ruta del pg_dump reciente que respalda la operacion.")
+    backup.add_argument("--sin-respaldo", action="store_true", help="Excepcion: operacion sin respaldo autorizada expresamente por el usuario.")
     args = parser.parse_args()
+    if args.sin_respaldo and not args.aplicar:
+        parser.error("--sin-respaldo solo se admite junto con --aplicar")
 
     require_local_database(settings.database_url)
     engine = create_engine(settings.database_url)
@@ -265,7 +273,9 @@ def main() -> int:
             print("\nDRY RUN: no se escribio nada. Usar --aplicar para ejecutar.")
             return 0
 
-        if not _es_local(engine):
+        if args.sin_respaldo:
+            print("Operacion sin respaldo solicitada explicitamente (--sin-respaldo).", flush=True)
+        elif not _es_local(engine):
             _validar_backup(args.backup_archivo)
         elif args.backup_archivo is not None:
             _validar_backup(args.backup_archivo)
