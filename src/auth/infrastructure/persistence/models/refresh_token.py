@@ -21,5 +21,9 @@ class RefreshTokenModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     replaced_by_jti: Mapped[str | None] = mapped_column(String(64))
     created_by_ip: Mapped[str | None] = mapped_column(String(45))
     revoked_by_ip: Mapped[str | None] = mapped_column(String(45))
+    device_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_prefix: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["UserModel"] = relationship(back_populates="refresh_tokens")

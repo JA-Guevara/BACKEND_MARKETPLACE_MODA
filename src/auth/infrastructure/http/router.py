@@ -1,3 +1,6 @@
+from src.auth.infrastructure.persistence.models.refresh_token import RefreshTokenModel
+from src.auth.infrastructure.persistence.repositories.auth_token_repository import AuthTokenRepository
+from src.auth.infrastructure.security.jwt_service import JWTService
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -20,6 +23,8 @@ from src.auth.infrastructure.http.schemas import (
     TenantSummary,
     TokenResponse,
     VerifyEmailRequest,
+    UserSessionResponse,
+    RevokeOthersRequest,
 )
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
@@ -203,3 +208,63 @@ def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
 def resend_verification(data: ResendVerificationRequest, db: Session = Depends(get_db)):
     AuthService(db).resend_verification(str(data.email))
     return ApiResponse(message="Si corresponde, se envio un nuevo enlace de verificacion.")
+
+@router.get("/sessions", response_model=ApiResponse[list[UserSessionResponse]])
+def list_sessions(user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)):
+    repo = AuthTokenRepository(db)
+    active_tokens = repo.listar_activas(user.id)
+    data = [UserSessionResponse.model_validate(t) for t in active_tokens]
+    return ApiResponse(message="Sesiones activas listadas.", data=data)
+
+
+@router.delete("/sessions/{id}", response_model=ApiResponse[None])
+def revoke_session(
+    id: UUID,
+    request: Request,
+    user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    ip, _ = request_context(request)
+    repo = AuthTokenRepository(db)
+    revoked = repo.revocar(id, user.id, ip_address=ip)
+    db.commit()
+    return ApiResponse(message="Sesion revocada." if revoked else "Sesion no encontrada o ya revocada.")
+
+
+@router.post("/sessions/revoke-others", response_model=ApiResponse[dict[str, int]])
+def revoke_other_sessions(
+    request: Request,
+    data: RevokeOthersRequest | None = None,
+    user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    ip, _ = request_context(request)
+    repo = AuthTokenRepository(db)
+    current_jti = None
+    if data:
+        if data.current_jti:
+            current_jti = data.current_jti
+        elif data.refresh_token or data.current_refresh_token:
+            raw = data.refresh_token or data.current_refresh_token
+            try:
+                payload = JWTService().decode(raw, "refresh")
+                current_jti = payload.get("jti")
+            except Exception:
+                pass
+        elif data.session_id or data.current_session_id:
+            sid = data.session_id or data.current_session_id
+            token_model = db.get(RefreshTokenModel, sid)
+            if token_model and token_model.user_id == user.id:
+                current_jti = token_model.jti
+
+    if not current_jti:
+        active = repo.listar_activas(user.id)
+        if active:
+            current_jti = active[0].jti
+        else:
+            current_jti = ""
+
+    revoked_count = repo.revocar_otras(user.id, current_jti, ip_address=ip)
+    db.commit()
+    return ApiResponse(message="Otras sesiones revocadas.", data={"revoked_count": revoked_count})
+

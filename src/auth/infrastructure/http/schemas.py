@@ -137,3 +137,22 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: AuthUserResponse
+
+class UserSessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    device_label: str | None = None
+    ip_prefix: str | None = None
+    created_at: datetime
+    last_used_at: datetime | None = None
+    expires_at: datetime
+
+
+class RevokeOthersRequest(BaseModel):
+    current_jti: str | None = None
+    current_refresh_token: str | None = None
+    current_session_id: uuid.UUID | None = None
+    refresh_token: str | None = None
+    session_id: uuid.UUID | None = None
+

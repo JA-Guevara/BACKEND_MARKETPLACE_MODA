@@ -1,3 +1,4 @@
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -125,7 +126,7 @@ class AuthService:
         user.failed_login_attempts = 0
         user.locked_until = None
         user.last_login_at = now
-        response = self._issue_tokens(user, ip_address)
+        response = self._issue_tokens(user, ip_address, user_agent=user_agent)
         self.audit.execute(
             actor_user_id=user.id,
             action="auth.login",
@@ -154,7 +155,34 @@ class AuthService:
         if not user or not user.is_active:
             raise AuthenticationError("La cuenta no esta disponible.")
         self._check_tenant(user)
-        response = self._issue_tokens(user, ip_address)
+        # Inactividad y duracion maxima de sesion (PX1.5)
+        if stored.last_used_at:
+            is_admin_or_platform = any(
+                getattr(r, "code", "") in ("admin", "superadmin", "platform_admin")
+                or getattr(r, "scope", "") == "platform"
+                for r in getattr(user, "roles", [])
+            )
+            default_idle = 30 if is_admin_or_platform else (7 * 24 * 60)
+            idle_limit = int(os.getenv("SESSION_IDLE_MINUTES", str(default_idle)))
+            elapsed_minutes = (now - self._utc(stored.last_used_at)).total_seconds() / 60
+            if elapsed_minutes > idle_limit:
+                stored.revoked_at = now
+                self.db.commit()
+                raise AuthenticationError("Sesion cerrada por inactividad.")
+
+        if stored.created_at:
+            elapsed_days = (now - self._utc(stored.created_at)).total_seconds() / (24 * 3600)
+            if elapsed_days > 7:
+                stored.revoked_at = now
+                self.db.commit()
+                raise AuthenticationError("Duracion maxima de sesion alcanzada.")
+
+        response = self._issue_tokens(
+            user,
+            ip_address,
+            user_agent=stored.user_agent,
+            device_label=stored.device_label,
+        )
         replacement_payload = self.jwt.decode(response.refresh_token, "refresh")
         stored.revoked_at = now
         stored.revoked_by_ip = ip_address
@@ -278,7 +306,7 @@ class AuthService:
         self.db.commit()
         self.email.send_verification(user.email, raw_token)
 
-    def _issue_tokens(self, user: UserModel, ip_address: str | None) -> TokenResponse:
+    def _issue_tokens(self, user: UserModel, ip_address: str | None, *, user_agent: str | None = None, device_label: str | None = None) -> TokenResponse:
         access_token, expires_in = self.jwt.create_access_token(str(user.id), str(user.tenant_id) if user.tenant_id else None)
         refresh_token, jti, expires_at = self.jwt.create_refresh_token(str(user.id))
         self.tokens.add_refresh(
@@ -288,6 +316,8 @@ class AuthService:
                 token_hash=self.jwt.hash_token(refresh_token),
                 expires_at=expires_at,
                 created_by_ip=ip_address,
+                user_agent=user_agent[:255] if user_agent else None,
+                device_label=device_label,
             )
         )
         response_user = AuthUserResponse.model_validate(user)
