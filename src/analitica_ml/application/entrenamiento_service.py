@@ -23,6 +23,7 @@ from src.analitica_ml.infrastructure.models import (
     MLPredictionModel,
     MLTrainingRunModel,
 )
+from src.shared.exceptions.domain_exception import NotFoundError
 
 
 class EntrenamientoService:
@@ -69,7 +70,7 @@ class EntrenamientoService:
         ).update({"is_active": False})
 
         model_id = str(uuid.uuid4())
-        file_path = self.artefactos.guardar_modelo(tenant_id, model_id, modelo_demanda)
+        artifact = self.artefactos.serializar(modelo_demanda)
 
         ml_model = MLModelModel(
             id=model_id,
@@ -77,7 +78,9 @@ class EntrenamientoService:
             name="GradientBoosting Demand Regressor",
             model_type="DEMAND",
             version="1.0.0-synthetic",
-            file_path=file_path,
+            artifact=artifact,
+            artifact_bytes=len(artifact),
+            artifact_sha256=self.artefactos.sha256(artifact),
             metrics=metricas_demanda,
             is_active=True,
             created_at=datetime.now(timezone.utc),
@@ -171,3 +174,29 @@ class EntrenamientoService:
             "detected_anomalies": anomalias_detectadas,
             "status": "COMPLETED",
         }
+
+    def cargar_modelo_activo(self, tenant_id: str | Any, model_type: str = "DEMAND") -> Any:
+        """Reconstruye el modelo activo desde el artefacto guardado en la base.
+
+        No toca el sistema de archivos: después de un despliegue en Railway el
+        binario sigue disponible en la fila de ``ml_models``.
+        """
+        tenant_id = str(tenant_id)
+        row = (
+            self.db.query(MLModelModel)
+            .filter(
+                MLModelModel.tenant_id == tenant_id,
+                MLModelModel.model_type == model_type,
+                MLModelModel.is_active == True,
+            )
+            .order_by(MLModelModel.created_at.desc())
+            .first()
+        )
+        if row is None:
+            raise NotFoundError(f"No hay un modelo activo de tipo {model_type} para esta empresa.")
+        return self.artefactos.deserializar(row.artifact)
+
+    def predecir_demanda(self, tenant_id: str | Any, caracteristicas: Any) -> Any:
+        """Inferencia de demanda leyendo el artefacto de la base."""
+        modelo = self.cargar_modelo_activo(tenant_id, model_type="DEMAND")
+        return modelo.predecir(caracteristicas)

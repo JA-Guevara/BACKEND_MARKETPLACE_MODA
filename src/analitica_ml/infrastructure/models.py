@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, Numeric, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, Numeric, String, Text
 from sqlalchemy.orm import relationship
 from src.infrastructure.database.base import Base
 
@@ -25,7 +25,9 @@ class MLModelModel(Base):
     name = Column(String(100), nullable=False)
     model_type = Column(String(50), nullable=False)
     version = Column(String(50), nullable=False)
-    file_path = Column(String(255), nullable=False)
+    artifact = Column(LargeBinary, nullable=False)
+    artifact_bytes = Column(Integer, nullable=False)
+    artifact_sha256 = Column(String(64), nullable=False)
     metrics = Column(JSON, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
