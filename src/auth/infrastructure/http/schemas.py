@@ -96,6 +96,10 @@ class SubscriptionSummary(BaseModel):
     features: dict[str, bool]
     modules: list[ModuleSummary] = Field(default_factory=list)
     limits: dict[str, int]
+    lifecycle_state: str | None = None
+    grace_until: datetime | None = None
+    read_only_since: datetime | None = None
+    next_notice: str | None = None
 
 
 class AuthorizedBranchSummary(BaseModel):

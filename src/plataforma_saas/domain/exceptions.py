@@ -27,6 +27,12 @@ class SubscriptionInactiveError(AuthorizationError):
     def __init__(self): super().__init__("La suscripción no está activa: solo puedes consultar información.")
 
 
+class SubscriptionReadOnlyError(AuthorizationError):
+    code = "subscription_read_only"
+    def __init__(self, message: str = "La suscripción está en modo solo lectura. Renueva para continuar operando."):
+        super().__init__(message)
+
+
 class FeatureNotInPlanError(AuthorizationError):
     code = "feature_not_in_plan"
     def __init__(self, message: str = "Tu plan no incluye esta funcionalidad.", *, details=None):

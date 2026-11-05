@@ -315,6 +315,29 @@ class SyncService:
         # Ordenar por client_created_at ascendente (gana la venta anterior)
         sorted_ops = sorted(data.operations, key=lambda x: x.client_created_at)
 
+        from src.plataforma_saas.application.plan_guard import PlanGuard
+
+        if PlanGuard(self.db).esta_en_solo_lectura(self.ctx.tenant_id):
+            results = [
+                SyncResultOut(
+                    client_request_id=op.client_request_id,
+                    status="RETRY",
+                    reason_code="subscription_read_only",
+                    message="rechazada temporalmente",
+                )
+                for op in sorted_ops
+            ]
+            batch.received = len(sorted_ops)
+            batch.rejected = len(sorted_ops)
+            batch.finished_at = datetime.now(timezone.utc)
+            self.db.commit()
+            return SyncBatchOut(
+                batch_id=batch.id,
+                received_at=started_at,
+                request_id=batch.request_id,
+                results=results,
+            )
+
         results: list[SyncResultOut] = []
         confirmed_count = 0
         conflicts_count = 0

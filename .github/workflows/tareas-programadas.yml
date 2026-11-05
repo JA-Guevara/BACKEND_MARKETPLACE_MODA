@@ -1,0 +1,17 @@
+name: tareas-programadas
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Ejecutar tick de tareas programadas
+        run: |
+          API_URL="${{ vars.API_BASE_URL || 'https://fashionstore-production.up.railway.app' }}"
+          curl -fsS -X POST "$API_URL/api/v1/platform/ops/jobs/tick" \
+            -H "Authorization: Bearer ${{ secrets.JOBS_TOKEN }}"

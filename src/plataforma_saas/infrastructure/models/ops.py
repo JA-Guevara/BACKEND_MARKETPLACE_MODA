@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CHAR, CheckConstraint, DateTime, Index, JSON, String, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, CHAR, CheckConstraint, DateTime, Index, JSON, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,3 +39,20 @@ class PlatformBackup(UUIDPrimaryKeyMixin, Base):
     )
     workflow_run_url: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class JobRunModel(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "job_runs"
+    __table_args__ = (
+        Index("ix_job_runs_job_started_at", "job", text("started_at DESC")),
+    )
+
+    job: Mapped[str] = mapped_column(String(60), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ok")
+    changes: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"),
+        nullable=True,
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

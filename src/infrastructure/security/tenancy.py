@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,7 @@ class TenantContext:
 
 
 def get_tenant_context(
+    request: Request,
     ctx: AccessContext = Depends(get_access_context),
     db: Session = Depends(get_db),
 ) -> TenantContext:
@@ -41,6 +42,8 @@ def get_tenant_context(
         raise TenantNotFoundError()
     if tenant.status != "ACTIVA":
         raise TenantInactiveError()
+    if request is not None:
+        PlanGuard(db).verificar_escritura(ctx.tenant_id, path=request.url.path, method=request.method)
     return TenantContext(tenant.id, ctx.user, ctx.support_session_id)
 
 

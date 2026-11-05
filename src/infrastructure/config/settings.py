@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
     backup_report_token: SecretStr | None = None
+    jobs_token: SecretStr | None = None
     github_dispatch_token: SecretStr | None = None
     github_repo: str | None = None
     maintenance_mode: bool = Field(

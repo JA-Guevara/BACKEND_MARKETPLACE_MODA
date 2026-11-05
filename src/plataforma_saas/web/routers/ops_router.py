@@ -1,18 +1,23 @@
 from datetime import datetime, timezone
 import hmac
+import os
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
+from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.config.settings import settings
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_platform_permissions
+from src.plataforma_saas.application.jobs.runner import TareasProgramadas
 from src.plataforma_saas.application.ops_service import OpsService
+from src.plataforma_saas.infrastructure.models.ops import JobRunModel
 from src.shared.exceptions.domain_exception import AuthenticationError
 from src.shared.responses.api_response import ApiResponse
 from src.shared.responses.pagination import Page
@@ -174,3 +179,62 @@ def operations_status(request: Request, actor: Reader, db: Session = Depends(get
 @router.post("/backups/dispatch", response_model=ApiResponse[dict])
 def dispatch_backup(body: DispatchRequest, actor: Writer, db: Session = Depends(get_db)):
     return ApiResponse(data=OpsService(db).despachar_respaldo(actor, body.reason))
+
+
+_jobs_bearer = HTTPBearer(auto_error=False, scheme_name="JobsToken")
+
+
+def _authenticate_jobs(credentials: HTTPAuthorizationCredentials | None = Depends(_jobs_bearer)) -> None:
+    expected = os.environ.get("JOBS_TOKEN")
+    if not expected and settings.jobs_token is not None:
+        expected = settings.jobs_token.get_secret_value()
+    expected = expected or ""
+    if not expected or credentials is None or not hmac.compare_digest(credentials.credentials.encode(), expected.encode()):
+        raise AuthenticationError("El token de servicio de tareas programadas no es válido.")
+
+
+class JobRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    job: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    status: str
+    changes: dict | None = None
+    error: str | None = None
+
+    @field_validator("started_at", "finished_at")
+    @classmethod
+    def fecha_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+@router.post("/jobs/tick", response_model=ApiResponse[list[JobRunOut]], dependencies=[Depends(_authenticate_jobs)])
+def trigger_jobs_tick(db: Session = Depends(get_db)):
+    runs = TareasProgramadas(db).tick()
+    return ApiResponse(data=[JobRunOut.model_validate(r) for r in runs])
+
+
+@router.get("/jobs", response_model=ApiResponse[list[JobRunOut]])
+def list_jobs(actor: Reader, db: Session = Depends(get_db)):
+    runs = db.scalars(
+        select(JobRunModel).order_by(JobRunModel.started_at.desc()).limit(50)
+    ).all()
+    return ApiResponse(data=[JobRunOut.model_validate(r) for r in runs])
+
+
+@router.post("/jobs/run", response_model=ApiResponse[list[JobRunOut]])
+def manual_run_jobs(body: DispatchRequest, actor: Writer, db: Session = Depends(get_db)):
+    runs = TareasProgramadas(db).tick()
+    RecordAuditEvent(db).execute(
+        action="platform.ops.jobs_run",
+        entity_type="jobs",
+        entity_id="tick",
+        description=f"Ejecución manual de tareas programadas: {body.reason}",
+        actor_user_id=actor.id,
+    )
+    db.commit()
+    return ApiResponse(data=[JobRunOut.model_validate(r) for r in runs])

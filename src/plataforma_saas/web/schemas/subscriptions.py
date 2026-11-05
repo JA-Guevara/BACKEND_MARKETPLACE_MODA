@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -16,6 +16,12 @@ class SubscriptionView(BaseModel):
     days_left: int
     reason: str | None
     reference_price: Decimal | None = None
+    lifecycle_state: str | None = None
+    grace_until: datetime | None = None
+    read_only_since: datetime | None = None
+    canceled_at: datetime | None = None
+    data_retention_until: datetime | None = None
+    next_notice: str | None = None
 
 
 class SubscriptionUsage(BaseModel):
