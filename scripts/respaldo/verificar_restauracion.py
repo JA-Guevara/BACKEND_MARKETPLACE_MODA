@@ -17,7 +17,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy.engine import URL
 
 from scripts.respaldo import esquema
-from scripts.respaldo.respaldar import ErrorRespaldo, conexion_pg, consulta, ejecutar, ejecutar_dump
+from scripts.respaldo.respaldar import ErrorRespaldo, conexion_pg, consulta, ejecutar, ejecutar_dump, revision_dump
 
 
 RAIZ = Path(__file__).resolve().parents[2]
@@ -73,6 +73,13 @@ def _revisiones(url: str | URL) -> list[str]:
     return [fila if re.fullmatch(r"[A-Za-z0-9_-]{1,40}", fila) else "invalida" for fila in filas]
 
 
+def _revision_del_destino(url: str | URL) -> str:
+    revisiones = _revisiones(url)
+    if len(revisiones) != 1:
+        raise ErrorRespaldo("La copia debe contener una única revisión Alembic.")
+    return revision_codigo(revisiones[0])
+
+
 def _permisos(url: str | URL) -> dict[str, str]:
     if not _consulta(url, "SELECT to_regclass('public.permissions')"):
         return {}
@@ -113,7 +120,7 @@ def _referencia(url: str | URL, revision: str):
 def comprobar(url: str | URL, *, revision_esperada: str | None = None,
               limpia: str | URL | None = None) -> list[Check]:
     destino, _ = conexion_pg(url, local=True)
-    revision = revision_codigo(revision_esperada)
+    revision = revision_codigo(revision_esperada) if revision_esperada is not None else _revision_del_destino(destino)
     revisiones = _revisiones(destino)
     revision_ok = revisiones == [revision]
     conteos = {}
@@ -147,7 +154,8 @@ def comparar_esquema(url: str | URL, *, revision_esperada: str | None = None,
                      limpia: str | URL | None = None) -> list[str]:
     if limpia is not None:
         return esquema.comparar(url, limpia)
-    with _referencia(url, revision_codigo(revision_esperada)) as referencia:
+    revision = revision_codigo(revision_esperada) if revision_esperada is not None else _revision_del_destino(url)
+    with _referencia(url, revision) as referencia:
         return esquema.comparar(url, referencia)
 
 
@@ -163,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archivo", type=Path, required=True)
     parser.add_argument("--destino-env", default="VERIFY_DATABASE_URL")
-    parser.add_argument("--revision-esperada", help="ID exacto para una copia previa a una migración")
+    parser.add_argument("--revision-esperada", help="Revisión exacta del manifiesto; por defecto se lee del dump")
     parser.add_argument("--reporte", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -171,13 +179,21 @@ def main(argv: list[str] | None = None) -> int:
     checks: list[Check] = []
     revision = None
     codigo = "restauracion_fallida"
+    etapa = "restauracion"
     try:
         if args.archivo.resolve() == args.reporte.resolve():
             raise ErrorRespaldo("El reporte debe guardarse en un archivo distinto del respaldo.")
         url = os.environ.get(args.destino_env)
         if not url:
             raise ErrorRespaldo("Falta el destino local en la variable de entorno indicada.")
-        esperada = revision_codigo(args.revision_esperada)
+        # Leer el sello del snapshot del dump, no la cabeza de un checkout que
+        # puede estar varias migraciones por delante de la base respaldada.
+        etapa, codigo = "revision", "verificacion_fallida"
+        revision_copia = revision_dump(args.archivo)
+        esperada = revision_codigo(args.revision_esperada if args.revision_esperada is not None else revision_copia)
+        if revision_copia != esperada:
+            raise ErrorRespaldo("La revisión del manifiesto no coincide con la del dump.")
+        etapa, codigo = "restauracion", "restauracion_fallida"
         restaurar(args.archivo, url)
         codigo = "verificacion_fallida"
         with _referencia(url, esperada) as limpia:
@@ -189,10 +205,10 @@ def main(argv: list[str] | None = None) -> int:
                                        "extra": sum(x.startswith("EXTRA ") for x in diferencias)}})
     except ErrorRespaldo as error:
         print(error)
-        checks.append({"name": "restauracion", "ok": False, "details": {"code": codigo}})
+        checks.append({"name": etapa, "ok": False, "details": {"code": codigo}})
     except (OSError, ValueError):
         print("No se pudo completar la verificación del respaldo.")
-        checks.append({"name": "restauracion", "ok": False, "details": {"code": codigo}})
+        checks.append({"name": etapa, "ok": False, "details": {"code": codigo}})
 
     ok = bool(checks) and all(check["ok"] for check in checks)
     reporte = {"ok": ok, "duration_seconds": round(monotonic() - inicio, 3),

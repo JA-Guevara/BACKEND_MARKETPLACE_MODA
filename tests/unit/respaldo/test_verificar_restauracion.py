@@ -34,7 +34,7 @@ def test_reporte_falla_por_revision_distinta_permiso_desconocido_e_id_erroneo(mo
     monkeypatch.setattr(verificar, "_permisos", lambda url:
                         {"users.read": "id-correcto"} if url == LIMPIA else
                         {"users.read": "id-erroneo", "secreto-que-no-se-publica": "otro-id"})
-    checks = {check["name"]: check for check in verificar.comprobar(LOCAL, limpia=LIMPIA)}
+    checks = {check["name"]: check for check in verificar.comprobar(LOCAL, revision_esperada="20261109_0031", limpia=LIMPIA)}
     assert not checks["revision"]["ok"]
     assert checks["revision"]["details"]["actual"] == "20261108_0028"
     assert checks["tablas_clave"]["ok"]

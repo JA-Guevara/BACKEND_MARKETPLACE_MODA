@@ -196,8 +196,7 @@ jobs:
           (private/'key').unlink()
           args = ['python', '-m', 'scripts.respaldo.verificar_restauracion', '--archivo', str(private/'ensayo.dump'),
                   '--destino-env', 'VERIFY_DATABASE_URL', '--reporte', str(root/'verificacion.json')]
-          if meta['tipo'] == 'pre_migration':
-              args.extend(['--revision-esperada', meta['revision_alembic']])
+          args.extend(['--revision-esperada', meta['revision_alembic']])
           raise SystemExit(subprocess.run(args, check=False).returncode)
           PY
       - uses: actions/upload-artifact@v4
