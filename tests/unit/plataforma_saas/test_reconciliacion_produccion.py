@@ -339,3 +339,34 @@ def test_0031_revoca_permisos_globales_de_roles_empresa_y_conserva_plataforma():
                 )) == 3
     finally:
         engine.dispose()
+
+
+def test_0031_maneja_permiso_existente_por_id_en_produccion():
+    """Reproduce el caso de Railway donde el ID 53 ya existia con un codigo previo."""
+    from uuid import UUID
+    migration = _cargar_migracion()
+    engine = sa.create_engine("sqlite:///:memory:")
+    try:
+        _crear_esquema_mixto(engine)
+        pid_53 = UUID("20000000-0000-0000-0000-000000000053")
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO permissions (id, code, name, module, scope, is_active, created_at, updated_at) "
+                    "VALUES (:id, 'codigo.antiguo', 'Antiguo', 'storefront', 'tenant', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"id": pid_53},
+            )
+
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+
+        with engine.connect() as connection:
+            code_result = connection.scalar(
+                sa.text("SELECT code FROM permissions WHERE id = :id"),
+                {"id": pid_53},
+            )
+            assert code_result == "storefront.write"
+    finally:
+        engine.dispose()

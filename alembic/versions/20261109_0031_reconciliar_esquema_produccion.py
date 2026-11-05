@@ -436,19 +436,45 @@ def _ensure_permissions(bind) -> None:
 
     now = datetime.now(timezone.utc)
     for pid, code, name, description, module, scope in NEW_PERMISSIONS:
-        exists = bind.execute(
-            sa.text("SELECT 1 FROM permissions WHERE code = :code"),
+        perm_uuid = uuid.UUID(pid)
+        existing_by_code = bind.execute(
+            sa.text("SELECT id FROM permissions WHERE code = :code"),
             {"code": code},
         ).scalar()
-        if exists:
+        if existing_by_code:
             continue
+
+        existing_by_id = bind.execute(
+            sa.text("SELECT code FROM permissions WHERE id = :id"),
+            {"id": perm_uuid},
+        ).scalar()
+        if existing_by_id:
+            bind.execute(
+                sa.text(
+                    "UPDATE permissions SET "
+                    "code = :code, name = :name, description = :description, "
+                    "module = :module, scope = :scope, is_active = True, updated_at = :now "
+                    "WHERE id = :id"
+                ),
+                {
+                    "id": perm_uuid,
+                    "code": code,
+                    "name": name,
+                    "description": description,
+                    "module": module,
+                    "scope": scope,
+                    "now": now,
+                },
+            )
+            continue
+
         bind.execute(
             sa.text(
                 "INSERT INTO permissions (id, code, name, description, module, scope, is_active, created_at, updated_at) "
                 "VALUES (:id, :code, :name, :description, :module, :scope, :is_active, :now, :now)"
             ),
             {
-                "id": uuid.UUID(pid),
+                "id": perm_uuid,
                 "code": code,
                 "name": name,
                 "description": description,
