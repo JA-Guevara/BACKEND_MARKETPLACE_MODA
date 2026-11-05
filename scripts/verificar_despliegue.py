@@ -1,101 +1,102 @@
-"""Script de verificación automática del despliegue (smoke test).
+"""Humo autorizado: salud, revisión, cabeceras y cuota de un login sintético.
 
-Verifica que todos los servicios y contratos del segundo parcial se encuentren
-operativos y cumpliendo las reglas de negocio y aislamiento.
-
-Uso:
-  python -m scripts.verificar_despliegue [--base-url http://localhost:8000]
+Las seis peticiones de login pueden escribir en bitácora. No ejecutar contra
+producción sin la autorización de la ventana de liberación. No imprime cuerpos,
+cabeceras de autorización ni errores de transporte que puedan incluir secretos.
 """
 import argparse
+import os
+import re
 import sys
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8")
-import sys
+from urllib.parse import urlsplit
+
 import requests
+
+
+LOGIN_HUMO = {"email": "humo-limite@example.com", "password": "no-es-una-cuenta"}
 
 
 def check(name: str, fn) -> bool:
     try:
-        ok, msg = fn()
-        if ok:
-            print(f"  ✅ [PASS] {name}: {msg}")
-            return True
-        else:
-            print(f"  ❌ [FAIL] {name}: {msg}")
+        ok = bool(fn())
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+        ok = False
+    print(f"{'✔' if ok else '✕'} {name}")
+    return ok
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-url", required=True, help="Origen de la API, sin /api/v1")
+    parser.add_argument("--revision-esperada", required=True)
+    parser.add_argument("--token-env", help="Nombre de variable con token de plataforma, nunca el token")
+    args = parser.parse_args(argv)
+    target = urlsplit(args.base_url)
+    if (target.scheme not in {"http", "https"} or not target.hostname or target.username or target.password
+            or target.query or target.fragment or target.path.rstrip('/') not in {"", "/"}):
+        parser.error("--base-url debe ser un origen HTTP/HTTPS sin credenciales ni /api/v1")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", args.revision_esperada):
+        parser.error("--revision-esperada no es un identificador Alembic válido")
+    if args.token_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.token_env):
+        parser.error("--token-env debe ser el nombre de una variable, no su valor")
+    base = args.base_url.rstrip('/')
+    results: list[bool] = []
+
+    def headers_ok(response) -> bool:
+        return (response.headers.get("X-App-Env") in {"local", "test", "staging", "production"}
+                and response.headers.get("X-Content-Type-Options") == "nosniff")
+
+    with requests.Session() as session:
+        # Las credenciales solo se añaden a la petición opcional de estado.
+        def health() -> bool:
+            r = session.get(base + '/health', timeout=15, allow_redirects=False)
+            return r.status_code == 200 and r.json().get('status') == 'ok' and headers_ok(r)
+
+        def ready() -> bool:
+            r = session.get(base + '/health/ready', timeout=15, allow_redirects=False)
+            body = r.json()
+            return (r.status_code == 200 and body.get('status') == 'ready'
+                    and body.get('revision') == args.revision_esperada and bool(body.get('version')) and headers_ok(r))
+
+        def login_limit() -> bool:
+            for i in range(6):
+                r = session.post(base + '/api/v1/auth/login', json=LOGIN_HUMO, timeout=15, allow_redirects=False)
+                if not headers_ok(r):
+                    return False
+                if i < 5:
+                    if r.status_code != 401:
+                        return False
+                else:
+                    return (r.status_code == 429 and r.json().get('error', {}).get('code') == 'rate_limited'
+                            and int(r.headers.get('Retry-After', '0')) > 0
+                            and r.headers.get('X-RateLimit-Limit') == '5'
+                            and r.headers.get('X-RateLimit-Remaining') == '0')
             return False
-    except Exception as e:
-        print(f"  ❌ [ERROR] {name}: Excepción inesperada: {e}")
-        return False
 
-
-def main():
-    parser = argparse.ArgumentParser(description="Verificador de despliegue y smoke test.")
-    parser.add_argument("--base-url", default="http://localhost:8000", help="URL base del backend a verificar")
-    args = parser.parse_args()
-
-    base_url = args.base_url.rstrip("/")
-    api_url = f"{base_url}/api/v1"
-
-    print(f"🔍 Ejecutando verificación de despliegue sobre: {base_url}")
-    results = []
-
-    # 1. OpenAPI & Documentación
-    def check_openapi():
-        r = requests.get(f"{base_url}/openapi.json", timeout=10)
-        if r.status_code == 200 and "openapi" in r.json():
-            return True, f"OpenAPI {r.json().get('openapi')} disponible"
-        return False, f"Status {r.status_code}"
-    results.append(check("OpenAPI Schema", check_openapi))
-
-    # 2. Catálogo público
-    def check_catalog():
-        r = requests.get(f"{api_url}/catalog/products", params={"page_size": 5}, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            return True, f"Catálogo respondiendo ({data.get('message', 'OK')})"
-        return False, f"Status {r.status_code}: {r.text[:100]}"
-    results.append(check("Catálogo Público", check_catalog))
-
-    # 3. Acceso sin autenticación a endpoints privados bloqueado (401)
-    def check_auth_enforcement():
-        r = requests.get(f"{api_url}/tenant/devices", timeout=10)
-        if r.status_code in (401, 403):
-            return True, f"Protección de acceso activa ({r.status_code})"
-        return False, f"Endpoint expuesto sin token: status {r.status_code}"
-    results.append(check("Control de Acceso /tenant/devices", check_auth_enforcement))
-
-    # 4. Control de acceso a promociones
-    def check_promos_auth():
-        r = requests.get(f"{api_url}/commerce/admin/promotions", timeout=10)
-        if r.status_code in (401, 403):
-            return True, f"Protección de promociones activa ({r.status_code})"
-        return False, f"Endpoint expuesto: status {r.status_code}"
-    results.append(check("Control de Acceso /commerce/admin/promotions", check_promos_auth))
-
-    # 5. Instantánea offline protegida
-    def check_snapshot_auth():
-        r = requests.get(f"{api_url}/offline/snapshot", timeout=10)
-        if r.status_code in (401, 403):
-            return True, f"Protección de instantánea offline activa ({r.status_code})"
-        return False, f"Endpoint expuesto: status {r.status_code}"
-    results.append(check("Control de Acceso /offline/snapshot", check_snapshot_auth))
-
-    # Resumen
-    total = len(results)
-    passed = sum(1 for r in results if r)
-    print("\n" + "=" * 50)
-    print(f"Resumen de Verificación: {passed}/{total} pruebas superadas.")
-    print("=" * 50)
-
-    if passed == total:
-        print("🎉 Todos los smoke tests del despliegue fueron superados exitosamente.")
-        sys.exit(0)
-    else:
-        print("⚠️ Se detectaron fallas en la verificación del despliegue.")
-        sys.exit(1)
+        results.append(check('Salud y cabeceras', health))
+        results.append(check('Disponibilidad y revisión esperada', ready))
+        # No generar intentos de login si no está lista la versión esperada.
+        if all(results):
+            results.append(check('Cuota de login sintético en el sexto intento', login_limit))
+        if args.token_env:
+            def ops() -> bool:
+                token = os.environ.get(args.token_env)
+                if not token:
+                    return False
+                r = session.get(base + '/api/v1/platform/ops/status', headers={'Authorization': 'Bearer ' + token},
+                                timeout=15, allow_redirects=False)
+                body = r.json()
+                data = body.get('data')
+                return (r.status_code == 200 and body.get('success') is True and headers_ok(r)
+                        and isinstance(data, dict) and isinstance(data.get('config_checks'), list)
+                        and all(isinstance(item, dict) and item.get('level') in {'warning', 'info'}
+                                for item in data['config_checks']))
+            results.append(check('Configuración de plataforma sin errores bloqueantes', ops))
+    print(f"Comprobaciones aprobadas: {sum(results)}/{len(results)}")
+    return 0 if all(results) else 1
 
 
 if __name__ == "__main__":
-    main()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    raise SystemExit(main())

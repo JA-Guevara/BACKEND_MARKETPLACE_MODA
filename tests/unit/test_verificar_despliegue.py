@@ -17,7 +17,7 @@ def fixture(name):
     if name == "health_ready":
         return {"status": "ready", "revision": "20261110_0035", "version": "1.0.0"}
     if name == "login_humo":
-        return {"email": "humo-limite@fashionstore.invalid", "password": "no-es-una-cuenta"}
+        return {"email": "humo-limite@example.com", "password": "no-es-una-cuenta"}
     if name == "login_429":
         return {"success": False, "error": {"code": "rate_limited"}}
     if name == "ops_status_ok":
