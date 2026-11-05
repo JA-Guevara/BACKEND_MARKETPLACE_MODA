@@ -83,6 +83,13 @@ def upgrade() -> None:
             "support_sessions",
             sa.Column("approved_by_user_id", sa.Uuid(), nullable=True),
         )
+    foreign_keys = {fk["name"] for fk in sa.inspect(bind).get_foreign_keys("support_sessions")}
+    if "fk_support_sessions_approved_by_user_id_users" not in foreign_keys:
+        op.create_foreign_key(
+            "fk_support_sessions_approved_by_user_id_users",
+            "support_sessions", "users", ["approved_by_user_id"], ["id"],
+            ondelete="SET NULL",
+        )
     if "approved_at" not in session_cols:
         op.add_column(
             "support_sessions",
@@ -183,6 +190,7 @@ def downgrade() -> None:
         )
 
     with op.batch_alter_table("support_sessions") as batch:
+        batch.drop_constraint("fk_support_sessions_approved_by_user_id_users", type_="foreignkey")
         batch.drop_column("is_emergency")
         batch.drop_column("request_expires_at")
         batch.drop_column("decision_reason")
