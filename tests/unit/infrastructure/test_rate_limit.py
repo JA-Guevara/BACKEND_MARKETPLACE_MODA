@@ -47,7 +47,7 @@ def test_limite_ip_no_se_evade_rotando_correos(client):
 def test_empresa_b_conserva_su_cuota_y_tokens_falsos_no_la_consumen(client):
     a, _ = JWTService().create_access_token('user-a', 'empresa-a')
     b, _ = JWTService().create_access_token('user-b', 'empresa-b')
-    path = '/api/v1/ai-reports/interpret'
+    path = '/api/v1/analytics/ai-reports/interpret'
     for _ in range(20):
         assert client.post(path, json={}, headers={'Authorization': f'Bearer {a}'}).status_code == 200
     assert client.post(path, json={}, headers={'Authorization': f'Bearer {a}'}).status_code == 429

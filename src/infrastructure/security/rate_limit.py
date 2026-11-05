@@ -129,13 +129,27 @@ class RateLimitMiddleware:
             policies.append((Politica("password_email", 3, 900), _key(str(body.get("email", ""))[:320].strip().casefold())))
         elif method == "POST" and path == prefix + "/auth/mfa/verify":
             policies.append((Politica("mfa_user", 5, 900), _key(user)))
-        elif path.startswith(prefix + "/ai-reports/") or path == prefix + "/ai-reports":
+        elif method == "POST" and path == prefix + "/commerce/assistant/transcribe":
+            # Primero la cuota individual: un usuario que ya la agotó no debe
+            # consumir el cupo de voz compartido con sus compañeros.
+            policies.extend((
+                (Politica("ai_voice", 5, 60), _key("voice_user", user)),
+                (Politica("ai_voice", 10, 60), _key("voice_tenant", tenant)),
+            ))
+        elif method == "POST" and (
+            re.fullmatch(re.escape(prefix) + r"/analytics/(?:ai-reports|assistant)(?:/.*)?", path)
+            or path == prefix + "/commerce/assistant"
+        ):
+            # definitions/history son GET y no consumen el cupo costoso.
             policies.append((Politica("ai_tenant", 20, 60), _key(tenant)))
         elif method == "POST" and path == prefix + "/sync/batch":
             # El dispositivo sin autenticación no puede abrir nuevas cuotas.
             device = str(body.get("device_id", ""))[:200] if payload else ""
             policies.append((Politica("sync_device", 30, 60), _key(user, device)))
-        if re.search(r"/(?:export|exports|data-exports|excel|pdf)(?:/|$)", path) and method != "OPTIONS":
+        if method != "OPTIONS" and re.search(
+            r"/(?:export|export-multiple|multi-export|data-exports)$|\.(?:csv|xlsx|pdf)$",
+            path, re.IGNORECASE,
+        ):
             policies.append((Politica("export_tenant", 10, 600), _key(tenant)))
         for policy, key in policies:
             checked = await check(policy, key)
