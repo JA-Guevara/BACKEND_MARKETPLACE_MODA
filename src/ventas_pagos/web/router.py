@@ -1,4 +1,4 @@
-from src.infrastructure.security.tenancy import require_feature, TenantScope, get_tenant_context, get_public_tenant_id
+from src.infrastructure.security.tenancy import require_feature, TenantScope, get_tenant_context, get_public_tenant_id, require_store_account
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -195,11 +195,13 @@ def profile(data: ProfileUpdate, user: User, db: Session = Depends(get_db)):
 
 @router.get("/cart")
 def cart(user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), branch_id: uuid.UUID | None = None, coupon_code: str | None = Query(None, max_length=50), db: Session = Depends(get_db)):
+    require_store_account(tenant_id, user)
     return response(CommerceService(db, tenant_id).cart(user, branch_id, coupon_code))
 
 
 @router.put("/cart/items/{variant_id}")
 def set_cart(variant_id: uuid.UUID, data: Quantity, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    require_store_account(tenant_id, user)
     CommerceService(db, tenant_id).set_cart(user, variant_id, data.quantity)
     return response()
 
@@ -223,6 +225,7 @@ def clear_cart(user: User, db: Session = Depends(get_db)):
 
 @router.post("/orders", status_code=201)
 def create_order(data: CheckoutOrder, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    require_store_account(tenant_id, user)
     return response(order_data(CommerceService(db, tenant_id).create_order(user, data)))
 
 
@@ -259,8 +262,16 @@ def get_order(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(ge
     return response(order_data(CommerceService(db, tenant_id).order(order_id, user)))
 
 
+@router.get("/orders/{order_id}/payment-instructions")
+def get_payment_instructions(order_id: uuid.UUID, user: User, db: Session = Depends(get_db)):
+    from src.plataforma_saas.application.payment_methods_service import PaymentMethodsService
+    return response(PaymentMethodsService(db).instrucciones_pedido(order_id, user))
+
+
+
 @router.post("/orders/{order_id}/checkout")
 def checkout(order_id: uuid.UUID, request: Request, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    require_store_account(tenant_id, user)
     service = CommerceService(db, tenant_id)
     order = service.order(order_id, user)
     local_api = settings.public_api_url.startswith("http://localhost")

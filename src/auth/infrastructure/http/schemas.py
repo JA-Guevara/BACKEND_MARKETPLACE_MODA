@@ -78,6 +78,14 @@ class TenantSummary(BaseModel):
     status: str
 
 
+class ModuleSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    code: str
+    name: str
+    origin: str
+    expires_at: datetime | None = None
+
+
 class SubscriptionSummary(BaseModel):
     plan_code: str
     plan_name: str
@@ -86,6 +94,7 @@ class SubscriptionSummary(BaseModel):
     end_date: date
     days_left: int
     features: dict[str, bool]
+    modules: list[ModuleSummary] = Field(default_factory=list)
     limits: dict[str, int]
 
 
@@ -99,6 +108,8 @@ class AuthUserResponse(BaseModel):
     phone: str | None
     is_active: bool
     is_verified: bool
+    read_only: bool = False
+    must_change_password: bool = False
     tenant: TenantSummary | None = None
     subscription: SubscriptionSummary | None = None
     support: Any | None = None

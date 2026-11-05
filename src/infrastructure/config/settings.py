@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     app_env: str = "development"
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
+    sync_batch_max: int = 50
+    sync_status_max: int = 200
     database_url: str = "postgresql://postgres:postgres@localhost:5432/fashionstore"
     # Pool de conexiones. El total real es replicas x workers x (size + overflow) y el
     # plan gratuito de Supabase admite 60 conexiones directas, de las cuales la propia

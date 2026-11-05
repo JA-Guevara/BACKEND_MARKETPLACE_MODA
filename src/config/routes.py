@@ -35,3 +35,19 @@ from src.operacion_offline.web.router import router as offline_router
 api_router.include_router(plataforma_router)
 api_router.include_router(tenant_admin_router)
 api_router.include_router(offline_router)
+
+from src.operacion_offline.web.sync_router import router as sync_router
+api_router.include_router(sync_router)
+
+from src.dispositivos.web.router import router as devices_router
+api_router.include_router(devices_router)
+
+from src.analitica_ml.web.router import router as ml_router, platform_ml_router
+api_router.include_router(ml_router)
+api_router.include_router(platform_ml_router)
+
+from src.ventas_pagos.web.exchanges_router import router as exchanges_router
+api_router.include_router(exchanges_router)
+
+from src.reportes_ia.web.router import router as ai_reports_router
+api_router.include_router(ai_reports_router)

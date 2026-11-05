@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, JSON, CheckConstraint, UniqueConstraint
+from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, JSON, CheckConstraint, UniqueConstraint, Boolean
+import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 from src.infrastructure.database.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
@@ -43,15 +44,25 @@ class OrderModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     discount_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal(0), nullable=False)
     discounts: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     coupon_code: Mapped[str | None] = mapped_column(String(50))
-    currency: Mapped[str] = mapped_column(String(3))
-    address: Mapped[dict] = mapped_column(JSON)
-    items: Mapped[list] = mapped_column(JSON)
+    currency: Mapped[str] = mapped_column(String(3), default="BOB", server_default="BOB")
+    address: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    items: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     tracking: Mapped[list] = mapped_column(JSON, default=list)
     carrier: Mapped[str | None] = mapped_column(String(120))
     tracking_number: Mapped[str | None] = mapped_column(String(150))
     stripe_session_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     stripe_url: Mapped[str | None] = mapped_column(String(2000))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, default=None, index=True)
+    origin: Mapped[str] = mapped_column(String(10), default="ONLINE", server_default="ONLINE")
+    device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    local_folio: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    cash_received: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price_authorized_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    offline_adjustment: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+from src.inventario_sucursales.infrastructure.models.organization import UserBranchModel
 
 
 class WebhookEventModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -91,11 +102,17 @@ class OrderReturnModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="requested", index=True)
     reason: Mapped[str] = mapped_column(String(500))
-    items: Mapped[list] = mapped_column(JSON)
+    items: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    currency: Mapped[str] = mapped_column(String(3))
+    currency: Mapped[str] = mapped_column(String(3), default="BOB", server_default="BOB")
     resolution_note: Mapped[str | None] = mapped_column(String(500))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     #: Evita duplicar la devolución si el cliente reenvía el formulario.
     client_request_id: Mapped[uuid.UUID | None] = mapped_column(unique=True)
+
+
+from src.ventas_pagos.infrastructure.exchange_models import (
+    GarmentExchangeModel,
+    GarmentExchangeLineModel,
+)

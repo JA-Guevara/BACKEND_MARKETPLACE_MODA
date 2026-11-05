@@ -12,10 +12,17 @@ class SupportSessionCreate(BaseModel):
 
     reason: str = Field(min_length=10, max_length=300)
     duration_minutes: Literal[15, 60, 120, 240] = 60
+    mode: str = "WRITE"
+    landing_module: str | None = None
 
 
 class SupportSessionExtend(BaseModel):
     minutes: Literal[15, 30, 60] = 30
+
+
+class SupportSessionUpgrade(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=10, max_length=300)
 
 
 class SupportSessionResponse(BaseModel):
@@ -28,6 +35,8 @@ class SupportSessionResponse(BaseModel):
     platform_user_name: str
     reason: str
     duration_minutes: int
+    mode: str = "WRITE"
+    landing_module: str | None = None
     started_at: datetime
     expires_at: datetime
     ended_at: datetime | None = None
@@ -44,3 +53,6 @@ class SupportSessionStart(BaseModel):
     tenant: TenantSummary
     subscription: SubscriptionSummary | None = None
     permissions: list[str]
+
+
+SupportSessionStartResponse = SupportSessionStart

@@ -170,6 +170,9 @@ class VariantResponse(BaseModel):
     sku: str
     barcode: str | None
     price_override: Decimal | None
+    offer_price: Decimal | None = None
+    offer_name: str | None = None
+    offer_ends_at: datetime | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -308,6 +311,9 @@ class PublicProductResponse(BaseModel):
     brand: str | None
     gender: str | None
     base_price: Decimal
+    offer_price: Decimal | None = None
+    offer_name: str | None = None
+    offer_ends_at: datetime | None = None
     category: CategoryResponse
     season: SeasonResponse | None
     collection: CollectionResponse | None

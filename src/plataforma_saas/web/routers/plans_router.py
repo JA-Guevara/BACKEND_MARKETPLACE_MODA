@@ -29,6 +29,7 @@ def create_plan(data: PlanCreate, actor: Writer, db: Session = Depends(get_db)):
     return ApiResponse(message="Operación completada.", data=PlanService(db, actor).crear(data))
 
 
+@router.put("/{plan_id}", response_model=ApiResponse[PlanSaveResult])
 @router.patch("/{plan_id}", response_model=ApiResponse[PlanSaveResult])
 def update_plan(plan_id: UUID, data: PlanUpdate, actor: Writer, db: Session = Depends(get_db)):
     return ApiResponse(message="Operación completada.", data=PlanService(db, actor).actualizar(plan_id, data))

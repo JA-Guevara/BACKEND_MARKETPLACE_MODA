@@ -84,11 +84,14 @@ class GlobalUserResponse(BaseModel):
     first_name: str
     last_name: str
     email: str
+    phone: str | None = None
     tenant_id: UUID | None = None
     tenant_name: str | None = None
     roles: list[str] = Field(default_factory=list)
     is_active: bool
     is_verified: bool
+    must_change_password: bool = False
+    temporary_password: str | None = None
     locked_until: datetime | None = None
     last_login_at: datetime | None = None
     created_at: datetime

@@ -73,6 +73,8 @@ def logout(data: LogoutRequest, request: Request, db: Session = Depends(get_db))
 def me(ctx: AccessContext = Depends(get_access_context), db: Session = Depends(get_db)):
     user = ctx.user
     response = AuthUserResponse.model_validate(user)
+    response.read_only = ctx.read_only
+    response.must_change_password = bool(getattr(user, "must_change_password", False))
     if ctx.is_support:
         tenant = SaasRepository(db).get_tenant(ctx.tenant_id)
         if tenant:

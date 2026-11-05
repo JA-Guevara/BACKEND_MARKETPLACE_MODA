@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, String, Table, Column, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, String, Table, Column, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.infrastructure.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -17,12 +17,14 @@ user_roles = Table(
 
 class RoleModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "roles"
-    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_roles_tenant_code"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_roles_tenant_code"),
+        CheckConstraint("audience IN ('TENANT', 'PLATFORM')", name="ck_roles_audience"))
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=True, default=None)
     code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255))
+    audience: Mapped[str] = mapped_column(String(10), default="TENANT", nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

@@ -3,6 +3,7 @@ from uuid import uuid4
 import logging
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -95,10 +96,10 @@ def create_app() -> FastAPI:
     async def handle_app_exception(_: Request, exc: AppException) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content={
+            content=jsonable_encoder({
                 "success": False,
                 "error": {"code": exc.code, "message": exc.message, "details": exc.details},
-            },
+            }),
         )
 
     @app.exception_handler(RequestValidationError)

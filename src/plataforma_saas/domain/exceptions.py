@@ -29,7 +29,8 @@ class SubscriptionInactiveError(AuthorizationError):
 
 class FeatureNotInPlanError(AuthorizationError):
     code = "feature_not_in_plan"
-    def __init__(self): super().__init__("Tu plan no incluye esta funcionalidad.")
+    def __init__(self, message: str = "Tu plan no incluye esta funcionalidad.", *, details=None):
+        super().__init__(message, details=details)
 
 
 class PlanLimitExceededError(ConflictError):
@@ -96,4 +97,79 @@ class PermissionOutOfScopeError(AuthorizationError):
 class LastPlatformAdminError(ConflictError):
     code = "last_platform_admin"
     def __init__(self, message: str = "No se puede eliminar o degradar al último administrador de plataforma."):
+        super().__init__(message)
+
+
+class SupportReadOnlyError(AuthorizationError):
+    code = "support_read_only"
+    def __init__(self, message: str = "Estás en modo solo lectura."):
+        super().__init__(message)
+
+
+class ModuleInBetaError(ConflictError):
+    code = "module_in_beta"
+    def __init__(self, message: str = "Un módulo beta no se agrega a un plan."):
+        super().__init__(message)
+
+
+class ModuleNotReviewedError(ConflictError):
+    code = "module_not_reviewed"
+    def __init__(self, message: str = "El módulo requiere una vista previa en la empresa demo antes de pasar a disponible (GA)."):
+        super().__init__(message)
+
+
+class ModuleRetiredError(ConflictError):
+    code = "module_retired"
+    def __init__(self, message: str = "Un módulo retirado no puede reactivarse."):
+        super().__init__(message)
+
+
+class TemplateImpactConfirmationError(ConflictError):
+    code = "impact_confirmation_required"
+    def __init__(self, message: str | dict = "Se requiere confirmación de impacto para actualizar la plantilla.", *, details=None):
+        if isinstance(message, dict):
+            details = message
+            message = "Se requiere confirmación de impacto para actualizar la plantilla."
+        super().__init__(message, details=details)
+
+
+class SandboxOnlyError(ConflictError):
+    code = "sandbox_only"
+    def __init__(self, message: str = "Esta operación solo está disponible para la empresa demo."):
+        super().__init__(message)
+
+
+class RoleTenantMismatchError(ValidationError):
+    code = "role_tenant_mismatch"
+    def __init__(self, message: str = "El rol no pertenece a la misma empresa del usuario."):
+        super().__init__(message)
+
+
+class StoreNotPublishedError(NotFoundError):
+    code = "store_not_published"
+    def __init__(self, message: str = "La tienda no está publicada o no está disponible.", *, details=None):
+        super().__init__(message, details=details)
+
+
+class StoreAccountMismatchError(ConflictError):
+    code = "store_account_mismatch"
+    def __init__(self, message: str = "Tu cuenta pertenece a otra tienda.", *, details=None):
+        super().__init__(message, details=details)
+
+
+class PublishRequirementsError(ConflictError):
+    code = "publish_requirements"
+    def __init__(self, missing: list[str], message: str = "La tienda no cumple los requisitos para publicarse."):
+        super().__init__(message, details={"missing": missing})
+
+
+class InvalidBrandColorError(ValidationError):
+    code = "invalid_brand_color"
+    def __init__(self, message: str = "El color de marca no es válido o no cumple con el contraste mínimo."):
+        super().__init__(message)
+
+
+class UpgradeRequestOpenError(ConflictError):
+    code = "upgrade_request_open"
+    def __init__(self, message: str = "Ya existe una solicitud abierta para este tipo."):
         super().__init__(message)

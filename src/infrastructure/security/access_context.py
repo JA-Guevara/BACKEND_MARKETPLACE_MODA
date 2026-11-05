@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,11 +11,22 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.infrastructure.security.jwt_service import JWTService
 from src.auth.web.dependencies import bearer_scheme, get_current_user
 from src.infrastructure.database.session import get_db
-from src.plataforma_saas.domain.exceptions import SupportSessionExpiredError, TenantInactiveError
+from src.plataforma_saas.application.entitlement_service import EntitlementService
+from src.plataforma_saas.domain.exceptions import (
+    SupportReadOnlyError,
+    SupportSessionExpiredError,
+    TenantInactiveError,
+)
 from src.plataforma_saas.infrastructure.models.support_session import SupportSessionModel
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.roles.infrastructure.persistence.models.permission import PermissionModel
 from src.shared.context.audit_context import set_audit_actor, set_audit_scope
+
+
+READ_ONLY_ALLOWED_POST_PATHS = (
+    "/analytics/assistant/interpret",
+    "/analytics/reports/export",
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +35,7 @@ class AccessContext:
     tenant_id: UUID | None
     support_session_id: UUID | None
     permissions: frozenset[str]
+    read_only: bool = False
 
     @property
     def is_support(self) -> bool:
@@ -35,7 +47,9 @@ class AccessContext:
             self.user.tenant_id is None
             and not self.is_support
             and any(
-                r.code == "platform_admin" and getattr(r, "is_active", True)
+                getattr(r, "tenant_id", None) is None
+                and (r.code == "platform_admin" or getattr(r, "audience", "TENANT") == "PLATFORM")
+                and getattr(r, "is_active", True)
                 for r in self.user.roles
             )
         )
@@ -60,11 +74,13 @@ def get_permission_codes(user: UserModel) -> frozenset[str]:
 
 
 def get_access_context(
+    request: Request,
     user: UserModel = Depends(get_current_user),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> AccessContext:
     payload = None
+    read_only = False
     if credentials and credentials.scheme.lower() == "bearer":
         try:
             payload = JWTService().decode(credentials.credentials, "access")
@@ -93,13 +109,26 @@ def get_access_context(
             raise TenantInactiveError()
 
         support_session_id = ssid
-        permissions = tenant_scope_permissions(db)
+        read_only = bool(payload.get("ro", False)) or (getattr(session, "mode", "WRITE") == "READ_ONLY")
+        raw_perms = tenant_scope_permissions(db)
+        permissions = EntitlementService(db).filtrar_permisos(tenant_id, raw_perms)
 
     # 2. Sesión estándar o test con user override
     else:
         tenant_id = user.tenant_id
         support_session_id = None
-        permissions = get_permission_codes(user)
+        read_only = False
+        raw_perms = get_permission_codes(user)
+        if tenant_id is not None:
+            permissions = EntitlementService(db).filtrar_permisos(tenant_id, raw_perms)
+        else:
+            permissions = raw_perms
+
+    # Validación de solo lectura para sesiones de soporte
+    if read_only and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        path = request.url.path
+        if request.method != "POST" or not any(path.endswith(endpoint) for endpoint in READ_ONLY_ALLOWED_POST_PATHS):
+            raise SupportReadOnlyError("Estás en modo solo lectura.")
 
     set_audit_actor(user.id)
     set_audit_scope(tenant_id, support_session_id)
@@ -109,4 +138,5 @@ def get_access_context(
         tenant_id=tenant_id,
         support_session_id=support_session_id,
         permissions=permissions,
+        read_only=read_only,
     )

@@ -21,7 +21,9 @@ class SnapshotProduct(BaseModel):
     category: str
     brand: str | None
     base_price: Decimal
-    offer_price: Decimal | None
+    offer_price: Decimal | None = None
+    offer_id: UUID | None = None
+    offer_valid_until: datetime | None = None
     image_url: str | None
     is_featured: bool
 

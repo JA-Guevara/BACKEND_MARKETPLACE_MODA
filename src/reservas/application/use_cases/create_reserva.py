@@ -16,7 +16,16 @@ from src.reservas.domain.entities.horario import validar_horario
 from src.reservas.infrastructure.http.schemas import CrearReservaRequest
 from src.reservas.infrastructure.persistence.models.reserva import ReservationModel
 from src.reservas.infrastructure.persistence.repositories.reserva_repository import ReservaRepository
-from src.shared.exceptions.domain_exception import NotFoundError, ValidationError, AuthorizationError
+from src.shared.exceptions.domain_exception import NotFoundError, ValidationError, AuthorizationError, ConflictError
+
+
+class ReservationStockError(ConflictError):
+    status_code = 409
+    code = "reservation_stock_insufficient"
+
+    def __init__(self, message: str, lines: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.lines = lines or []
 from src.infrastructure.security.authorization import get_permission_codes
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
 from src.ventas_pagos.application.stock_service import StockService
@@ -85,9 +94,10 @@ class CrearReserva:
                 for d in faltantes
             )
             motivo = faltantes[0].get("reason") or "no la tiene disponible"
-            raise ValidationError(
+            raise ReservationStockError(
                 f"La sucursal elegida no tiene disponible: {detalle}. Motivo: {motivo} "
-                "Quitá esas prendas, reducí la cantidad o elegí otra sucursal."
+                "Quitá esas prendas, reducí la cantidad o elegí otra sucursal.",
+                lines=faltantes,
             )
 
     def _same_payload(self, existing: ReservationModel, data: CrearReservaRequest) -> bool:
@@ -121,7 +131,7 @@ class CrearReserva:
                 "Revisá Mis reservas o cancelá esa reserva para crear una nueva."
             )
 
-    def execute(self, user: UserModel, data: CrearReservaRequest) -> ReservationModel:
+    def execute(self, user: UserModel, data: CrearReservaRequest, *, commit: bool = True) -> ReservationModel:
         actor = user
         if data.customer_id:
             if "reservations.write" not in get_permission_codes(actor):
@@ -185,12 +195,15 @@ class CrearReserva:
                 actor_user_id=actor.id,
                 metadata={"origin": data.origin, "device_id": data.device_id, "branch_id": str(data.branch_id), "items": len(snapshot), "scheduled_at": data.scheduled_at.isoformat()},
             )
-            self.db.commit()
+            if commit:
+                self.db.commit()
+                self.db.refresh(reserva)
+                notificar_reserva(self.db, reserva, avisar_sucursal=True)
+            else:
+                self.db.flush()
         except IntegrityError:
-            # La colision cubre tambien el flush() de repository.add: dos hilos
-            # con la misma clave idempotente pueden llegar a anotarse a la vez;
-            # la restriccion unica gana y se devuelve la ya persistida.
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             if data.client_key:
                 existing = self.repository.get_by_client_key(user.id, data.client_key)
                 if existing:
@@ -198,11 +211,7 @@ class CrearReserva:
                     return existing
             raise
         except Exception:
-            # Una falla en cualquier prenda revierte la reserva y TODOS sus
-            # movimientos; nunca dejar apartada solo una parte de la solicitud.
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise
-        self.db.refresh(reserva)
-        # CU15 al cliente y RF11 a la sucursal, una vez que la reserva existe.
-        notificar_reserva(self.db, reserva, avisar_sucursal=True)
         return reserva

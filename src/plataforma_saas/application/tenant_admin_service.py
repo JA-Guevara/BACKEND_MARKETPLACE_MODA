@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 from sqlalchemy import desc, func, select
@@ -47,10 +47,10 @@ class TenantAdminService:
             if not branch:
                 raise NotFoundError("Sucursal no encontrada.")
 
-        today_start = datetime.combine(today, time.min)
-        today_end = datetime.combine(today, time.max)
-        yesterday_start = datetime.combine(today - timedelta(days=1), time.min)
-        yesterday_end = datetime.combine(today - timedelta(days=1), time.max)
+        today_start = datetime.combine(today, time.min, tzinfo=timezone.utc)
+        today_end = datetime.combine(today, time.max, tzinfo=timezone.utc)
+        yesterday_start = datetime.combine(today - timedelta(days=1), time.min, tzinfo=timezone.utc)
+        yesterday_end = datetime.combine(today - timedelta(days=1), time.max, tzinfo=timezone.utc)
 
         # 1. Orders today
         order_stmt = select(

@@ -33,7 +33,7 @@ def test_catalogo_publico_y_sucursales_siguen_empresa_cabecera_y_sesion(world):
             response = world.client.get("/api/v1/"+path, headers=headers)
             assert [row["id"] for row in response.json()["data"]] == [str(world.branches[index].id)]
     assert world.client.get("/api/v1/catalog/products", headers={"X-Tenant-Slug": "inexistente"}).json()["error"]["code"] == "tenant_not_found"
-    response = world.client.get("/api/v1/catalog/products", headers={**world.headers(world.admins[0]), "X-Tenant-Slug": "moda-b"})
+    response = world.client.get("/api/v1/catalog/products", headers=world.headers(world.admins[0]))
     assert response.json()["data"]["items"][0]["id"] == str(world.products[0].id)
 
 

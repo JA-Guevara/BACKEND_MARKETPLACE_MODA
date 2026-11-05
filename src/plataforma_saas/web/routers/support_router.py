@@ -14,6 +14,7 @@ from src.plataforma_saas.web.schemas.support import (
     SupportSessionExtend,
     SupportSessionResponse,
     SupportSessionStart,
+    SupportSessionUpgrade,
 )
 from src.shared.exceptions.domain_exception import AuthorizationError
 from src.shared.responses.api_response import ApiResponse
@@ -48,10 +49,28 @@ def start_support_session(
         tenant_id=tenant_id,
         reason=data.reason,
         duration_minutes=data.duration_minutes,
+        mode=data.mode,
+        landing_module=data.landing_module,
         ip=ip,
         ua=ua,
     )
     return ApiResponse(message="Sesión de soporte iniciada.", data=result)
+
+
+@router.post(
+    "/platform/support-sessions/{session_id}/upgrade",
+    response_model=ApiResponse[SupportSessionStart],
+)
+def upgrade_support_session(
+    session_id: uuid.UUID,
+    data: SupportSessionUpgrade,
+    actor: SupportAccessUser,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    ip, ua = _request_client_info(request)
+    result = SupportService(db, actor).pasar_a_escritura(session_id, data.reason, ip=ip, ua=ua)
+    return ApiResponse(message="Sesión elevada a modo escritura.", data=result)
 
 
 @router.post(

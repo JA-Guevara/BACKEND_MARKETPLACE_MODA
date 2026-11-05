@@ -62,15 +62,18 @@ def legacy_tenant_fixture(db, flush_context, instances):
     if not affected:
         return
     connection = db.connection()
-    if not connection.scalar(select(TenantModel.id).where(TenantModel.id == DEFAULT_TENANT_ID)):
+    pending_default = any(isinstance(obj, TenantModel) and obj.id == DEFAULT_TENANT_ID for obj in db.new)
+    if not pending_default and not connection.scalar(select(TenantModel.id).where(TenantModel.id == DEFAULT_TENANT_ID)):
         now = datetime.now(timezone.utc)
-        connection.execute(TenantModel.__table__.insert().values(id=DEFAULT_TENANT_ID, legal_name="FashionStore", trade_name="FashionStore", tax_id="0000000001", slug="fashionstore", contact_email="contacto@fashionstore.test", status="ACTIVA", created_at=now, updated_at=now))
+        connection.execute(TenantModel.__table__.insert().values(id=DEFAULT_TENANT_ID, legal_name="FashionStore", trade_name="FashionStore", tax_id="0000000001", slug="fashionstore", contact_email="contacto@fashionstore.test", status="ACTIVA", is_published=True, created_at=now, updated_at=now))
         plan_id = uuid4()
         connection.execute(PlanModel.__table__.insert().values(id=plan_id, code="LEGACY_TEST", name="Pruebas", reference_price=0, duration_days=365, is_active=True, created_at=now, updated_at=now))
         connection.execute(PlanFeatureModel.__table__.insert(), [dict(id=uuid4(), plan_id=plan_id, feature_code=code, enabled=True, limit_value=1000 if code == "max_active_branches" else None) for code in (*FUNCIONES, "max_active_branches")])
         connection.execute(SubscriptionModel.__table__.insert().values(id=uuid4(), tenant_id=DEFAULT_TENANT_ID, plan_id=plan_id, start_date=date.today(), end_date=date.today()+timedelta(days=365), status="ACTIVA", created_at=now, updated_at=now))
     for obj in affected:
-        if obj.tenant_id is None and not (obj.__tablename__ == "users" and any(role.code == "platform_admin" for role in obj.roles)):
+        if obj.tenant_id is None and not (obj.__tablename__ == "users" and any(
+            role.code == "platform_admin" or getattr(role, "audience", "TENANT") == "PLATFORM" for role in obj.roles
+        )):
             obj.tenant_id = DEFAULT_TENANT_ID
 
 

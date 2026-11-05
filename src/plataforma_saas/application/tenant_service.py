@@ -140,10 +140,17 @@ class TenantService:
         if not role:
             raise ConflictError("El rol de administrador no está configurado.")
         auth = AuthService(self.db)
-        tenant = TenantModel(**data.model_dump(exclude={"admin", "plan_code", "start_date"}), status="ACTIVA")
+        dump = data.model_dump(exclude={"admin", "plan_code", "start_date", "template_code"})
+        dump["is_published"] = False
+        tenant = TenantModel(**dump, status="ACTIVA")
         try:
             self.repository.add(tenant)
-            self._sembrar_catalogo(tenant.id)
+            template_code = getattr(data, "template_code", None)
+            if template_code:
+                from src.plataforma_saas.application.catalog_template_service import CatalogTemplateService
+                CatalogTemplateService(self.db).importar(tenant.id, template_code, self.actor)
+            else:
+                self._sembrar_catalogo(tenant.id)
             admin = UserModel(tenant_id=tenant.id, email=str(data.admin.email).lower(), first_name=data.admin.first_name,
                 last_name=data.admin.last_name, password_hash=auth.create_unusable_password_hash(), roles=[role], is_verified=False)
             self.repository.add(admin)

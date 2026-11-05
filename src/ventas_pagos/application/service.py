@@ -15,7 +15,9 @@ from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.domain.states import TRANSITIONS
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.ventas_pagos.application.stock_service import StockService
+from src.ventas_pagos.application.pricing_service import PricingService
 from src.ventas_pagos.application.promotions import PromotionService
+from src.ventas_pagos.infrastructure.engagement_models import PromotionModel, PromotionUseModel
 from src.notificaciones.application.use_cases.send_notification import notificar_pedido
 
 
@@ -45,15 +47,21 @@ class CommerceService:
             raise NotFoundError("La variante no pertenece a la empresa.")
         return variant
 
-    def snapshot(self, variant, quantity, branch_id):
+    def snapshot(self, variant, quantity, branch_id, canal="ONLINE"):
         stock = self.db.scalar(select(StockModel).where(StockModel.variant_id == variant.id, StockModel.branch_id == branch_id)) if branch_id else None
-        price = variant.price_override if variant.price_override is not None else variant.product.base_price
-        return {"variant_id": str(variant.id), "product_id": str(variant.product_id), "name": variant.product.name,
+        t_id = self.tenant_id or variant.product.tenant_id
+        pv = PricingService(self.db, t_id).precio(variant, canal=canal)
+        price = pv.final
+        return {
+            "variant_id": str(variant.id), "product_id": str(variant.product_id), "name": variant.product.name,
             "sku": variant.sku, "size": variant.size.name, "color": variant.color.name,
             "category_id": str(variant.product.category_id),
             "image_url": variant.product.images[0].url if variant.product.images else None,
-            "unit_price": str(price), "quantity": quantity, "available": stock.quantity if stock else 0,
-            "line_total": str(price * quantity)}
+            "unit_price": str(price), "regular_price": str(pv.regular), "quantity": quantity,
+            "available": stock.quantity if stock else 0,
+            "line_total": str(price * quantity),
+            "offer_id": pv.offer_id, "offer_name": pv.offer_name,
+        }
 
     def cart(self, user, branch_id=None, coupon_code=None):
         rows = self.db.scalars(select(CartItemModel).where(CartItemModel.user_id == user.id)).all()
@@ -353,13 +361,20 @@ class CommerceService:
             items = []
             total = Decimal(0)
             stock = StockService(self.db, order_tenant_id)
+            applied_pos_offers: list[tuple[uuid.UUID, Decimal]] = []
             for line in sorted(data.items, key=lambda row: str(row.variant_id)):
                 variant = self.variant(line.variant_id)
-                snapshot = self.snapshot(variant, line.quantity, data.branch_id)
+                snapshot = self.snapshot(variant, line.quantity, data.branch_id, canal="POS")
                 stock.change(line.variant_id, data.branch_id, -line.quantity, "pos_sale",
                     "Salida por venta presencial cobrada.", reference="venta-en-caja", actor_id=actor.id)
                 items.append(snapshot)
                 total += Decimal(snapshot["line_total"])
+                if snapshot.get("offer_id") and snapshot.get("regular_price"):
+                    reg_p = Decimal(snapshot["regular_price"])
+                    unit_p = Decimal(snapshot["unit_price"])
+                    diff = (reg_p - unit_p) * line.quantity
+                    if diff > 0:
+                        applied_pos_offers.append((uuid.UUID(snapshot["offer_id"]), diff))
             now = datetime.now(timezone.utc)
             order = OrderModel(
                 tenant_id=order_tenant_id,
@@ -375,6 +390,20 @@ class CommerceService:
             )
             self.db.add(order)
             self.db.flush()
+            for off_id, disc_amount in applied_pos_offers:
+                try:
+                    p_row = self.db.get(PromotionModel, off_id)
+                    if p_row:
+                        p_row.uses_count += 1
+                        self.db.add(PromotionUseModel(
+                            promotion_id=p_row.id,
+                            user_id=known_user.id if known_user else actor.id,
+                            order_id=order.id,
+                            amount=disc_amount,
+                            channel="POS",
+                        ))
+                except Exception:
+                    pass
             self.audit(order, "pos_sale_created", "Venta presencial registrada, cobrada y entregada.")
             self.db.commit()
             self.db.refresh(order)

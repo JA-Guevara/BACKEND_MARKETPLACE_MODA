@@ -12,6 +12,7 @@ from src.auth.web.dependencies import get_current_user
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.database.base import Base
 from src.infrastructure.database.session import get_db
+from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
 from src.ventas_pagos.infrastructure import gateways
 from src.ventas_pagos.application.service import CommerceService
@@ -23,11 +24,23 @@ def world(monkeypatch):
                            connect_args={'check_same_thread': False})
     Base.metadata.create_all(engine)
     with Session(engine, expire_on_commit=False) as db:
+        tenant_id = uuid.UUID("30000000-0000-0000-0000-000000000001")
+        tenant = TenantModel(
+            id=tenant_id,
+            legal_name="Empresa Demo SRL",
+            trade_name="Empresa Demo",
+            tax_id="1234567890",
+            slug="empresa-demo",
+            contact_email="demo@example.com",
+            status="ACTIVA",
+            is_published=True,
+        )
+        db.add(tenant)
         user = UserModel(email='buyer@example.test', password_hash='unused', first_name='Buyer', last_name='Test',
-                         is_active=True, is_verified=True)
+                         tenant_id=tenant_id, is_active=True, is_verified=True)
         db.add(user)
         db.flush()
-        order = OrderModel(number='FS-TEST', user_id=user.id, customer_email=user.email, branch_id=uuid.uuid4(),
+        order = OrderModel(tenant_id=tenant_id, number='FS-TEST', user_id=user.id, customer_email=user.email, branch_id=uuid.uuid4(),
                            payment_method='stripe', total=Decimal('169'), currency='bob', address={}, items=[],
                            stripe_session_id='cs_test_owned', stripe_url='https://checkout.stripe.com/test', tracking=[])
         db.add(order)
@@ -44,7 +57,7 @@ def world(monkeypatch):
         app = create_app()
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: user
-        with TestClient(app) as client:
+        with TestClient(app, headers={"X-Tenant-Slug": tenant.slug}) as client:
             yield client, db, order, result, calls, app
     engine.dispose()
 

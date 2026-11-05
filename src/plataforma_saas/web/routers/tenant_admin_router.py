@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Annotated
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query
@@ -34,7 +34,7 @@ def get_dashboard(
     today: date | None = None,
     db: Session = Depends(get_db),
 ):
-    current_date = today or date.today()
+    current_date = today or datetime.now(timezone.utc).date()
     service = TenantAdminService(db, ctx)
     return ApiResponse(
         message="Operación completada.",

@@ -1,23 +1,14 @@
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 from src.plataforma_saas.domain.estados import FUNCIONES, LIMITES
-
 
 class PlanFeatureInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    feature_code: str
+    feature_code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
     enabled: bool = True
     limit_value: int | None = None
-
-    @field_validator("feature_code")
-    @classmethod
-    def known_code(cls, code):
-        if code not in (*FUNCIONES, *LIMITES):
-            raise ValueError("Funcionalidad desconocida.")
-        return code
-
 
 class PlanCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -34,6 +25,8 @@ class PlanUpdate(BaseModel):
     reference_price: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
     duration_days: int | None = Field(default=None, ge=1, le=366)
     features: list[PlanFeatureInput] | None = None
+    reason: str | None = None
+    confirm: bool = False
 
 
 class PlanResponse(BaseModel):

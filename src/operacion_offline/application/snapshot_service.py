@@ -12,6 +12,7 @@ from src.operacion_offline.web.schemas import OfflineSnapshot, SnapshotProduct, 
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, ProductVariantModel, ProductImageModel
 from src.roles.infrastructure.persistence.models.role import RoleModel
 from src.ventas_pagos.infrastructure.models import StockModel
+from src.ventas_pagos.application.pricing_service import PricingService
 from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
 
 
@@ -55,17 +56,39 @@ class SnapshotService:
                 UserModel.tenant_id == self.ctx.tenant_id, AuditEventModel.action == "catalog.variant_deleted", AuditEventModel.created_at > since))
             removed_variants.extend(UUID(value) for value in deleted if value)
         tenant = self.db.get(TenantModel, self.ctx.tenant_id)
+        pricing = PricingService(self.db, self.ctx.tenant_id)
+        product_dtos = []
+        for p in available:
+            off_p, off_id, off_until = self._info_oferta(p, pricing)
+            product_dtos.append(SnapshotProduct(
+                id=p.id, name=p.name, slug=p.slug, category=p.category.name, brand=p.brand,
+                base_price=p.base_price, offer_price=off_p, offer_id=off_id, offer_valid_until=off_until,
+                image_url=next((i.url for i in p.images if i.is_primary), p.images[0].url if p.images else None),
+                is_featured=p.is_featured,
+            ))
         snapshot = OfflineSnapshot(version=generated.isoformat(), generated_at=generated, full=since is None,
             tenant=TenantSummary.model_validate(tenant), branches=branches,
-            products=[SnapshotProduct(id=p.id, name=p.name, slug=p.slug, category=p.category.name, brand=p.brand,
-                base_price=p.base_price, offer_price=self._precio_oferta(p), image_url=next((i.url for i in p.images if i.is_primary), p.images[0].url if p.images else None), is_featured=p.is_featured) for p in available],
+            products=product_dtos,
             variants=[SnapshotVariant(id=v.id, product_id=v.product_id, sku=v.sku, size=v.size.name, color=v.color.name,
                 color_hex=v.color.hex_code, price=v.price_override, is_active=v.is_active) for v in variants],
             stock=stock, customers=customers, removed=SnapshotRemoved(products=removed_products, variants=list(set(removed_variants))))
         self.db.commit()
         return snapshot
 
+    def _info_oferta(self, product, pricing):
+        best_p = None
+        best_off_id = None
+        best_ends_at = None
+        for v in product.variants:
+            if not v.is_active:
+                continue
+            pv = pricing.precio(v, canal='OFFLINE')
+            if pv.has_offer:
+                if best_p is None or pv.final < best_p:
+                    best_p = pv.final
+                    best_off_id = UUID(pv.offer_id) if pv.offer_id else None
+                    best_ends_at = pv.offer_ends_at
+        return best_p, best_off_id, best_ends_at
+
     def _precio_oferta(self, product):
-        # Las promociones dependen de carrito, cupón y cliente. El catálogo
-        # desconectado conserva precio base hasta recalcular al sincronizar.
         return None

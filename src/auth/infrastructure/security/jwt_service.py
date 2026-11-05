@@ -22,7 +22,7 @@ class JWTService:
         return self._encode(user_id, "refresh", expires_delta, jti=jti), jti, expires_at
 
     def create_support_token(
-        self, user_id: str, tenant_id: str, session_id: str, expires_at: datetime
+        self, user_id: str, tenant_id: str, session_id: str, expires_at: datetime, read_only: bool = False
     ) -> tuple[str, int]:
         now = datetime.now(timezone.utc)
         if expires_at.tzinfo is None:
@@ -37,6 +37,8 @@ class JWTService:
             "iat": now,
             "exp": expires_at,
         }
+        if read_only:
+            payload["ro"] = True
         token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
         expires_in = max(0, int((expires_at - now).total_seconds()))
         return token, expires_in

@@ -21,6 +21,7 @@ class TenantCreate(BaseModel):
     admin: TenantAdminInput
     plan_code: str
     start_date: date | None = None
+    template_code: str | None = None
 
 
 class TenantUpdate(BaseModel):
@@ -54,6 +55,7 @@ class TenantResponse(BaseModel):
     active_branches: int = 0
     admin_email: str | None = None
     admin_password_set: bool = False
+    is_published: bool = False
 
 
 class TenantStats(BaseModel):

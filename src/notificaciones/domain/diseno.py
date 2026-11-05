@@ -143,7 +143,11 @@ def pasos(etapas: list[tuple[str, bool]]) -> str:
     )
 
 
-def envolver(*, titulo: str, distintivo: str, tono: str, entrada: str, contenido: str) -> str:
+def envolver(*, titulo: str, distintivo: str, tono: str, entrada: str, contenido: str, tenant_name: str | None = None, logo_url: str | None = None, brand_color: str | None = None) -> str:
+    header_color = brand_color or ACENTO
+    brand_title = (tenant_name or "FASHIONSTORE").upper()
+    logo_html = f'<img src="{escape(logo_url)}" alt="{escape(tenant_name or "FashionStore")}" style="max-height:36px;vertical-align:middle">' if logo_url else f'<span style="font-size:17px;letter-spacing:2px;color:#ffffff;font-weight:bold">{brand_title}</span>'
+    footer_from = f"{tenant_name} vía " if tenant_name else ""
     """Marco del correo: encabezado, cuerpo y pie."""
     fondo_dist, texto_dist = TONOS.get(tono, TONOS["neutro"])
     return f"""\
@@ -161,8 +165,8 @@ def envolver(*, titulo: str, distintivo: str, tono: str, entrada: str, contenido
        style="width:100%;max-width:600px;border-collapse:collapse;background:#ffffff;
               border:1px solid {LINEA};border-radius:14px;overflow:hidden;
               font-family:Helvetica,Arial,sans-serif">
-  <tr><td style="padding:22px 32px;background:{ACENTO}">
-    <span style="font-size:17px;letter-spacing:2px;color:#ffffff;font-weight:bold">FASHIONSTORE</span>
+  <tr><td style="padding:22px 32px;background:{header_color}">
+    {logo_html}
   </td></tr>
   <tr><td style="padding:32px 32px 8px">
     <span style="display:inline-block;padding:5px 12px;border-radius:999px;
@@ -174,7 +178,7 @@ def envolver(*, titulo: str, distintivo: str, tono: str, entrada: str, contenido
   </td></tr>
   <tr><td style="padding:20px 32px 28px;border-top:1px solid {LINEA}">
     <p style="margin:0;font-size:12px;line-height:1.6;color:{SUAVE}">
-      Este es un aviso automático de FashionStore. No respondas a este correo:
+      Este es un aviso automático de {footer_from}FashionStore. No respondas a este correo:
       nadie lee esta casilla. Si necesitás ayuda, escribinos desde la tienda o
       acercate a tu sucursal.
     </p>

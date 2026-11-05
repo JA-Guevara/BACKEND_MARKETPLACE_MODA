@@ -40,6 +40,8 @@ class SupportService:
         tenant_id: uuid.UUID,
         reason: str,
         duration_minutes: int,
+        mode: str = "WRITE",
+        landing_module: str | None = None,
         ip: str | None = None,
         ua: str | None = None,
     ) -> SupportSessionStart:
@@ -73,6 +75,8 @@ class SupportService:
             platform_user_id=self.actor.id,
             reason=clean_reason,
             duration_minutes=duration_minutes,
+            mode=mode,
+            landing_module=landing_module,
             started_at=now,
             expires_at=expires_at,
             ip_address=ip,
@@ -81,8 +85,9 @@ class SupportService:
         self.db.add(session)
         self.db.flush()
 
+        is_ro = (mode == "READ_ONLY")
         token, expires_in = JWTService().create_support_token(
-            str(self.actor.id), str(tenant_id), str(session.id), expires_at
+            str(self.actor.id), str(tenant_id), str(session.id), expires_at, read_only=is_ro
         )
 
         audit_event = self.audit.execute(
@@ -90,7 +95,7 @@ class SupportService:
             action="support.session_started",
             entity_type="support_session",
             entity_id=str(session.id),
-            description=f"Sesión de soporte iniciada para {tenant.legal_name}.",
+            description=f"Sesión de soporte iniciada para {tenant.legal_name} (modo {mode}).",
             tenant_id=tenant_id,
             ip_address=ip,
             user_agent=ua,
@@ -113,6 +118,33 @@ class SupportService:
             permissions=permissions,
         )
 
+    def pasar_a_escritura(
+        self, session_id: uuid.UUID, reason: str, ip: str | None = None, ua: str | None = None
+    ) -> SupportSessionStart:
+        session = self.db.get(SupportSessionModel, session_id)
+        if not session:
+            raise NotFoundError("Sesión de soporte no encontrada.")
+        if session.platform_user_id != self.actor.id:
+            raise AuthorizationError("Solo el administrador que inició la sesión puede modificarla.")
+
+        now = datetime.now(timezone.utc)
+        if not session.is_active(now):
+            raise SupportSessionExpiredError("La sesión de soporte ya ha expirado o finalizado.")
+
+        session.ended_at = now
+        session.end_reason = "upgraded"
+        self.db.flush()
+
+        return self.iniciar(
+            tenant_id=session.tenant_id,
+            reason=reason or f"Elevación a escritura desde sesión previa: {session.reason}",
+            duration_minutes=session.duration_minutes,
+            mode="WRITE",
+            landing_module=session.landing_module,
+            ip=ip,
+            ua=ua,
+        )
+
     def extender(self, session_id: uuid.UUID, minutes: int = 30) -> SupportSessionStart:
         session = self.db.get(SupportSessionModel, session_id)
         if not session:
@@ -130,8 +162,9 @@ class SupportService:
         session.duration_minutes += minutes
         session.expires_at = session.expires_at + timedelta(minutes=minutes)
 
+        is_ro = (getattr(session, "mode", "WRITE") == "READ_ONLY")
         token, expires_in = JWTService().create_support_token(
-            str(self.actor.id), str(session.tenant_id), str(session.id), session.expires_at
+            str(self.actor.id), str(session.tenant_id), str(session.id), session.expires_at, read_only=is_ro
         )
 
         audit_event = self.audit.execute(
@@ -147,11 +180,12 @@ class SupportService:
 
         tenant = self.db.get(TenantModel, session.tenant_id)
         tenant_summary = TenantSummary.model_validate(tenant) if tenant else None
-        sub_summary = PlanGuard(self.db).resumen(session.tenant_id) if tenant else None
+        sub_summary = PlanGuard(self.db).resumen(session.tenant_id)
         permissions = sorted(list(tenant_scope_permissions(self.db)))
 
+        session_resp = self._to_response(session)
         return SupportSessionStart(
-            session=self._to_response(session),
+            session=session_resp,
             access_token=token,
             token_type="bearer",
             expires_in=expires_in,
@@ -160,7 +194,34 @@ class SupportService:
             permissions=permissions,
         )
 
-    def terminar(self, session_id: uuid.UUID, reason: str = "manual") -> SupportSessionResponse:
+    def finalizar(self, session_id: uuid.UUID, reason: str = "manual") -> SupportSessionResponse:
+        session = self.db.get(SupportSessionModel, session_id)
+        if not session:
+            raise NotFoundError("Sesión de soporte no encontrada.")
+        if session.platform_user_id != self.actor.id:
+            raise AuthorizationError("Solo el administrador que inició la sesión puede finalizarla.")
+
+        now = datetime.now(timezone.utc)
+        if session.ended_at is None:
+            session.ended_at = now
+            session.end_reason = reason
+
+            audit_event = self.audit.execute(
+                actor_user_id=self.actor.id,
+                action="support.session_ended",
+                entity_type="support_session",
+                entity_id=str(session.id),
+                description="Sesión de soporte finalizada manualmente.",
+                tenant_id=session.tenant_id,
+            )
+            audit_event.support_session_id = session.id
+            self.db.commit()
+
+        return self._to_response(session)
+
+    terminar = finalizar
+
+    def revocar(self, session_id: uuid.UUID) -> SupportSessionResponse:
         session = self.db.get(SupportSessionModel, session_id)
         if not session:
             raise NotFoundError("Sesión de soporte no encontrada.")
@@ -168,13 +229,14 @@ class SupportService:
         now = datetime.now(timezone.utc)
         if session.ended_at is None:
             session.ended_at = now
-            session.end_reason = reason
+            session.end_reason = "revoked"
+
             audit_event = self.audit.execute(
                 actor_user_id=self.actor.id,
-                action="support.session_ended",
+                action="support.session_revoked",
                 entity_type="support_session",
                 entity_id=str(session.id),
-                description="Sesión de soporte finalizada.",
+                description="Sesión de soporte revocada.",
                 tenant_id=session.tenant_id,
             )
             audit_event.support_session_id = session.id
@@ -184,7 +246,6 @@ class SupportService:
 
     def listar(
         self,
-        *,
         tenant_id: uuid.UUID | None = None,
         platform_user_id: uuid.UUID | None = None,
         active: bool | None = None,
@@ -248,6 +309,8 @@ class SupportService:
             platform_user_name=platform_user_name,
             reason=session.reason,
             duration_minutes=session.duration_minutes,
+            mode=getattr(session, "mode", "WRITE"),
+            landing_module=getattr(session, "landing_module", None),
             started_at=session.started_at,
             expires_at=session.expires_at,
             ended_at=session.ended_at,

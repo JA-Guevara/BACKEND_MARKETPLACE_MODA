@@ -14,7 +14,10 @@ def test_planes_catalogo_codigo_y_limites(world):
     assert {plan["code"] for plan in listed} >= {"BASICO", "PROFESIONAL"}
     assert next(plan for plan in listed if plan["code"] == "BASICO")["tenants_count"] == 1
     catalog = world.client.get("/api/v1/platform/plans/features", headers=headers).json()["data"]
-    assert len(catalog) == 8
+    assert {item["code"] for item in catalog} >= {
+        "products", "inventory", "sales", "reservations", "offline", "ai_reports",
+        "ml_analytics", "virtual_tryon", "max_active_branches"}
+    assert next(item for item in catalog if item["code"] == "max_active_branches")["kind"] == "limit"
     duplicate = world.client.post("/api/v1/platform/plans", headers=headers, json=body("BASICO"))
     assert duplicate.status_code == 409 and duplicate.json()["error"]["code"] == "plan_code_taken"
     for value in (0, -1, None):
@@ -32,7 +35,12 @@ def test_reducir_limite_notifica_excedidas_y_guarda_bitacora(world):
     for index in range(5):
         world.db.add(BranchModel(tenant_id=tenant.id, city_id=world.branches[1].city_id, code=f"EXTRA-{index}", name=f"Extra {index}", address="QA"))
     world.db.commit()
-    response = world.client.patch(f"/api/v1/platform/plans/{world.plans[1].id}", headers=world.headers(world.platform), json={"features": body(limit=5)["features"]})
+    # Esta prueba solo reduce el cupo: conserva módulos y no simula su baja
+    # implícita, que ahora exige impacto, confirmación y motivo.
+    features = [{"feature_code": feature.feature_code, "enabled": feature.enabled,
+                 "limit_value": 5 if feature.feature_code == "max_active_branches" else feature.limit_value}
+                for feature in world.plans[1].features]
+    response = world.client.patch(f"/api/v1/platform/plans/{world.plans[1].id}", headers=world.headers(world.platform), json={"features": features})
     assert response.status_code == 200, response.text
     assert response.json()["data"]["exceeded_tenants"] == [tenant.trade_name]
     assert response.json()["data"]["plan"]["limits"]["max_active_branches"] == 5

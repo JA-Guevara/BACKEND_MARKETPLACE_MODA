@@ -9,7 +9,9 @@ from src.inventario_sucursales.infrastructure.models.organization import BranchM
 
 class SaasRepository:
     def __init__(self, db: Session): self.db = db
-    def get_tenant(self, tenant_id: UUID): return self.db.get(TenantModel, tenant_id)
+    def get_tenant(self, tenant_id: UUID):
+        tid = UUID(str(tenant_id)) if tenant_id else None
+        return self.db.get(TenantModel, tid) if tid else None
     def find_tenant_by_slug(self, slug: str): return self.db.scalar(select(TenantModel).where(TenantModel.slug == slug))
     def get_plan_by_code(self, code: str): return self.db.scalar(select(PlanModel).where(PlanModel.code == code))
     def open_subscription(self, tenant_id: UUID):

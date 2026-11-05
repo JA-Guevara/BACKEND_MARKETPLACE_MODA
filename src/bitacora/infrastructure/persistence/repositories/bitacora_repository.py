@@ -32,6 +32,8 @@ class AuditRepository:
         platform_only: bool = False,
         date_from: date | None = None,
         date_to: date | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> Page:
@@ -42,6 +44,10 @@ class AuditRepository:
             conditions.append(AuditEventModel.actor_user_id == actor_id)
         if action:
             conditions.append(AuditEventModel.action == action)
+        if entity_type:
+            conditions.append(AuditEventModel.entity_type == entity_type)
+        if entity_id:
+            conditions.append(AuditEventModel.entity_id == str(entity_id))
         if support_only:
             conditions.append(AuditEventModel.support_session_id.is_not(None))
         if platform_only:
@@ -76,6 +82,7 @@ class AuditRepository:
         actor_query: str | None = None,
         action: str | None = None,
         entity_type: str | None = None,
+        entity_id: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
     ) -> tuple[list[AuditEventModel], int]:
@@ -92,6 +99,8 @@ class AuditRepository:
             conditions.append(AuditEventModel.action == action)
         if entity_type:
             conditions.append(AuditEventModel.entity_type == entity_type)
+        if entity_id:
+            conditions.append(AuditEventModel.entity_id == str(entity_id))
         if date_from:
             conditions.append(AuditEventModel.created_at >= date_from)
         if date_to:
