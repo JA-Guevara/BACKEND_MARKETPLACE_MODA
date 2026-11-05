@@ -18,3 +18,4 @@ Pillow>=11,<13
 scikit-learn>=1.5,<2
 numpy>=1.26,<3
 joblib>=1.4,<2
+tzdata==2026.3
