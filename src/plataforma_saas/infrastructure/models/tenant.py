@@ -37,5 +37,7 @@ class TenantModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     support_access_mode: Mapped[str] = mapped_column(
         String(20), default="require_approval", server_default="require_approval", nullable=False
     )
+    # Cliente de Stripe Billing con el que la plataforma cobra el plan de la empresa.
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
 
     subscriptions: Mapped[list["SubscriptionModel"]] = relationship(back_populates="tenant")

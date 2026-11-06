@@ -12,6 +12,8 @@ class PlanModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     reference_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     duration_days: Mapped[int] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Precio mensual de Stripe Billing (modo prueba); NULL = solo pago manual.
+    stripe_price_id_month: Mapped[str | None] = mapped_column(String(100), nullable=True)
     features: Mapped[list["PlanFeatureModel"]] = relationship(cascade="all, delete-orphan", lazy="selectin")
 
 

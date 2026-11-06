@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     email_workers: int = 2
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
+    # PS-PX · Stripe SaaS (siempre modo prueba). Solo nombres en docs; valores en Railway.
+    stripe_billing_webhook_secret: str = ""
+    stripe_connect_webhook_secret: str = ""
+    stripe_connect_enabled: bool = False
+    # Alta pública cerrada por defecto (signup_service lee SIGNUP_ENABLED en cada petición).
+    signup_enabled: bool = False
+    # Opcional: límite de peticiones compartido y caché de IA (infrastructure/cache/redis.py).
+    redis_url: str = ""
     commerce_currency: str = "bob"
     ai_api_key: str = ""
     ai_model: str = "gpt-4.1-mini"

@@ -24,6 +24,7 @@ class SubscriptionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     read_only_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     data_retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="subscriptions")
     plan: Mapped[PlanModel] = relationship(lazy="joined")
