@@ -84,14 +84,15 @@ class BillingService:
         self,
         subscription: SubscriptionModel,
         ahora: datetime | None = None,
+        *, inicio_periodo: date | None = None, fin_periodo: date | None = None,
     ) -> SubscriptionInvoiceModel:
         """Emite un comprobante de suscripción para el período actual.
 
         Idempotente por (subscription_id, period_start).
         """
         now = ahora or datetime.now(timezone.utc)
-        period_start = subscription.start_date
-        period_end = subscription.end_date
+        period_start = inicio_periodo or subscription.start_date
+        period_end = fin_periodo or subscription.end_date
 
         existente = self.db.scalars(
             select(SubscriptionInvoiceModel).where(

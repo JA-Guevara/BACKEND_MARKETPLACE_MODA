@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
-from src.infrastructure.database.session import get_db, set_rls_context
+from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions, require_platform_permissions
 from src.infrastructure.security.tenancy import TenantScope
 from src.plataforma_saas.web.schemas.stripe_saas import (
@@ -49,7 +49,6 @@ def billing_portal(ctx: TenantScope, actor: BillingWriter, db: Session = Depends
 
 @router.post("/stripe/billing/webhook", response_model=StripeReceived)
 def billing_webhook(body: RawBody, stripe_signature: str | None = Header(default=None), db: Session = Depends(get_db)):
-    set_rls_context(db, is_platform=True)  # RN-RLS: webhooks de Stripe → plataforma
     result = StripeBilling(db).procesar_webhook(body, stripe_signature)
     db.commit()
     return result
@@ -70,7 +69,6 @@ def stripe_onboarding(ctx: TenantScope, actor: PaymentWriter, db: Session = Depe
 @router.post("/stripe/connect/webhook", response_model=StripeReceived)
 def connect_webhook(body: RawBody, stripe_signature: str | None = Header(default=None), db: Session = Depends(get_db)):
     from src.notificaciones.application.use_cases.send_notification import notificar_pedido
-    set_rls_context(db, is_platform=True)  # RN-RLS: webhooks de Stripe → plataforma
     service = StripeConnectService(db)
     result = service.procesar_webhook(body, stripe_signature)
     db.commit()

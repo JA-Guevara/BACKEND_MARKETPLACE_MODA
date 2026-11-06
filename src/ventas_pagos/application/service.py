@@ -198,6 +198,10 @@ class CommerceService:
         cart.update(quote)
         if not cart["items"]:
             raise ValidationError("El carrito esta vacio.")
+        if data.payment_method == "stripe" and Decimal(quote["total"]) > 0:
+            from src.plataforma_saas.application.stripe_connect_service import CardPaymentsUnavailableError, tarjeta_disponible
+            if not tarjeta_disponible(self.db, order_tenant_id):
+                raise CardPaymentsUnavailableError()
         try:
             stock_svc = StockService(self.db, order_tenant_id)
             for item in sorted(cart["items"], key=lambda x: x["variant_id"]):
@@ -253,9 +257,8 @@ class CommerceService:
         if order.status != "pending_payment":
             raise ConflictError("Solo se pueden cancelar pedidos pendientes de pago.")
         if order.stripe_session_id:
-            from src.plataforma_saas.application.stripe_connect_service import cuenta_del_pedido
             gateways.stripe_request("POST", f"checkout/sessions/{order.stripe_session_id}/expire",
-                                    **gateways.en_cuenta(cuenta_del_pedido(self.db, order)))
+                                    **gateways.en_cuenta(order.stripe_account_id))
         self.release(order, "cancelled")
         self.audit(order, "order_cancelled", "Pedido cancelado; existencias liberadas.")
         self.db.commit()
@@ -273,8 +276,9 @@ class CommerceService:
             # Cargo directo en la cuenta Connect de la empresa del pedido (RN-ST1/RN-ST2);
             # sin cuenta activa, 409 card_payments_unavailable y la tienda ofrece QR/transferencia.
             from src.plataforma_saas.application.stripe_connect_service import cuenta_para_cobrar
-            session = gateways.create_session(order, payment_return_url=payment_return_url,
-                                              stripe_account=cuenta_para_cobrar(self.db, order.tenant_id))
+            account_id = cuenta_para_cobrar(self.db, order.tenant_id)
+            session = gateways.create_session(order, payment_return_url=payment_return_url, stripe_account=account_id)
+            order.stripe_account_id = account_id
             order.stripe_session_id, order.stripe_url = session["id"], session["url"]
             self.db.commit()
         return {"session_id": order.stripe_session_id, "url": order.stripe_url}
@@ -312,8 +316,7 @@ class CommerceService:
             return order
         if not order.stripe_session_id:
             return order
-        from src.plataforma_saas.application.stripe_connect_service import cuenta_del_pedido
-        session = gateways.retrieve_session(order.stripe_session_id, **gateways.en_cuenta(cuenta_del_pedido(self.db, order)))
+        session = gateways.retrieve_session(order.stripe_session_id, **gateways.en_cuenta(order.stripe_account_id))
         if (session.get("id") != order.stripe_session_id or session.get("livemode") is not False
                 or session.get("mode") != "payment"):
             raise ConflictError("La sesion consultada no corresponde a un pago de prueba valido.")
@@ -451,7 +454,7 @@ class CommerceService:
         if event.get("type") not in supported:
             return {"received": True}
         session = event["data"]["object"]
-        order = self.db.scalar(select(OrderModel).where(OrderModel.stripe_session_id == session["id"]).with_for_update())
+        order = self.db.scalar(select(OrderModel).where(OrderModel.stripe_session_id == session["id"], OrderModel.stripe_account_id.is_(None)).with_for_update())
         if not order:
             raise ConflictError("Sesion pendiente de asociacion; Stripe debe reintentar.")
         if self.db.scalar(select(WebhookEventModel.id).where(WebhookEventModel.event_id == event["id"])):

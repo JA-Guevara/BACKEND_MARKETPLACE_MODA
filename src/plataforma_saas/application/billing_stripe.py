@@ -8,6 +8,7 @@
   vinculados a ella (E3); nunca de un parámetro del cliente (RN03).
 """
 from datetime import datetime, timezone
+from decimal import Decimal
 import hashlib
 import hmac
 import json
@@ -20,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.infrastructure.config.settings import settings
+from src.infrastructure.database.session import set_rls_context
 from src.plataforma_saas.application.billing_service import BillingService
 from src.plataforma_saas.application.jobs.suscripciones import CicloSuscripcion
 from src.plataforma_saas.infrastructure.models.plan import PlanModel
@@ -152,10 +154,31 @@ class StripeBilling:
         plan = self.db.scalar(select(PlanModel).where(PlanModel.code == plan_code))
         if plan is None or not plan.is_active or not plan.stripe_price_id_month:
             raise PlanNotAvailableError()
-        tenant = self.db.get(TenantModel, tenant_id)
+        tenant = self.db.scalar(select(TenantModel).where(TenantModel.id == tenant_id).with_for_update())
         if tenant is None:
             raise NotFoundError("Empresa no encontrada.", code="tenant_not_found")
+        subscription = self._suscripcion_actual(tenant_id)
+        if subscription is not None and subscription.stripe_subscription_id:
+            raise ConflictError("Gestiona el plan de tu suscripción existente desde el portal de Stripe.",
+                                code="billing_use_portal")
+        existing_customer = bool(tenant.stripe_customer_id)
         customer = self._asegurar_cliente(tenant)
+        if existing_customer:
+            subscriptions = gateways.stripe_request("GET", f"subscriptions?customer={customer}&status=all&limit=100")
+            if any(row.get("status") in {"active", "trialing", "past_due", "unpaid", "paused", "incomplete"}
+                   for row in subscriptions.get("data", [])):
+                raise ConflictError("Gestiona el plan de tu suscripción existente desde el portal de Stripe.",
+                                    code="billing_use_portal")
+            pending = gateways.stripe_request("GET", f"checkout/sessions?customer={customer}&status=open&limit=20")
+            for session in pending.get("data", []):
+                if session.get("mode") != "subscription":
+                    continue
+                expires = _dt(session.get("expires_at"))
+                if expires is not None and expires > datetime.now(timezone.utc):
+                    if (session.get("metadata") or {}).get("plan_code") == plan.code and session.get("url"):
+                        return {"checkout_url": session["url"], "expires_at": expires}
+                    raise ConflictError("Hay un pago de suscripción pendiente. Complétalo o espera a que caduque.",
+                                        code="billing_checkout_pending")
         base = settings.frontend_url.rstrip("/") + "/admin/empresa/suscripcion"
         session = gateways.stripe_request("POST", "checkout/sessions", data={
             "mode": "subscription",
@@ -164,6 +187,7 @@ class StripeBilling:
             "line_items[0][price]": plan.stripe_price_id_month,
             "line_items[0][quantity]": 1,
             "metadata[tenant_id]": str(tenant.id),
+            "metadata[plan_code]": plan.code,
             "subscription_data[metadata][tenant_id]": str(tenant.id),
             "success_url": base + "?pago=ok",
             "cancel_url": base + "?pago=cancelado",
@@ -200,6 +224,7 @@ class StripeBilling:
     def procesar_webhook(self, raw_body: bytes, sig_header: str | None) -> dict[str, Any]:
         verificar_firma_stripe(raw_body, sig_header, settings.stripe_billing_webhook_secret)
         event = leer_evento(raw_body)
+        set_rls_context(self.db, is_platform=True)
         if not registrar_evento_una_vez(self.db, event, "billing"):
             return {"received": True}
         obj = (event.get("data") or {}).get("object") or {}
@@ -242,26 +267,56 @@ class StripeBilling:
         if tenant is None or str(obj.get("client_reference_id") or tenant.id) != str(tenant.id):
             return
         sub = self._suscripcion_actual(tenant.id)
-        if sub is not None and isinstance(stripe_sub, str) and stripe_sub:
+        if (sub is not None and isinstance(stripe_sub, str) and stripe_sub
+                and sub.stripe_subscription_id in (None, stripe_sub)):
             sub.stripe_subscription_id = stripe_sub
 
+    def _invoice_subscription(self, obj: dict[str, Any], *, allow_initial_link: bool = False) -> SubscriptionModel | None:
+        details = (obj.get("parent") or {}).get("subscription_details") or obj.get("subscription_details") or {}
+        subscription_id = obj.get("subscription") or details.get("subscription")
+        sub = self._suscripcion_de({**obj, "subscription": subscription_id}, "subscription")
+        if sub is not None or not allow_initial_link or not isinstance(subscription_id, str) or not subscription_id:
+            return sub
+        tenant = self._tenant_por_cliente(obj.get("customer"))
+        metadata = details.get("metadata") or {}
+        if tenant is None or metadata.get("tenant_id") != str(tenant.id):
+            return None
+        current = self._suscripcion_actual(tenant.id)
+        if current is not None and current.stripe_subscription_id is None:
+            current.stripe_subscription_id = subscription_id
+            return current
+        return None
+
     def _factura_pagada(self, obj: dict[str, Any]) -> None:
-        sub = self._suscripcion_de(obj, "subscription")
+        sub = self._invoice_subscription(obj, allow_initial_link=True)
         if sub is None:
             return
-        plan = self._plan_de_lineas((obj.get("lines") or {}).get("data"))
+        lineas = (obj.get("lines") or {}).get("data") or []
+        plan = self._plan_de_lineas(lineas)
         if plan is not None and plan.id != sub.plan_id:
             sub.plan_id = plan.id
+        periodo = next((linea["period"] for linea in lineas if isinstance(linea, dict) and linea.get("period")), {})
+        period_start = _dt(periodo.get("start")) or _dt(obj.get("period_start"))
+        period_end = _dt(periodo.get("end")) or _dt(obj.get("period_end"))
+        amount = obj.get("amount_paid")
+        currency = obj.get("currency")
         billing = BillingService(self.db)
-        invoice = billing.emitir_periodo(sub)
-        billing.registrar_pago(invoice.id, referencia=f"stripe:{obj.get('id') or 'invoice'}")
-        period_end = _dt(obj.get("period_end"))
+        invoice = billing.emitir_periodo(
+            sub, inicio_periodo=period_start.date() if period_start else None,
+            fin_periodo=period_end.date() if period_end else None,
+        )
+        reference = f"stripe:{obj.get('id') or 'invoice'}"
+        if invoice.status == "paid":
+            return
+        if isinstance(amount, int) and amount >= 0 and isinstance(currency, str) and currency.lower() == "bob":
+            invoice.amount = Decimal(amount) / 100
+        billing.registrar_pago(invoice.id, referencia=reference)
         if period_end is not None and period_end.date() > sub.end_date:
             sub.end_date = period_end.date()
 
     def _pago_fallido(self, obj: dict[str, Any]) -> None:
-        # F2: no se reactiva nada; el ciclo diario aplica gracia y solo lectura.
-        sub = self._suscripcion_de(obj, "subscription")
+        # El ciclo diario aplica gracia y solo lectura si no se renueva el período.
+        sub = self._invoice_subscription(obj)
         if sub is not None:
             CicloSuscripcion(self.db)._publicar_cambio(sub, "payment_failed")
 
@@ -285,7 +340,10 @@ class StripeBilling:
         if not isinstance(lineas, list):
             return None
         for linea in lineas:
-            price = ((linea or {}).get("price") or {}).get("id") if isinstance(linea, dict) else None
+            if not isinstance(linea, dict):
+                continue
+            pricing = (linea.get("pricing") or {}).get("price_details") or {}
+            price = (linea.get("price") or {}).get("id") or pricing.get("price")
             if isinstance(price, str) and price:
                 plan = self.db.scalar(select(PlanModel).where(PlanModel.stripe_price_id_month == price))
                 if plan is not None:

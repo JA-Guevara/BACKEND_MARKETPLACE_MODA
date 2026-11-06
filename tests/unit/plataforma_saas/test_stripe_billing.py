@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import time
+import pytest
 from datetime import datetime, timezone
 from sqlalchemy import select, func
 from src.infrastructure.config.settings import settings
@@ -106,3 +107,40 @@ def test_listado_planes_es_para_empresa_sin_revelar_ids_stripe(world):
     response=world.client.get('/api/v1/tenant/billing/plans',headers=world.headers(world.admins[0]))
     assert response.status_code==200,response.text
     assert response.json()['data'] and 'stripe_price_id_month' not in response.text
+
+
+
+def test_suscripcion_activa_pide_usar_portal_en_vez_de_cobrar_de_nuevo(world, monkeypatch):
+    grant_billing(world)
+    setup_customer(world)
+    world.plans[0].stripe_price_id_month = "price_test_basic"
+    world.db.commit()
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_unit_only")
+    monkeypatch.setattr(gateways, "stripe_request", lambda *args, **kwargs: pytest.fail("No debe abrir otro Checkout"))
+    response = world.client.post("/api/v1/tenant/billing/checkout",
+                                 json={"plan_code": world.plans[0].code, "interval": "month"},
+                                 headers=world.headers(world.admins[0]))
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "billing_use_portal"
+
+
+def test_factura_basil_puede_llegar_antes_de_checkout_y_registra_monto(world, monkeypatch):
+    monkeypatch.setattr(settings, "stripe_billing_webhook_secret", "whsec_unit_only")
+    subscription = setup_customer(world)
+    subscription.stripe_subscription_id = None
+    world.plans[1].stripe_price_id_month = "price_test_pro"
+    world.db.commit()
+    start = int(time.time())
+    response = post_event(world, {"id": "evt_invoice_basil", "type": "invoice.paid", "data": {"object": {
+        "id": "in_basil", "customer": "cus_test_a", "currency": "bob", "amount_paid": 12750,
+        "parent": {"subscription_details": {"subscription": "sub_test_a",
+                                           "metadata": {"tenant_id": str(world.tenants[0].id)}}},
+        "lines": {"data": [{"pricing": {"price_details": {"price": "price_test_pro"}},
+                            "period": {"start": start, "end": start + 2592000}}]},
+    }}})
+    assert response.status_code == 200, response.text
+    assert subscription.stripe_subscription_id == "sub_test_a"
+    assert subscription.plan_id == world.plans[1].id
+    receipt = world.db.scalar(select(SubscriptionInvoiceModel).where(SubscriptionInvoiceModel.paid_reference == "stripe:in_basil"))
+    assert receipt is not None and receipt.status == "paid"
+    assert str(receipt.amount) == "127.50"

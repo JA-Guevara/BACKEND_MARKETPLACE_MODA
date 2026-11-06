@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.infrastructure.config.settings import settings
+from src.infrastructure.database.session import set_rls_context
 from src.plataforma_saas.application.billing_stripe import (
     BillingNotConfiguredError,
     leer_evento,
@@ -58,11 +59,11 @@ def cuenta_para_cobrar(db: Session, tenant_id: UUID) -> str:
     return account.stripe_account_id
 
 
-def cuenta_del_pedido(db: Session, order) -> str | None:
-    """Cuenta en la que vive el cobro de un pedido ya iniciado (consulta, expiración, reembolso).
-    No exige charges_enabled: un pago hecho sigue en esa cuenta aunque luego se restrinja."""
-    account = cuenta_de_empresa(db, order.tenant_id)
-    return account.stripe_account_id if account is not None else None
+def tarjeta_disponible(db: Session, tenant_id: UUID | None) -> bool:
+    if tenant_id is None or not settings.stripe_connect_enabled or not (settings.stripe_secret_key or "").startswith("sk_test_"):
+        return False
+    account = cuenta_de_empresa(db, tenant_id)
+    return bool(account and account.status == "active" and account.charges_enabled)
 
 
 class StripeConnectService:
@@ -125,6 +126,7 @@ class StripeConnectService:
     def procesar_webhook(self, raw_body: bytes, sig_header: str | None) -> dict[str, Any]:
         verificar_firma_stripe(raw_body, sig_header, settings.stripe_connect_webhook_secret)
         event = leer_evento(raw_body)
+        set_rls_context(self.db, is_platform=True)
         if not registrar_evento_una_vez(self.db, event, "connect"):
             return {"received": True}
         cuenta = event.get("account")
@@ -157,7 +159,7 @@ class StripeConnectService:
         if session.get("mode") != "payment" or session.get("payment_status") != "paid" or not session.get("id"):
             return
         order = self.db.scalar(select(OrderModel).where(OrderModel.stripe_session_id == session["id"]).with_for_update())
-        if order is None or cuenta_del_pedido(self.db, order) != cuenta:
+        if order is None or order.stripe_account_id != cuenta:
             # Evento de otra cuenta conectada: nunca toca pedidos de otra empresa.
             return
         if order.status != "pending_payment" or order.payment_status == "paid":

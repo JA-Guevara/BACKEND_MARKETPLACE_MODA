@@ -51,6 +51,7 @@ class OrderModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     tracking: Mapped[list] = mapped_column(JSON, default=list)
     carrier: Mapped[str | None] = mapped_column(String(120))
     tracking_number: Mapped[str | None] = mapped_column(String(150))
+    stripe_account_id: Mapped[str | None] = mapped_column(String(255))
     stripe_session_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     stripe_url: Mapped[str | None] = mapped_column(String(2000))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, default=None, index=True)

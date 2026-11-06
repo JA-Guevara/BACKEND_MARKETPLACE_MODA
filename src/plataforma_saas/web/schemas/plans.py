@@ -39,6 +39,8 @@ class PlanResponse(BaseModel):
     features: dict[str, bool]
     limits: dict[str, int]
     tenants_count: int
+    stripe_price_id_month: str | None = None
+    stripe_ready: bool = False
 
 
 class PlanSaveResult(BaseModel):

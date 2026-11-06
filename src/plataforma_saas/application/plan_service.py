@@ -64,6 +64,8 @@ class PlanService:
             duration_days=plan.duration_days,
             is_active=plan.is_active,
             tenants_count=count,
+            stripe_price_id_month=plan.stripe_price_id_month,
+            stripe_ready=bool(plan.stripe_price_id_month),
             features={code: info["kind"] == "BASE" or (features[code].enabled if code in features else False)
                       for code, info in EntitlementService(self.db)._get_catalog().items()},
             limits={code: features[code].limit_value for code in LIMITES if code in features and features[code].limit_value is not None},

@@ -55,10 +55,11 @@ def test_checkout_cobra_cuenta_correcta(world,monkeypatch):
     response=world.client.post(f'/api/v1/commerce/orders/{order.id}/checkout',headers=world.headers(world.customers[0]))
     assert response.status_code==200,response.text
     assert calls and calls[0]['stripe_account']=='acct_test_0'
+    assert order.stripe_account_id == 'acct_test_0'
 
 
 def test_connect_confirma_solo_pedido_de_su_cuenta(world,monkeypatch):
-    activate(world);order=pending_order(world);order.stripe_session_id='cs_test_unit';world.db.commit()
+    activate(world);order=pending_order(world);order.stripe_session_id='cs_test_unit';order.stripe_account_id='acct_test_0';world.db.commit()
     monkeypatch.setattr(settings,'stripe_connect_webhook_secret','whsec_unit_only')
     event={'id':'evt_unit_order','type':'checkout.session.completed','account':'acct_test_0','data':{'object':{'id':'cs_test_unit','mode':'payment','payment_status':'paid','currency':'bob','amount_total':15000,'client_reference_id':str(order.id),'payment_intent':'pi_test_unit'}}}
     response=post_event(world,event,'connect')
@@ -74,3 +75,32 @@ def test_estado_enmascara_cuenta_y_no_revela_secreto(world):
     response=world.client.get('/api/v1/tenant/payments/stripe-account',headers=world.headers(world.admins[0]))
     assert response.status_code==200,response.text
     assert 'acct_test_0' not in response.text and response.json()['data']['account_ref'].startswith('acct_')
+
+
+
+def test_carrito_ofrece_tarjeta_solo_para_empresa_configurada(world, monkeypatch):
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_unit_only")
+    monkeypatch.setattr(settings, "stripe_connect_enabled", True)
+    activate(world, 0)
+    for idx, available in [(0, True), (1, False)]:
+        response = world.client.get("/api/v1/commerce/cart", headers=world.headers(world.customers[idx]))
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["card_payments_available"] is available
+
+
+
+def test_pedido_historico_conserva_cuenta_plataforma_aunque_empresa_conecte(world, monkeypatch):
+    activate(world)
+    order = pending_order(world)
+    order.stripe_session_id = "cs_test_legacy"
+    world.db.commit()
+    calls = []
+
+    def fake(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {}
+
+    monkeypatch.setattr(gateways, "stripe_request", fake)
+    monkeypatch.setattr(CommerceService, "release", lambda *args: None)
+    CommerceService(world.db, order.tenant_id).cancel(order)
+    assert calls == [("POST", "checkout/sessions/cs_test_legacy/expire", {})]

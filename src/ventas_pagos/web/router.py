@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user, get_optional_user
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
-from src.infrastructure.database.session import get_db
+from src.infrastructure.database.session import get_db, set_rls_context
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.config.settings import settings
 from src.shared.exceptions.domain_exception import NotFoundError
@@ -196,7 +196,9 @@ def profile(data: ProfileUpdate, user: User, db: Session = Depends(get_db)):
 @router.get("/cart")
 def cart(user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), branch_id: uuid.UUID | None = None, coupon_code: str | None = Query(None, max_length=50), db: Session = Depends(get_db)):
     require_store_account(tenant_id, user)
-    return response(CommerceService(db, tenant_id).cart(user, branch_id, coupon_code))
+    from src.plataforma_saas.application.stripe_connect_service import tarjeta_disponible
+    result = CommerceService(db, tenant_id).cart(user, branch_id, coupon_code)
+    return response({**result, "card_payments_available": tarjeta_disponible(db, tenant_id)})
 
 
 @router.put("/cart/items/{variant_id}")
@@ -552,7 +554,12 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     """Recibe los eventos firmados de Stripe."""
     body = await request.body()
     firma = request.headers.get("stripe-signature", "")
-    return await run_in_threadpool(lambda: CommerceService(db).webhook(verify_event(body, firma)))
+    def process():
+        event = verify_event(body, firma)
+        set_rls_context(db, is_platform=True)
+        return CommerceService(db).webhook(event)
+
+    return await run_in_threadpool(process)
 
 
 @analytics_router.get("/dashboard")
