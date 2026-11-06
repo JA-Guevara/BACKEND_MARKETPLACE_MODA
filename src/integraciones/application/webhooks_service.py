@@ -136,6 +136,16 @@ class WebhooksService:
         self.db.commit()
         return True
 
+    def publicar_si_hay_suscriptores(self, tenant_id, event_type, data):
+        endpoints = self.db.scalars(select(WebhookEndpointModel).where(
+            WebhookEndpointModel.tenant_id == tenant_id,
+            WebhookEndpointModel.is_active.is_(True),
+        )).all()
+        if not any(any(e == '*' or e == event_type or (e.endswith('.*') and event_type.startswith(e[:-1]))
+                       for e in (ep.events or [])) for ep in endpoints):
+            return None
+        return self.publicar(tenant_id, event_type, data)
+
     def publicar(
         self,
         tenant_id: uuid.UUID,
@@ -190,7 +200,7 @@ class WebhooksService:
                 )
                 self.db.add(delivery)
 
-        self.db.commit()
+        self.db.flush()
         return event
 
     def entregar_pendientes(self, batch_size: int = 50, http_client: httpx.Client | None = None) -> list[WebhookDeliveryModel]:

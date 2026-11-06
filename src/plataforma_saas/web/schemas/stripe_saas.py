@@ -72,7 +72,7 @@ class IntegrationSale(StrictModel):
 
 class IntegrationSalesOut(StrictModel):
     items: list[IntegrationSale]
-    next_since: AwareDatetime | None
+    next_since: str | None
 
 
 class IntegrationStockItem(StrictModel):

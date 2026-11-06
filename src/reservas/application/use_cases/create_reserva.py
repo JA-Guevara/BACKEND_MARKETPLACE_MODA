@@ -195,6 +195,11 @@ class CrearReserva:
                 actor_user_id=actor.id,
                 metadata={"origin": data.origin, "device_id": data.device_id, "branch_id": str(data.branch_id), "items": len(snapshot), "scheduled_at": data.scheduled_at.isoformat()},
             )
+            from src.integraciones.application.webhooks_service import WebhooksService
+            WebhooksService(self.db).publicar_si_hay_suscriptores(reserva.tenant_id, "reservation.created", {
+                "reservation_id": str(reserva.id), "branch_id": str(reserva.branch_id),
+                "scheduled_at": reserva.scheduled_at.isoformat(),
+            })
             if commit:
                 self.db.commit()
                 self.db.refresh(reserva)

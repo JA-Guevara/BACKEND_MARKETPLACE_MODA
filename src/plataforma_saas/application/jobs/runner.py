@@ -99,6 +99,8 @@ class TareasProgramadas:
         return job_run
 
     def tick(self, ahora: datetime | None = None) -> list[JobRunModel]:
+        from src.infrastructure.database.session import set_rls_context
+        set_rls_context(self.db, is_platform=True)
         ahora = _as_utc(ahora)
         runs: list[JobRunModel] = []
 
@@ -171,4 +173,9 @@ class TareasProgramadas:
 
         runs.append(self._run_job("invoices.issue", _job_invoices, ahora))
 
+        def _job_webhooks(now):
+            from src.integraciones.application.webhooks_service import WebhooksService
+            return {"attempted": len(WebhooksService(self.db).entregar_pendientes())}
+
+        runs.append(self._run_job("webhooks.deliver", _job_webhooks, ahora))
         return runs

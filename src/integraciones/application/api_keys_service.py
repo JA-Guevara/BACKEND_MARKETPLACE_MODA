@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from src.integraciones.infrastructure.models import ApiKeyModel
-from src.shared.exceptions.domain_exception import AuthenticationError, AuthorizationError, NotFoundError
+from src.shared.exceptions.domain_exception import AuthenticationError, AuthorizationError, NotFoundError, ValidationError
 
 
 class ApiKeyInvalidError(AuthenticationError):
@@ -61,9 +61,9 @@ class ApiKeysService:
         key_hash = hash_api_key(raw_key)
 
         # Filtrar o validar scopes permitidos
-        valid_scopes = [s for s in scopes if s in ALLOWED_INTEGRATION_SCOPES or s in ("all", "*")]
-        if not valid_scopes:
-            valid_scopes = ["sales.read", "stock.read", "catalog.read"]
+        valid_scopes = [s.replace(":", ".") for s in scopes if s.replace(":", ".") in ALLOWED_INTEGRATION_SCOPES or s in ("all", "*")]
+        if not valid_scopes or len(valid_scopes) != len(scopes):
+            raise ValidationError("Indica únicamente scopes de integración permitidos.")
 
         key_model = ApiKeyModel(
             id=uuid.uuid4(),
@@ -129,8 +129,32 @@ class ApiKeysService:
     @staticmethod
     def verificar_scope(key_scopes: list[str], required_scope: str) -> None:
         if (
-            required_scope not in key_scopes
+            required_scope.replace(":", ".") not in {s.replace(":", ".") for s in key_scopes}
             and "all" not in key_scopes
             and "*" not in key_scopes
         ):
             raise ApiKeyScopeError(f"Se requiere el scope '{required_scope}'.")
+
+
+def require_api_key(required_scope: str):
+    from dataclasses import dataclass
+    from fastapi import Depends, Header
+    from src.infrastructure.database.session import get_db, set_rls_context
+    from src.plataforma_saas.infrastructure.models.tenant import TenantModel
+
+    @dataclass(frozen=True)
+    class ApiTenantContext:
+        tenant_id: uuid.UUID
+        key_id: uuid.UUID
+
+    def dependency(authorization: str | None = Header(default=None),
+                   x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+                   db: Session = Depends(get_db)):
+        model, tenant_id, scopes = ApiKeysService(db).autenticar(x_api_key or authorization or "")
+        ApiKeysService.verificar_scope(scopes, required_scope)
+        tenant = db.get(TenantModel, tenant_id)
+        if tenant is None or tenant.status != "ACTIVA":
+            raise ApiKeyInvalidError()
+        set_rls_context(db, tenant_id=tenant_id)
+        return ApiTenantContext(tenant_id, model.id)
+    return dependency

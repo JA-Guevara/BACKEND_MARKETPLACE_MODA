@@ -83,6 +83,13 @@ class CicloSuscripcion:
     def __init__(self, db: Session):
         self.db = db
 
+    def _publicar_cambio(self, sub: SubscriptionModel, status: str) -> None:
+        """subscription.changed en la misma transacción (import local: evita ciclo de módulos)."""
+        from src.integraciones.application.webhooks_service import WebhooksService
+        WebhooksService(self.db).publicar_si_hay_suscriptores(sub.tenant_id, "subscription.changed", {
+            "subscription_id": str(sub.id), "status": status,
+        })
+
     def avisar_por_vencer(self, ahora: datetime) -> int:
         ahora = _as_utc(ahora)
         hoy = ahora.date()
@@ -125,6 +132,7 @@ class CicloSuscripcion:
                         sent_at=ahora,
                     )
                     self.db.add(notice)
+                    self._publicar_cambio(sub, calcular_lifecycle_state(sub, ahora))
                     count += 1
 
         if count > 0:
@@ -164,6 +172,7 @@ class CicloSuscripcion:
                         sent_at=ahora,
                     )
                 )
+            self._publicar_cambio(sub, calcular_lifecycle_state(sub, ahora))
             count += 1
 
         if count > 0:
@@ -213,6 +222,7 @@ class CicloSuscripcion:
                             sent_at=ahora,
                         )
                     )
+                self._publicar_cambio(sub, calcular_lifecycle_state(sub, ahora))
                 count += 1
 
         if count > 0:
@@ -254,6 +264,7 @@ class CicloSuscripcion:
                             sent_at=ahora,
                         )
                     )
+                self._publicar_cambio(sub, calcular_lifecycle_state(sub, ahora))
                 count += 1
 
         if count > 0:
@@ -268,5 +279,6 @@ class CicloSuscripcion:
         subscription.status = "ACTIVA"
         if actor:
             subscription.changed_by = getattr(actor, "id", None)
+        self._publicar_cambio(subscription, "active")
         self.db.flush()
         return subscription

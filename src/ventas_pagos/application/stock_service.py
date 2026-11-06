@@ -64,6 +64,15 @@ class StockService:
                 actor_email=actor.email if actor else None,
             ))
         self.db.flush()
+        from src.infrastructure.config.settings import settings
+        if previous >= settings.low_stock_threshold > quantity:
+            from src.integraciones.application.webhooks_service import WebhooksService
+            branch = self.db.get(BranchModel, branch_id)
+            variant = self.db.get(ProductVariantModel, variant_id)
+            if branch and variant and variant.product and variant.product.tenant_id == branch.tenant_id:
+                WebhooksService(self.db).publicar_si_hay_suscriptores(branch.tenant_id, "stock.low", {
+                    "sku": variant.sku, "branch_id": str(branch_id), "quantity": quantity,
+                })
         return row
 
     def adjust(self, variant_id, branch_id, quantity, reason, actor_id=None):

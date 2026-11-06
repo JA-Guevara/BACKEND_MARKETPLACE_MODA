@@ -289,6 +289,8 @@ class OfflineSaleService:
                 ))
             except Exception:
                 pass
+        from src.ventas_pagos.application.service import CommerceService
+        CommerceService(self.db, self.tenant_id)._publicar(order, "sale.confirmed")
         return order
 
 

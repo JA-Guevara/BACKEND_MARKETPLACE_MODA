@@ -29,6 +29,14 @@ class CommerceService:
     def audit(self, order, action, description):
         RecordAuditEvent(self.db).execute(action="commerce." + action, entity_type="order", entity_id=str(order.id), description=description, metadata={"number":order.number,"status":order.status,"payment_status":order.payment_status})
 
+    def _publicar(self, order, event_type):
+        from src.integraciones.application.webhooks_service import WebhooksService
+        service = WebhooksService(self.db)
+        service.publicar_si_hay_suscriptores(order.tenant_id, event_type, {
+            "order_id": str(order.id), "number": order.number, "total": str(order.total),
+            "currency": order.currency, "branch_id": str(order.branch_id),
+        })
+
     def branch(self, branch_id):
         branch = self.db.get(BranchModel, branch_id)
         if not branch or branch.deleted_at:
@@ -285,6 +293,7 @@ class CommerceService:
         order.paid_at = datetime.fromtimestamp(paid_timestamp, timezone.utc) if paid_timestamp else datetime.now(timezone.utc)
         order.payment_reference = reference
         self.track(order, note)
+        self._publicar(order, "order.paid")
         return True
 
     def reconcile_payment(self, order):
@@ -320,6 +329,7 @@ class CommerceService:
         order.status, order.payment_status = "paid", "paid"
         order.paid_at = datetime.now(timezone.utc)
         self.track(order, "Pago presencial/transferencia confirmado por administracion.")
+        self._publicar(order, "order.paid")
         self.audit(order, "payment_confirmed", "Pago manual confirmado por administracion.")
         self.db.commit()
         notificar_pedido(self.db, order)
@@ -404,6 +414,7 @@ class CommerceService:
                         ))
                 except Exception:
                     pass
+            self._publicar(order, "sale.confirmed")
             self.audit(order, "pos_sale_created", "Venta presencial registrada, cobrada y entregada.")
             self.db.commit()
             self.db.refresh(order)
