@@ -21,6 +21,8 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    tenant_slug: str | None = Field(default=None, max_length=60, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    platform_login: bool = False
 
 
 class RefreshRequest(BaseModel):

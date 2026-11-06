@@ -24,6 +24,7 @@ from src.auth.infrastructure.security.password_hasher import PasswordHasher
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.config.settings import settings
 from src.infrastructure.security.access_context import is_platform_account
+from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
 from src.roles.infrastructure.persistence.repositories.role_repository import RoleRepository
 from src.shared.exceptions.domain_exception import AuthenticationError, ConflictError, MaintenanceError
 
@@ -86,9 +87,11 @@ class AuthService:
         ip_address: str | None,
         user_agent: str | None,
         platform_only: bool = False,
+        tenant_slug: str | None = None,
+        platform_login: bool = False,
     ) -> TokenResponse:
         user = self.users.get_by_email(email)
-        if platform_only and (user is None or not is_platform_account(user)):
+        if platform_only and (user is None or not is_platform_account(user) or tenant_slug):
             raise MaintenanceError()
         now = datetime.now(timezone.utc)
         if not user:
@@ -101,6 +104,12 @@ class AuthService:
                 user_agent=user_agent,
             )
             self.db.commit()
+            raise InvalidCredentialsError()
+        if tenant_slug:
+            tenant = SaasRepository(self.db).find_tenant_by_slug(tenant_slug)
+            if platform_login or tenant is None or user.tenant_id != tenant.id:
+                raise InvalidCredentialsError()
+        if platform_login and not is_platform_account(user):
             raise InvalidCredentialsError()
         if not user.is_active:
             raise InactiveAccountError("La cuenta esta desactivada.")

@@ -27,7 +27,7 @@ class SnapshotService:
             if since > generated:
                 raise ValidationError("La versión de la instantánea no puede estar en el futuro.")
         branches = list(self.db.scalars(select(BranchModel).where(BranchModel.tenant_id == self.ctx.tenant_id,
-            BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None))))
+            BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None)).order_by(BranchModel.name, BranchModel.id)))
         if branch_id and not any(branch.id == branch_id for branch in branches):
             raise NotFoundError("Sucursal no encontrada.")
         query = select(ProductModel).where(ProductModel.tenant_id == self.ctx.tenant_id).options(selectinload(ProductModel.variants), selectinload(ProductModel.images))

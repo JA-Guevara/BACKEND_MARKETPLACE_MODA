@@ -107,7 +107,13 @@ def login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     platform_only = getattr(request.state, "maintenance_platform_only", False)
     try:
         tokens = AuthService(db).login(
-            str(data.email), data.password, ip_address=ip, user_agent=user_agent, platform_only=platform_only
+            str(data.email),
+            data.password,
+            ip_address=ip,
+            user_agent=user_agent,
+            platform_only=platform_only,
+            tenant_slug=data.tenant_slug,
+            platform_login=data.platform_login,
         )
     except (MaintenanceError, AuthenticationError):
         if not platform_only:
