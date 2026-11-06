@@ -268,3 +268,21 @@ def test_get_auth_me_con_token_soporte_retorna_tenant_a_y_support_is_active(worl
     assert data["support"] is not None
     assert data["support"]["is_active"] is True
     assert data["support"]["tenant_id"] == str(tenant_a.id)
+
+
+
+def test_soporte_no_puede_previsualizar_catalogo_de_otra_empresa(world):
+    a, b = world.tenants
+    b.is_published = False
+    world.db.commit()
+    start = world.client.post(
+        f"/api/v1/platform/tenants/{a.id}/support-sessions",
+        headers=world.headers(world.platform),
+        json={"reason": "Revisar aislamiento de tienda en modo soporte", "duration_minutes": 30},
+    )
+    token = start.json()["data"]["access_token"]
+    headers = {"Authorization": f"Bearer {token}", "X-Tenant-Slug": b.slug}
+    response = world.client.get("/api/v1/catalog/products", headers=headers)
+    assert response.status_code in {403, 404, 409}, response.text
+    preview = world.client.get(f"/api/v1/public/stores/{b.slug}", headers=headers)
+    assert preview.status_code == 404, preview.text

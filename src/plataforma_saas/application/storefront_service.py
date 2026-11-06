@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.config.settings import settings
+from src.infrastructure.security.access_context import is_platform_account
+from src.shared.context.audit_context import get_audit_scope
 from src.plataforma_saas.domain.exceptions import (
     InvalidBrandColorError,
     PublishRequirementsError,
@@ -239,15 +241,11 @@ class StorefrontService:
 
         is_preview = False
         if not tenant.is_published:
-            # Comprobar si viewer es de la empresa o super admin
-            puede = False
-            if viewer:
-                if viewer.tenant_id == tenant.id:
-                    puede = True
-                elif viewer.tenant_id is None and any(
-                    getattr(r, "name", "") in ("platform_admin", "superadmin") for r in getattr(viewer, "roles", [])
-                ):
-                    puede = True
+            support_tenant, support_session = get_audit_scope()
+            puede = viewer is not None and (
+                support_tenant == tenant.id if support_session is not None
+                else viewer.tenant_id == tenant.id or is_platform_account(viewer)
+            )
             if not puede:
                 raise StoreNotPublishedError()
             is_preview = True

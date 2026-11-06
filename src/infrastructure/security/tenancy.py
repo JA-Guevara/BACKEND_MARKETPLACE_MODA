@@ -7,11 +7,10 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
-from src.auth.infrastructure.security.jwt_service import JWTService
 from src.auth.web.dependencies import bearer_scheme, get_optional_user
 from src.infrastructure.config.settings import settings
 from src.infrastructure.database.session import get_db, is_rls_enabled, set_rls_context
-from src.infrastructure.security.access_context import AccessContext, get_access_context
+from src.infrastructure.security.access_context import AccessContext, get_access_context, is_platform_account
 from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.plataforma_saas.domain.exceptions import (
     StoreAccountMismatchError,
@@ -21,6 +20,7 @@ from src.plataforma_saas.domain.exceptions import (
     TenantRequiredError,
 )
 from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
+from src.shared.context.audit_context import get_audit_scope
 
 
 @dataclass(frozen=True)
@@ -50,29 +50,12 @@ def get_tenant_context(
 TenantScope = Annotated[TenantContext, Depends(get_tenant_context)]
 
 
-def _puede_previsualizar(tenant, user: UserModel | None, credentials: HTTPAuthorizationCredentials | None) -> bool:
-    """Verifica si el usuario es personal de esa empresa o super admin para vista previa."""
-    if user:
-        if user.tenant_id is not None and str(user.tenant_id) == str(tenant.id):
-            return True
-        # Usuario de plataforma (sin tenant_id y con rol platform_admin)
-        if user.tenant_id is None and any(getattr(r, "code", "") in ("platform_admin", "superadmin") or getattr(r, "name", "") in ("platform_admin", "superadmin", "Plataforma") for r in getattr(user, "roles", [])):
-            return True
-
-    if credentials and credentials.scheme.lower() == "bearer":
-        try:
-            payload = JWTService().decode(credentials.credentials, "access")
-            tid = payload.get("tid")
-            if tid and str(tid) == str(tenant.id):
-                return True
-            if payload.get("scope") == "support" or payload.get("ssid"):
-                return True
-            roles = payload.get("roles", [])
-            if not tid and ("platform_admin" in roles or "superadmin" in roles):
-                return True
-        except Exception:
-            pass
-    return False
+def _puede_previsualizar(tenant, user: UserModel | None, support_tenant_id: UUID | None) -> bool:
+    if user is None:
+        return False
+    if support_tenant_id is not None:
+        return support_tenant_id == tenant.id
+    return user.tenant_id == tenant.id or is_platform_account(user)
 
 
 def get_public_tenant_id(
@@ -88,17 +71,14 @@ def get_public_tenant_id(
     if x_tenant_slug:
         tenant = repository.find_tenant_by_slug(x_tenant_slug)
 
-    # 2. Si no viene cabecera pero hay token de soporte con claim 'tid'
-    if tenant is None and credentials and credentials.scheme.lower() == "bearer":
-        try:
-            payload = JWTService().decode(credentials.credentials, "access")
-            if "tid" in payload and payload["tid"]:
-                tenant = repository.get_tenant(UUID(str(payload["tid"])))
-        except Exception:
-            pass
+    support_tenant_id, support_session_id = get_audit_scope()
+    if user is None or support_session_id is None:
+        support_tenant_id = None
+    if tenant is None and not x_tenant_slug and support_tenant_id is not None:
+        tenant = repository.get_tenant(support_tenant_id)
 
     # 3. Si no viene cabecera y el usuario autenticado tiene empresa
-    if tenant is None and user and user.tenant_id:
+    if tenant is None and not x_tenant_slug and user and user.tenant_id:
         tenant = repository.get_tenant(user.tenant_id)
 
     # 4. Fallback a tienda por defecto si no vino cabecera
@@ -109,11 +89,13 @@ def get_public_tenant_id(
         raise TenantNotFoundError()
     if tenant.status != "ACTIVA":
         raise TenantInactiveError()
+    if support_tenant_id is not None and tenant.id != support_tenant_id:
+        raise StoreAccountMismatchError()
 
     # Verificación de publicación (RS-3):
     is_pub = getattr(tenant, "is_published", True)
     if not is_pub:
-        if not _puede_previsualizar(tenant, user, credentials):
+        if not _puede_previsualizar(tenant, user, support_tenant_id):
             raise StoreNotPublishedError()
 
     if is_rls_enabled():

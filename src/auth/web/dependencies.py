@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -8,12 +9,29 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.infrastructure.persistence.repositories.user_repository import UserRepository
 from src.auth.infrastructure.security.jwt_service import JWTService
 from src.infrastructure.database.session import get_db, set_rls_context
-from src.plataforma_saas.domain.exceptions import TenantInactiveError
+from src.plataforma_saas.domain.exceptions import SupportSessionExpiredError, TenantInactiveError
+from src.plataforma_saas.infrastructure.models.support_session import SupportSessionModel
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
-from src.shared.context.audit_context import set_audit_actor
+from src.shared.context.audit_context import set_audit_actor, set_audit_scope
 from src.shared.exceptions.domain_exception import AuthenticationError
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def validate_support_session(db: Session, user: UserModel, payload: dict) -> SupportSessionModel:
+    try:
+        session_id = uuid.UUID(str(payload["ssid"]))
+        tenant_id = uuid.UUID(str(payload["tid"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SupportSessionExpiredError() from exc
+    session = db.get(SupportSessionModel, session_id)
+    if (session is None or session.tenant_id != tenant_id or session.platform_user_id != user.id
+            or not session.is_active(datetime.now(timezone.utc))):
+        raise SupportSessionExpiredError()
+    tenant = db.get(TenantModel, tenant_id)
+    if tenant is None or tenant.status != "ACTIVA":
+        raise TenantInactiveError()
+    return session
 
 
 def get_current_user(
@@ -25,7 +43,7 @@ def get_current_user(
     payload = JWTService().decode(credentials.credentials, "access")
     try:
         user_id = uuid.UUID(str(payload["sub"]))
-    except (ValueError, TypeError) as exc:
+    except (KeyError, ValueError, TypeError) as exc:
         raise AuthenticationError("Token invalido.") from exc
     user = UserRepository(db).get_by_id(user_id)
     if not user or not user.is_active:
@@ -41,9 +59,14 @@ def get_current_user(
                 raise TenantInactiveError()
 
     set_audit_actor(user.id)
-    if "ssid" not in payload:
-        # Solo después de verificar identidad y pertenencia. El soporte debe
-        # validar su sesión delegada en get_access_context antes de fijar RLS.
+    if "ssid" in payload:
+        from src.infrastructure.security.access_context import is_platform_account
+        if not is_platform_account(user):
+            raise SupportSessionExpiredError()
+        support = validate_support_session(db, user, payload)
+        set_audit_scope(support.tenant_id, support.id)
+        set_rls_context(db, tenant_id=support.tenant_id)
+    else:
         from src.infrastructure.security.access_context import is_platform_account
         set_rls_context(db, tenant_id=user.tenant_id, is_platform=is_platform_account(user))
     return user

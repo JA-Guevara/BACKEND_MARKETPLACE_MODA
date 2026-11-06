@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import Depends, Request
@@ -9,16 +8,13 @@ from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.infrastructure.security.jwt_service import JWTService
-from src.auth.web.dependencies import bearer_scheme, get_current_user
+from src.auth.web.dependencies import bearer_scheme, get_current_user, validate_support_session
 from src.infrastructure.database.session import get_db, set_rls_context
 from src.plataforma_saas.application.entitlement_service import EntitlementService
 from src.plataforma_saas.domain.exceptions import (
     SupportReadOnlyError,
     SupportSessionExpiredError,
-    TenantInactiveError,
 )
-from src.plataforma_saas.infrastructure.models.support_session import SupportSessionModel
-from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.roles.infrastructure.persistence.models.permission import PermissionModel
 from src.shared.context.audit_context import set_audit_actor, set_audit_scope
 
@@ -82,33 +78,14 @@ def get_access_context(
     payload = None
     read_only = False
     if credentials and credentials.scheme.lower() == "bearer":
-        try:
-            payload = JWTService().decode(credentials.credentials, "access")
-        except Exception:
-            payload = None
+        payload = JWTService().decode(credentials.credentials, "access")
 
-    # 1. Sesión de soporte RFC 8693
-    if payload and "ssid" in payload and payload["ssid"]:
-        try:
-            ssid = UUID(str(payload["ssid"]))
-        except (ValueError, TypeError) as exc:
-            raise SupportSessionExpiredError("Sesión de soporte inválida.") from exc
-
-        session = db.get(SupportSessionModel, ssid)
-        now = datetime.now(timezone.utc)
-        if not session or not session.is_active(now) or session.platform_user_id != user.id:
+    if payload is not None and "ssid" in payload:
+        if not is_platform_account(user):
             raise SupportSessionExpiredError()
-
-        try:
-            tenant_id = UUID(str(payload["tid"]))
-        except (ValueError, TypeError, KeyError) as exc:
-            raise SupportSessionExpiredError("Token de soporte sin tenant válido.") from exc
-
-        tenant = db.get(TenantModel, tenant_id)
-        if tenant is None or tenant.status != "ACTIVA":
-            raise TenantInactiveError()
-
-        support_session_id = ssid
+        session = validate_support_session(db, user, payload)
+        tenant_id = session.tenant_id
+        support_session_id = session.id
         read_only = bool(payload.get("ro", False)) or (getattr(session, "mode", "WRITE") == "READ_ONLY")
         raw_perms = tenant_scope_permissions(db)
         permissions = EntitlementService(db).filtrar_permisos(tenant_id, raw_perms)

@@ -147,3 +147,11 @@ def test_admin_a_post_roles_permissions_retorna_403_solo_plataforma(world):
         },
     )
     assert resp.status_code == 403
+
+
+
+def test_catalogo_de_permisos_lista_solo_permisos_de_empresa(world):
+    response = world.client.get("/api/v1/roles/permissions/all", headers=world.headers(world.admins[0]))
+    assert response.status_code == 200, response.text
+    permissions = response.json()["data"]
+    assert permissions and {permission["scope"] for permission in permissions} == {"tenant"}

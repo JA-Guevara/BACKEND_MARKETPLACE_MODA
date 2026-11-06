@@ -46,10 +46,7 @@ def list_permissions(
     db: Session = Depends(get_db),
 ):
     repo = RoleRepository(db)
-    if ctx.is_platform:
-        perms = repo.list_permissions(include_inactive)
-    else:
-        perms = repo.permissions_by_scope("tenant", include_inactive)
+    perms = repo.permissions_by_scope("tenant", include_inactive)
     return ApiResponse(message="Permisos obtenidos.", data=perms)
 
 
