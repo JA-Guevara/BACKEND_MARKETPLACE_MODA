@@ -176,11 +176,17 @@ def test_local_mobile_checkout_uses_the_api_host_reached_by_the_phone(world, mon
     order.sales_channel = 'mobile'
     order.stripe_session_id = None
     order.stripe_url = None
+    # PS-PX O1.6: el cobro con tarjeta exige la cuenta Connect activa de la empresa (RN-ST2).
+    from datetime import datetime, timezone
+    from src.plataforma_saas.infrastructure.models.stripe_saas import TenantPaymentAccountModel
+    db.add(TenantPaymentAccountModel(tenant_id=order.tenant_id, stripe_account_id='acct_test_local', status='active',
+        charges_enabled=True, payouts_enabled=True, details_submitted=True, updated_at=datetime.now(timezone.utc)))
     db.commit()
     captured = {}
 
-    def capture(method, path, data, key):
+    def capture(method, path, data, key, stripe_account=None):
         captured.update(data)
+        captured['stripe_account'] = stripe_account
         return {'id': 'cs_test_local', 'url': 'https://checkout.stripe.com/test'}
 
     monkeypatch.setattr(gateways, 'stripe_request', capture)
@@ -189,6 +195,7 @@ def test_local_mobile_checkout_uses_the_api_host_reached_by_the_phone(world, mon
     assert captured['success_url'].startswith(
         f'http://testserver/api/v1/commerce/payment-return/{order.id}'
     )
+    assert captured['stripe_account'] == 'acct_test_local'
 
 
 def test_stripe_cobra_total_con_descuento_y_no_subtotal(world, monkeypatch):

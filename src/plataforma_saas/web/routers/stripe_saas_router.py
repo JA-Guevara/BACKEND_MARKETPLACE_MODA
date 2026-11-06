@@ -1,6 +1,6 @@
 from typing import Annotated
 from uuid import UUID
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.database.session import get_db, set_rls_context
@@ -11,6 +11,7 @@ from src.plataforma_saas.web.schemas.stripe_saas import (
     PlanStripePriceIn, PlanStripePriceOut, StripeAccountOut, StripeOnboardingOut, StripeReceived,
 )
 from src.plataforma_saas.application.billing_stripe import StripeBilling
+from src.plataforma_saas.application.stripe_connect_service import StripeConnectService
 from src.shared.responses.api_response import ApiResponse
 
 router = APIRouter(tags=["PAQ-06 · Stripe SaaS"])
@@ -18,10 +19,6 @@ BillingWriter = Annotated[UserModel, Depends(require_permissions("billing.manage
 BillingReader = Annotated[UserModel, Depends(require_permissions("my_subscription.read"))]
 PaymentWriter = Annotated[UserModel, Depends(require_permissions("payment_methods.write"))]
 PlanWriter = Annotated[UserModel, Depends(require_platform_permissions("plans.write"))]
-
-
-def _pending():
-    raise HTTPException(501, "Implementación pendiente de Stripe SaaS.")
 
 
 async def cuerpo_crudo(request: Request) -> bytes:
@@ -59,18 +56,27 @@ def billing_webhook(body: RawBody, stripe_signature: str | None = Header(default
 
 
 @router.get("/tenant/payments/stripe-account", response_model=ApiResponse[StripeAccountOut])
-def stripe_account(ctx: TenantScope, actor: PaymentWriter):
-    return _pending()
+def stripe_account(ctx: TenantScope, actor: PaymentWriter, db: Session = Depends(get_db)):
+    return ApiResponse(data=StripeConnectService(db).estado(ctx.tenant_id))
 
 
 @router.post("/tenant/payments/stripe-account/onboarding", response_model=ApiResponse[StripeOnboardingOut])
-def stripe_onboarding(ctx: TenantScope, actor: PaymentWriter):
-    return _pending()
+def stripe_onboarding(ctx: TenantScope, actor: PaymentWriter, db: Session = Depends(get_db)):
+    result = StripeConnectService(db).onboarding(ctx.tenant_id)
+    db.commit()  # la cuenta Express se crea una sola vez por empresa
+    return ApiResponse(data=result)
 
 
 @router.post("/stripe/connect/webhook", response_model=StripeReceived)
-async def connect_webhook(request: Request):
-    return _pending()
+def connect_webhook(body: RawBody, stripe_signature: str | None = Header(default=None), db: Session = Depends(get_db)):
+    from src.notificaciones.application.use_cases.send_notification import notificar_pedido
+    set_rls_context(db, is_platform=True)  # RN-RLS: webhooks de Stripe → plataforma
+    service = StripeConnectService(db)
+    result = service.procesar_webhook(body, stripe_signature)
+    db.commit()
+    for order in service.pedidos_confirmados:
+        notificar_pedido(db, order)
+    return result
 
 
 @router.put("/platform/plans/{plan_id}/stripe-price", response_model=ApiResponse[PlanStripePriceOut])

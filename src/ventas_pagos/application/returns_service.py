@@ -362,7 +362,9 @@ class ReturnsService:
                 if (order and order.payment_method == "stripe"
                         and not self.es_cambio(devolucion)
                         and devolucion.refund_amount > 0):
-                    gateways.refund_order_return(order, devolucion)
+                    from src.plataforma_saas.application.stripe_connect_service import cuenta_del_pedido
+                    # El reembolso sale de la misma cuenta conectada que cobró el pedido.
+                    gateways.refund_order_return(order, devolucion, **gateways.en_cuenta(cuenta_del_pedido(self.db, order)))
                 # Las prendas vuelven recién cuando se reciben físicamente.
                 inventario = StockService(self.db, self.tenant_id or devolucion.tenant_id)
                 for item in sorted(devolucion.items, key=lambda row: str(row["variant_id"])):

@@ -12,13 +12,18 @@ from src.infrastructure.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
-def stripe_request(method: str, path: str, data=None, key=None):
+def stripe_request(method: str, path: str, data=None, key=None, stripe_account: str | None = None):
+    """Llamada a Stripe en modo prueba. Con stripe_account la operación ocurre en la
+    cuenta conectada de la empresa (cargo directo, cabecera Stripe-Account)."""
     if not settings.stripe_secret_key.startswith("sk_test_"):
         raise HTTPException(503, "Configure STRIPE_SECRET_KEY de pruebas en el backend.")
+    headers = {"Idempotency-Key": key} if key else {}
+    if stripe_account:
+        headers["Stripe-Account"] = stripe_account
     try:
         response = httpx.request(method, "https://api.stripe.com/v1/" + path,
             auth=(settings.stripe_secret_key, ""), data=data,
-            headers={"Idempotency-Key": key} if key else {}, timeout=20)
+            headers=headers, timeout=20)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as exc:
@@ -31,7 +36,12 @@ def stripe_request(method: str, path: str, data=None, key=None):
         raise HTTPException(502, "Stripe no esta disponible; vuelva a intentar.") from exc
 
 
-def create_session(order, payment_return_url=None):
+def en_cuenta(stripe_account: str | None) -> dict:
+    """Argumento Stripe-Account solo si hay cuenta conectada: sin ella, la llamada es idéntica a la anterior."""
+    return {"stripe_account": stripe_account} if stripe_account else {}
+
+
+def create_session(order, payment_return_url=None, stripe_account=None, application_fee_amount=0):
     base = settings.frontend_url.rstrip("/")
     if order.sales_channel == "mobile":
         payment_return = payment_return_url or (
@@ -57,15 +67,19 @@ def create_session(order, payment_return_url=None):
         "line_items[0][price_data][unit_amount]": str(int(Decimal(order.total) * 100)),
         "line_items[0][quantity]": "1",
     })
-    return stripe_request("POST", "checkout/sessions", data, "fashion-order-" + str(order.id))
+    if application_fee_amount and application_fee_amount > 0:
+        data["payment_intent_data[application_fee_amount]"] = str(int(application_fee_amount))
+    return stripe_request("POST", "checkout/sessions", data, "fashion-order-" + str(order.id),
+                          **en_cuenta(stripe_account))
 
 
-def retrieve_session(session_id):
+def retrieve_session(session_id, stripe_account=None):
     # El ID procede de nuestra base, nunca de una URL o cuerpo del cliente.
-    return stripe_request("GET", f"checkout/sessions/{session_id}?expand[]=payment_intent.latest_charge")
+    return stripe_request("GET", f"checkout/sessions/{session_id}?expand[]=payment_intent.latest_charge",
+                          **en_cuenta(stripe_account))
 
 
-def refund_order_return(order, devolucion):
+def refund_order_return(order, devolucion, stripe_account=None):
     """Reembolsa una devolución de prueba una sola vez, incluso tras un corte de red."""
     if not order.payment_reference or not order.payment_reference.startswith("pi_"):
         raise HTTPException(409, "El pedido no tiene un pago Stripe verificable para reintegrar.")
@@ -73,7 +87,7 @@ def refund_order_return(order, devolucion):
     if amount <= 0:
         return None
     intent = order.payment_reference
-    existing = stripe_request("GET", f"refunds?payment_intent={intent}&limit=100")
+    existing = stripe_request("GET", f"refunds?payment_intent={intent}&limit=100", **en_cuenta(stripe_account))
     refund = next((row for row in existing.get("data", [])
                    if row.get("metadata", {}).get("return_id") == str(devolucion.id)), None)
     if refund is None:
@@ -82,7 +96,7 @@ def refund_order_return(order, devolucion):
             "reason": "requested_by_customer",
             "metadata[return_id]": str(devolucion.id),
             "metadata[order_id]": str(order.id),
-        }, key=f"fashion-return-{devolucion.id}")
+        }, key=f"fashion-return-{devolucion.id}", **en_cuenta(stripe_account))
     if (refund.get("payment_intent") != intent or refund.get("amount") != amount
             or refund.get("currency", "").lower() != order.currency.lower()):
         raise HTTPException(502, "Stripe devolvió un reembolso que no coincide con la solicitud.")
