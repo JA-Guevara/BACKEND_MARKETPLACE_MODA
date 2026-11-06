@@ -6,11 +6,18 @@ from src.plataforma_saas.application.signup_service import (
     SignupRequest,
     SignupService,
     VerifyRequest,
+    exigir_signup_habilitado,
 )
 from src.shared.responses.api_response import ApiResponse
 
 
-router = APIRouter(prefix="/public/signup", tags=["Alta Autoservicio"])
+# La dependencia del router se resuelve antes que el body: con el alta cerrada
+# las tres rutas responden 404 signup_disabled sin validar ni revelar el formulario.
+router = APIRouter(
+    prefix="/public/signup",
+    tags=["Alta Autoservicio"],
+    dependencies=[Depends(exigir_signup_habilitado)],
+)
 
 
 @router.post("", response_model=ApiResponse[dict])

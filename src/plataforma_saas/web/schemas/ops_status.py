@@ -11,6 +11,7 @@ class ConfigCheck(BaseModel):
     code: Literal[
         "app_env_not_production", "backup_report_token_missing", "forwarded_ips_untrusted",
         "migration_exception_active", "workers_multiple", "backup_stale", "sentry_missing",
+        "signup_enabled", "stripe_not_configured", "rls_role_bypass",
     ]
     level: Literal["error", "warning", "info"]
     message: str

@@ -24,6 +24,12 @@ from src.plataforma_saas.infrastructure.models.subscription import SubscriptionM
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 
 
+@pytest.fixture(autouse=True)
+def _alta_abierta(monkeypatch):
+    """El alta está cerrada por defecto (O1.4): estas pruebas del flujo la abren explícitamente."""
+    monkeypatch.setenv("SIGNUP_ENABLED", "true")
+
+
 def _ensure_legal_docs_and_plan(db):
     terms = db.scalar(select(LegalDocumentModel).where(LegalDocumentModel.code == "terms"))
     if not terms:

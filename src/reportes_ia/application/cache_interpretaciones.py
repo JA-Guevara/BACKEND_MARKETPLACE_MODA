@@ -2,11 +2,14 @@ from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
+import json
+import os
 import time
 from typing import Any, Callable
 import unicodedata
 import uuid
 
+from src.infrastructure.cache.redis import RedisCacheWrapper, get_cache
 from src.reportes_ia.domain.especificacion import InterpretResult, ReportSpec
 
 
@@ -48,6 +51,18 @@ class CacheInterpretaciones:
         self.hits: int = 0
         self.misses: int = 0
 
+    def _redis(self) -> RedisCacheWrapper | None:
+        """Backend compartido solo con REDIS_URL y conexión viva; si no, memoria (comportamiento actual)."""
+        if not os.getenv("REDIS_URL", "").strip():
+            return None
+        cache = get_cache()
+        return cache if cache.is_connected else None
+
+    @staticmethod
+    def _redis_key(tenant_id_str: str, key: str) -> str:
+        # El sha ya incluye la empresa; el prefijo con tenant_id deja el aislamiento visible y auditable.
+        return f"fs_ia_interp:{tenant_id_str}:{key}"
+
     def _get_tenant_store(self, tenant_id_str: str) -> OrderedDict[str, dict[str, Any]]:
         if tenant_id_str not in self._stores:
             self._stores[tenant_id_str] = OrderedDict()
@@ -67,6 +82,14 @@ class CacheInterpretaciones:
     ) -> dict[str, Any] | None:
         tid = str(tenant_id)
         key = self.build_key(tenant_id, prompt, schema_version)
+        shared = self._redis()
+        if shared is not None:
+            raw = shared.get(self._redis_key(tid, key))
+            if raw is None:
+                self.misses += 1
+                return None
+            self.hits += 1
+            return json.loads(raw)
         store = self._stores.get(tid)
         if not store or key not in store:
             self.misses += 1
@@ -94,8 +117,6 @@ class CacheInterpretaciones:
     ) -> None:
         tid = str(tenant_id)
         key = self.build_key(tenant_id, prompt, schema_version)
-        store = self._get_tenant_store(tid)
-
         # Sanitizar estrictamente: RN22 prohíbe guardar texto original o resultados de consulta
         if isinstance(interpretacion, InterpretResult):
             raw_dict = interpretacion.model_dump(mode="json")
@@ -119,6 +140,12 @@ class CacheInterpretaciones:
             if isinstance(sanitized.get("spec"), dict):
                 sanitized["spec"].pop(prohibited, None)
 
+        shared = self._redis()
+        if shared is not None:
+            shared.set(self._redis_key(tid, key), json.dumps(sanitized, default=str), ex=self.ttl_seconds)
+            return
+
+        store = self._get_tenant_store(tid)
         if key in store:
             store.move_to_end(key)
         store[key] = {

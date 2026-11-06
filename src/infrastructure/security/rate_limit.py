@@ -1,18 +1,26 @@
-"""Ventanas deslizantes por proceso. Requiere una réplica y un worker."""
+"""Límite de peticiones.
+
+Sin REDIS_URL: ventanas deslizantes por proceso (una réplica y un worker).
+Con REDIS_URL y conexión: ventana fija compartida entre workers y réplicas.
+"""
 from collections import deque
 from dataclasses import dataclass
 import hashlib
 import json
 import math
+import os
 import re
 from threading import Lock
 import time
+
+import anyio
 
 from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from src.auth.infrastructure.security.jwt_service import JWTService
+from src.infrastructure.cache.redis import RedisCacheWrapper, get_cache
 from src.infrastructure.config.settings import settings
 from src.shared.exceptions.domain_exception import AuthenticationError
 
@@ -52,6 +60,33 @@ class RateLimiter:
             return True, politica.limite - len(q), 0
 
 
+class RedisRateLimiter:
+    """Ventana fija compartida en Redis (INCR + EXPIRE). Si Redis falla, el
+    envoltorio cae a memoria: degrada a límite por proceso, nunca abre la puerta."""
+
+    distribuido = True
+
+    def __init__(self, cache: RedisCacheWrapper, clock=time.time) -> None:
+        self.cache = cache
+        self.clock = clock
+
+    def permitir(self, clave: str, politica: Politica) -> tuple[bool, int, int]:
+        now = self.clock()
+        window = int(now // politica.ventana_s)
+        count = self.cache.incr(f"fs_rl:{politica.nombre}:{window}:{clave}", window_seconds=politica.ventana_s)
+        if count > politica.limite:
+            return False, 0, max(1, math.ceil((window + 1) * politica.ventana_s - now))
+        return True, politica.limite - count, 0
+
+
+def crear_limitador() -> "RateLimiter | RedisRateLimiter":
+    if os.getenv("REDIS_URL", "").strip():
+        cache = get_cache()
+        if cache.is_connected:
+            return RedisRateLimiter(cache)
+    return RateLimiter()
+
+
 def _key(*values: str) -> str:
     return hashlib.sha256(json.dumps(values).encode()).hexdigest()
 
@@ -59,7 +94,7 @@ def _key(*values: str) -> str:
 class RateLimitMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
-        self.limiter = RateLimiter()
+        self.limiter = crear_limitador()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or not settings.rate_limit_enabled:
@@ -76,7 +111,11 @@ class RateLimitMiddleware:
         state = scope["app"].state
 
         async def check(policy: Politica, key: str) -> tuple[int, int] | None:
-            ok, remaining, wait = self.limiter.permitir(key, policy)
+            if getattr(self.limiter, "distribuido", False):
+                # Redis es E/S de red: fuera del bucle de eventos.
+                ok, remaining, wait = await anyio.to_thread.run_sync(self.limiter.permitir, key, policy)
+            else:
+                ok, remaining, wait = self.limiter.permitir(key, policy)
             if ok:
                 return policy.limite, remaining
             state.rate_limited_count = getattr(state, "rate_limited_count", 0) + 1

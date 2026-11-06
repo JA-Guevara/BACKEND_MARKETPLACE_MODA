@@ -20,7 +20,11 @@ def service(monkeypatch):
     monkeypatch.setenv("WEB_CONCURRENCY", "1")
     monkeypatch.delenv("MIGRACION_SIN_RESPALDO_AUTORIZADA", raising=False)
     monkeypatch.delenv("RAILWAY_ENVIRONMENT_NAME", raising=False)
+    monkeypatch.delenv("SIGNUP_ENABLED", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(settings, "stripe_secret_key", "no-publicar-clave-stripe-ficticia")
     ops = OpsService(SimpleNamespace())
+    monkeypatch.setattr(ops, "_rol_salta_rls", lambda: False)
     monkeypatch.setattr(ops, "ultimo_verificado", lambda *a, **kw: SimpleNamespace(
         finished_at=datetime.now(timezone.utc) - timedelta(hours=2),
     ))
@@ -87,3 +91,22 @@ def test_arranque_local_remoto_nombra_app_env_production_sin_url():
     assert "APP_ENV=production" in text
     assert "postgresql://" not in text
     assert "no-publicar-clave" not in text
+
+
+def test_alta_abierta_y_stripe_ausente_solo_informan(service, monkeypatch):
+    monkeypatch.setenv("SIGNUP_ENABLED", "true")
+    monkeypatch.setattr(settings, "stripe_secret_key", "")
+    result = checks(service)
+    assert result["signup_enabled"]["level"] == "info"
+    assert result["stripe_not_configured"]["level"] == "info"
+    assert "no-publicar" not in str(result)
+
+
+def test_rol_que_salta_rls_es_advertencia(service, monkeypatch):
+    monkeypatch.setattr(service, "_rol_salta_rls", lambda: True)
+    assert checks(service)["rls_role_bypass"]["level"] == "warning"
+
+
+def test_rol_rls_no_consulta_pg_fuera_de_postgresql():
+    sqlite = SimpleNamespace(get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
+    assert OpsService(sqlite)._rol_salta_rls() is False

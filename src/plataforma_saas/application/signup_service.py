@@ -28,6 +28,7 @@ from src.plataforma_saas.infrastructure.models.signup_legal import (
 )
 from src.plataforma_saas.infrastructure.models.subscription import SubscriptionModel
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
+from src.shared.exceptions.domain_exception import NotFoundError
 
 
 RESERVED_SLUGS = {
@@ -77,14 +78,31 @@ class VerifyRequest(BaseModel):
     token: str = Field(..., min_length=10)
 
 
+def signup_habilitado() -> bool:
+    """Alta pública cerrada por defecto: solo SIGNUP_ENABLED=true (o 1/yes/on) la abre."""
+    return os.getenv("SIGNUP_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+class SignupDisabledError(NotFoundError):
+    status_code = 404
+    code = "signup_disabled"
+
+    def __init__(self, message: str = "El registro de tiendas está cerrado por ahora.") -> None:
+        super().__init__(message)
+
+
+def exigir_signup_habilitado() -> None:
+    if not signup_habilitado():
+        raise SignupDisabledError()
+
+
 class SignupService:
     def __init__(self, db: Session):
         self.db = db
         self.passwords = PasswordHasher()
 
     def is_signup_enabled(self) -> bool:
-        val = os.getenv("SIGNUP_ENABLED", "true").strip().lower()
-        return val not in ("0", "false", "no", "off")
+        return signup_habilitado()
 
     def slug_disponible(self, name_or_slug: str) -> tuple[str, bool, str]:
         slug = slugify(name_or_slug or "")
@@ -100,7 +118,7 @@ class SignupService:
 
     def solicitar(self, data: SignupRequest, client_ip: str | None = None) -> dict:
         if not self.is_signup_enabled():
-            raise HTTPException(status_code=404, detail="El registro público de empresas está deshabilitado.")
+            raise SignupDisabledError()
 
         if not data.accept_terms or not data.accept_privacy:
             raise HTTPException(
@@ -157,7 +175,7 @@ class SignupService:
 
     def verificar(self, raw_token: str, client_ip: str | None = None) -> dict:
         if not self.is_signup_enabled():
-            raise HTTPException(status_code=404, detail="El registro público de empresas está deshabilitado.")
+            raise SignupDisabledError()
 
         token_hash = hashlib.sha256(raw_token.strip().encode("utf-8")).hexdigest()
         signup = self.db.scalar(

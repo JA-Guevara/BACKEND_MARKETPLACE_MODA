@@ -7,15 +7,17 @@ import re
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.engine import make_url
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
+from src.infrastructure.cache.redis import get_cache
 from src.infrastructure.config.settings import settings
 from src.operacion_offline.infrastructure.models.sync import SyncBatchModel
+from src.plataforma_saas.application.signup_service import signup_habilitado
 from src.plataforma_saas.infrastructure.models.ops import PlatformBackup
 from src.roles.infrastructure.persistence.models.role import RoleModel
 from src.shared.exceptions.base_exception import AppException
@@ -80,6 +82,19 @@ class OpsService:
             query = query.where(PlatformBackup.alembic_revision == revision)
         return self.db.scalar(query.order_by(PlatformBackup.finished_at.desc(), PlatformBackup.id.desc()).limit(1))
 
+    def _rol_salta_rls(self) -> bool:
+        """True si el rol de la conexión no queda sujeto a RLS. Solo PostgreSQL; solo atributos, nunca datos."""
+        if self.db.get_bind().dialect.name != "postgresql":
+            return False
+        row = self.db.execute(text(
+            "SELECT r.rolbypassrls OR r.rolsuper, EXISTS ("
+            " SELECT 1 FROM pg_tables t WHERE t.schemaname = current_schema()"
+            " AND t.tablename IN ('products', 'commerce_orders', 'reservations')"
+            " AND t.tableowner = current_user)"
+            " FROM pg_roles r WHERE r.rolname = current_user"
+        )).one_or_none()
+        return bool(row and (row[0] or row[1]))
+
     def config_checks(self) -> list[dict[str, str]]:
         """Diagnóstico para operadores: solo nombres, nunca valores de entorno."""
         result: list[dict[str, str]] = []
@@ -113,7 +128,8 @@ class OpsService:
             multiple_workers = int(os.getenv("WEB_CONCURRENCY", "1")) > 1
         except ValueError:
             multiple_workers = True
-        if settings.rate_limit_enabled and multiple_workers:
+        shared_limiter = bool(os.getenv("REDIS_URL", "").strip()) and get_cache().is_connected
+        if settings.rate_limit_enabled and multiple_workers and not shared_limiter:
             add("workers_multiple", "error", "WEB_CONCURRENCY debe ser 1 con RATE_LIMIT_ENABLED. El limitador local no comparte cuotas entre workers.")
         backup = self.ultimo_verificado()
         stale = True
@@ -127,6 +143,12 @@ class OpsService:
             add("backup_stale", "warning", "No hay una copia verificada vigente o la última tiene más de 26 h.")
         if not settings.sentry_dsn or not settings.sentry_dsn.get_secret_value().strip():
             add("sentry_missing", "info", "Rastreo de errores sin configurar (opcional).")
+        if signup_habilitado():
+            add("signup_enabled", "info", "El alta pública de tiendas está abierta (SIGNUP_ENABLED).")
+        if not (settings.stripe_secret_key or "").strip():
+            add("stripe_not_configured", "info", "Stripe sin configurar: suscripciones y cobros con tarjeta no disponibles (STRIPE_SECRET_KEY).")
+        if self._rol_salta_rls():
+            add("rls_role_bypass", "warning", "La aplicación usa un rol que salta RLS (BYPASSRLS, superusuario o dueño de las tablas). Conecta DATABASE_URL con el rol de aplicación.")
         priorities = {"error": 0, "warning": 1, "info": 2}
         return sorted(result, key=lambda item: priorities[item["level"]])
 
