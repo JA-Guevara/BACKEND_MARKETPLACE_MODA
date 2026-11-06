@@ -178,3 +178,10 @@ def test_roles_de_pooler_y_host_directo_deben_ser_del_mismo_proyecto():
     other = entry._database_identity("postgresql://fashionstore_app.otro@aws-0.region.pooler.supabase.com/postgres")
     assert direct == pooler
     assert direct != other
+
+
+
+@pytest.mark.parametrize("query", ["dbname=otra", "user=otro", "port=6432"])
+def test_identidad_de_base_rechaza_overrides_libpq(query):
+    with pytest.raises(ValueError, match="Destino ambiguo"):
+        entry._database_identity("postgresql://app@127.0.0.1/qa?" + query)

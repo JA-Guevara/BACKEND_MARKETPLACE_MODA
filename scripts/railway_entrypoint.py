@@ -20,11 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _database_identity(value: str) -> tuple:
     url = make_url(value)
+    if os.getenv("PGHOSTADDR") or os.getenv("PGSERVICE"):
+        raise ValueError("Destino ambiguo para migraciones.")
     if url.get_backend_name() != "postgresql" or any(
-        name.lower() in {"host", "hostaddr", "service"} for name in url.query
+        name.lower() in {"host", "hostaddr", "port", "service", "user", "dbname", "database"} for name in url.query
     ):
         raise ValueError("Destino ambiguo para migraciones.")
     host = (url.host or "").lower().rstrip(".")
+    if not host or not url.database:
+        raise ValueError("Destino ambiguo para migraciones.")
     direct = re.fullmatch(r"db\.([a-z0-9-]+)\.supabase\.co", host)
     if direct:
         return "supabase", direct[1], url.database
@@ -33,7 +37,7 @@ def _database_identity(value: str) -> tuple:
         if not separator or not re.fullmatch(r"[a-z0-9-]+", project):
             raise ValueError("Falta referencia de proyecto para el pooler.")
         return "supabase", project, url.database
-    return "postgresql", host, url.port or 5432, url.database
+    return "postgresql", host, url.port or int(os.getenv("PGPORT", "5432")), url.database
 
 
 def _migration_database_url(application_url: str) -> str:
