@@ -112,6 +112,15 @@ def upgrade() -> None:
         op.create_index("ix_webhook_deliveries_event_id", "webhook_deliveries", ["event_id"])
         op.create_index("ix_webhook_deliveries_status", "webhook_deliveries", ["status"])
 
+    # El módulo debe existir antes de sus FK y de sus permisos.
+    if not bind.execute(sa.text("SELECT 1 FROM platform_modules WHERE code = 'integrations'")).scalar():
+        bind.execute(sa.text("""INSERT INTO platform_modules
+            (code,name,description,category,icon,kind,lifecycle,depends_on,web_routes,sort_order,created_at,updated_at)
+            VALUES ('integrations','Integraciones','Claves de API y webhooks','Operación','↗','ADDON','GA','[]','[]',130,:now,:now)"""), {"now": now_utc})
+    for plan_id in bind.execute(sa.text("SELECT id FROM plans WHERE upper(code) = 'PROFESIONAL'")).scalars():
+        if not bind.execute(sa.text("SELECT 1 FROM plan_features WHERE plan_id=:id AND feature_code='integrations'"), {"id":plan_id}).scalar():
+            bind.execute(sa.text("INSERT INTO plan_features (id,plan_id,feature_code,enabled,limit_value) VALUES (:id,:plan,'integrations',true,NULL)"), {"id":uuid.uuid4(),"plan":plan_id})
+
     # 5. Sembrar permisos 063 y 064
     for pid_str, code, name, desc, module_name, scope in NEW_PERMISSIONS:
         perm_uuid = uuid.UUID(pid_str)
@@ -178,13 +187,13 @@ def upgrade() -> None:
         # Si existe tabla module_permissions, asociar permiso al módulo integrations
         if _table_exists(bind, "module_permissions"):
             mod_exists = bind.execute(
-                sa.text("SELECT 1 FROM module_permissions WHERE module = :mod AND permission_id = :perm_id"),
+                sa.text("SELECT 1 FROM module_permissions WHERE module_code = :mod AND permission_id = :perm_id"),
                 {"mod": module_name, "perm_id": real_perm_id},
             ).scalar()
             if not mod_exists:
                 bind.execute(
                     sa.text(
-                        "INSERT INTO module_permissions (module, permission_id) VALUES (:mod, :perm_id)"
+                        "INSERT INTO module_permissions (module_code, permission_id) VALUES (:mod, :perm_id)"
                     ),
                     {"mod": module_name, "perm_id": real_perm_id},
                 )
@@ -207,6 +216,9 @@ def downgrade() -> None:
             sa.text("DELETE FROM permissions WHERE id = :id OR code = :code"),
             {"id": perm_uuid, "code": code},
         )
+
+    bind.execute(sa.text("DELETE FROM plan_features WHERE feature_code='integrations'"))
+    bind.execute(sa.text("DELETE FROM platform_modules WHERE code='integrations'"))
 
     if _table_exists(bind, "webhook_deliveries"):
         op.drop_table("webhook_deliveries")

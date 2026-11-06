@@ -29,6 +29,8 @@ from src.plataforma_saas.infrastructure.models import module, ops, storefront  #
 from src.probador_virtual.infrastructure.persistence.models import recurso_tryon  # noqa: F401
 from src.reportes_ia.infrastructure import models as report_models  # noqa: F401
 from src.tryon_ai_jobs.infrastructure.persistence.models import tryon_job  # noqa: F401
+from src.plataforma_saas.infrastructure.models import signup_legal  # noqa: F401
+from src.integraciones.infrastructure import models as integration_models  # noqa: F401
 
 
 config = context.config

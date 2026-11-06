@@ -104,6 +104,7 @@ def upgrade() -> None:
             sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("tenant_id", sa.Uuid(), nullable=True),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
             sa.PrimaryKeyConstraint("id", name="pk_tenant_signups"),
             sa.ForeignKeyConstraint(
                 ["tenant_id"],
