@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.infrastructure.security.jwt_service import JWTService
 from src.auth.web.dependencies import bearer_scheme, get_current_user
-from src.infrastructure.database.session import get_db
+from src.infrastructure.database.session import get_db, set_rls_context
 from src.plataforma_saas.application.entitlement_service import EntitlementService
 from src.plataforma_saas.domain.exceptions import (
     SupportReadOnlyError,
@@ -131,7 +131,9 @@ def get_access_context(
             raise SupportReadOnlyError("Estás en modo solo lectura.")
 
     set_audit_actor(user.id)
-    set_audit_scope(tenant_id, support_session_id)
+    platform = tenant_id is None and support_session_id is None and is_platform_account(user)
+    set_audit_scope(tenant_id, support_session_id, is_platform=platform)
+    set_rls_context(db, tenant_id=tenant_id, is_platform=platform)
     request.state.tenant_id = str(tenant_id) if tenant_id is not None else None
     request.state.actor_id = str(user.id)
 

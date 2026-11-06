@@ -23,7 +23,7 @@ def upgrade() -> None:
     # ENABLE ROW LEVEL SECURITY + CREATE POLICY
     for table in PILOT_TABLES:
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;")
-        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY;")
+        op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY;")
         op.execute(f"DROP POLICY IF EXISTS tenant_isolation_{table} ON {table};")
         op.execute(f"""
             CREATE POLICY tenant_isolation_{table} ON {table}

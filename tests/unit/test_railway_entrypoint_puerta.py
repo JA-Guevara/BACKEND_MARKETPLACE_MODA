@@ -43,6 +43,7 @@ def gate(monkeypatch):
     monkeypatch.setattr(entry, "_bloquear_migraciones", Mock())
     monkeypatch.setattr(entry, "datetime", FixedDateTime)
     monkeypatch.delenv("MIGRACION_SIN_RESPALDO_AUTORIZADA", raising=False)
+    monkeypatch.delenv("MIGRATION_DATABASE_URL", raising=False)
 
     def upgrade(config, target):
         assert target == "head"
@@ -142,3 +143,38 @@ def test_fallo_de_bitacora_revierte_tambien_la_migracion(gate, monkeypatch, caps
     upgrade.assert_called_once()
     assert _revision(engine) == PREVIOUS
     assert "backup_gate_exception" not in capsys.readouterr().out
+
+
+def test_prepare_usa_dueno_sin_cambiar_conexion_de_la_aplicacion(gate, monkeypatch):
+    engine, upgrade = gate
+    application_url = "postgresql://fashionstore_app@127.0.0.1/qa"
+    migration_url = "postgresql://migration_owner@127.0.0.1/qa"
+    monkeypatch.setattr(settings, "database_url", application_url)
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", migration_url)
+    selected = []
+    monkeypatch.setattr(entry, "create_engine", lambda url: selected.append(url) or engine)
+    _backup(engine)
+    entry.preparar()
+    assert selected == [migration_url]
+    assert settings.database_url == application_url
+    upgrade.assert_called_once()
+
+
+def test_prepare_rechaza_migrar_otra_base_antes_de_conectar(gate, monkeypatch):
+    _, upgrade = gate
+    monkeypatch.setattr(settings, "database_url", "postgresql://fashionstore_app@127.0.0.1/qa")
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", "postgresql://migration_owner@127.0.0.1/otra")
+    connect = Mock()
+    monkeypatch.setattr(entry, "create_engine", connect)
+    with pytest.raises(RuntimeError, match="MIGRATION_DATABASE_URL y DATABASE_URL"):
+        entry.preparar()
+    connect.assert_not_called()
+    upgrade.assert_not_called()
+
+
+def test_roles_de_pooler_y_host_directo_deben_ser_del_mismo_proyecto():
+    direct = entry._database_identity("postgresql://postgres@db.proyecto-qa.supabase.co/postgres")
+    pooler = entry._database_identity("postgresql://fashionstore_app.proyecto-qa@aws-0.region.pooler.supabase.com/postgres")
+    other = entry._database_identity("postgresql://fashionstore_app.otro@aws-0.region.pooler.supabase.com/postgres")
+    assert direct == pooler
+    assert direct != other

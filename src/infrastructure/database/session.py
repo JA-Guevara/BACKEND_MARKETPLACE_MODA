@@ -15,39 +15,33 @@ def is_rls_enabled() -> bool:
     return os.getenv("RLS_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
+def _write_rls_context(connection, tenant_id: str, platform: bool) -> None:
+    # set_config(..., true) equivale a SET LOCAL y admite parámetros enlazados.
+    connection.execute(text(
+        "SELECT set_config('app.tenant_id', :tenant, true), "
+        "set_config('app.platform', :platform, true)"
+    ), {"tenant": tenant_id, "platform": "1" if platform else "0"})
+
+
 def set_rls_context(
-    db: Session,
-    tenant_id: UUID | str | None = None,
-    is_platform: bool = False,
-    access_context: Any = None,
+    db: Session, tenant_id=None, is_platform: bool = False, access_context=None,
 ) -> None:
-    """Configura las variables de sesión PostgreSQL para Row Level Security por transacción.
+    """Aplica el alcance validado ahora y en cada transacción de esta sesión.
 
-    Usa SET LOCAL para que funcione de forma segura con poolers en modo transacción (PgBouncer/Supabase).
+    La empresa tiene prioridad sobre plataforma: una sesión delegada no obtiene
+    acceso global. No se ignoran errores al fijar el contexto de PostgreSQL.
     """
+    from uuid import UUID
+    from src.shared.context.audit_context import set_database_scope
     if access_context is not None:
-        tenant_id = getattr(access_context, "tenant_id", None)
-        is_platform = getattr(access_context, "is_platform", False)
-
-    dialect_name = getattr(getattr(db.bind, "dialect", None), "name", "")
-    if dialect_name != "postgresql":
-        return
-
-    try:
-        if is_platform:
-            db.execute(text("SET LOCAL app.platform = '1'"))
-            db.execute(text("SET LOCAL app.tenant_id = ''"))
-        elif tenant_id:
-            db.execute(
-                text("SET LOCAL app.tenant_id = :tenant"),
-                {"tenant": str(tenant_id)},
-            )
-            db.execute(text("SET LOCAL app.platform = '0'"))
-        else:
-            db.execute(text("SET LOCAL app.tenant_id = ''"))
-            db.execute(text("SET LOCAL app.platform = '0'"))
-    except Exception:
-        pass
+        tenant_id = access_context.tenant_id
+        is_platform = access_context.is_platform
+    tenant = UUID(str(tenant_id)) if tenant_id is not None else None
+    platform = bool(is_platform) and tenant is None
+    db.info["rls_scope"] = (str(tenant) if tenant else "", platform)
+    set_database_scope(tenant, platform)
+    if db.get_bind().dialect.name == "postgresql":
+        _write_rls_context(db, str(tenant) if tenant else "", platform)
 
 
 def opciones_de_pool(database_url: str) -> dict[str, Any]:
@@ -80,34 +74,20 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 @event.listens_for(Session, "after_begin")
 def _apply_rls_after_begin(session: Session, transaction: Any, connection: Any) -> None:
-    if not is_rls_enabled():
+    if connection.dialect.name != "postgresql":
         return
-    if getattr(connection.dialect, "name", "") != "postgresql":
-        return
-    try:
-        from src.shared.context.audit_context import get_audit_scope
-        tenant_id, _ = get_audit_scope()
-        if tenant_id:
-            connection.execute(
-                text("SET LOCAL app.tenant_id = :tenant"),
-                {"tenant": str(tenant_id)},
-            )
-            connection.execute(text("SET LOCAL app.platform = '0'"))
-    except Exception:
-        pass
+    from src.shared.context.audit_context import get_database_scope
+    scope = get_database_scope()
+    if scope is None:
+        tenant, platform = session.info.get("rls_scope", ("", False))
+    else:
+        tenant, platform = scope
+    _write_rls_context(connection, str(tenant) if tenant else "", bool(platform) and not tenant)
 
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
-        if is_rls_enabled():
-            try:
-                from src.shared.context.audit_context import get_audit_scope
-                tenant_id, _ = get_audit_scope()
-                if tenant_id:
-                    set_rls_context(db, tenant_id=tenant_id)
-            except Exception:
-                pass
         yield db
     finally:
         db.close()

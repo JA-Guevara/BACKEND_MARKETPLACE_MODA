@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,8 +12,43 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _database_identity(value: str) -> tuple:
+    url = make_url(value)
+    if url.get_backend_name() != "postgresql" or any(
+        name.lower() in {"host", "hostaddr", "service"} for name in url.query
+    ):
+        raise ValueError("Destino ambiguo para migraciones.")
+    host = (url.host or "").lower().rstrip(".")
+    direct = re.fullmatch(r"db\.([a-z0-9-]+)\.supabase\.co", host)
+    if direct:
+        return "supabase", direct[1], url.database
+    if host.endswith(".pooler.supabase.com"):
+        _, separator, project = (url.username or "").rpartition(".")
+        if not separator or not re.fullmatch(r"[a-z0-9-]+", project):
+            raise ValueError("Falta referencia de proyecto para el pooler.")
+        return "supabase", project, url.database
+    return "postgresql", host, url.port or 5432, url.database
+
+
+def _migration_database_url(application_url: str) -> str:
+    migration_url = os.getenv("MIGRATION_DATABASE_URL", "").strip()
+    if not migration_url:
+        return application_url
+    try:
+        matches = _database_identity(application_url) == _database_identity(migration_url)
+    except (ArgumentError, ValueError, TypeError):
+        matches = False
+    if not matches:
+        raise RuntimeError(
+            "config_invalid: MIGRATION_DATABASE_URL y DATABASE_URL deben apuntar a la misma base de datos."
+        ) from None
+    return migration_url
 
 
 def _bloquear_migraciones(connection) -> None:
@@ -57,6 +93,9 @@ def preparar() -> None:
 
     require_environment_match(settings.app_env, settings.database_url, settings.production_db_host)
     require_local_database(settings.database_url)
+    migration_url = _migration_database_url(settings.database_url)
+    require_environment_match(settings.app_env, migration_url, settings.production_db_host)
+    require_local_database(migration_url)
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "alembic"))
     head = ScriptDirectory.from_config(config).get_current_head()
@@ -64,7 +103,9 @@ def preparar() -> None:
         raise RuntimeError("La configuración de Alembic no tiene una revisión cabeza.")
 
     excepcion = None
-    engine = create_engine(settings.database_url)
+    # El servidor conserva DATABASE_URL (rol de aplicación); solo la puerta usa
+    # el dueño. Alembic recibe esta misma conexión y el bloqueo transaccional.
+    engine = create_engine(migration_url)
     try:
         with engine.begin() as connection:
             _bloquear_migraciones(connection)

@@ -10,7 +10,7 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.infrastructure.security.jwt_service import JWTService
 from src.auth.web.dependencies import bearer_scheme, get_optional_user
 from src.infrastructure.config.settings import settings
-from src.infrastructure.database.session import get_db
+from src.infrastructure.database.session import get_db, is_rls_enabled, set_rls_context
 from src.infrastructure.security.access_context import AccessContext, get_access_context
 from src.plataforma_saas.application.plan_guard import PlanGuard
 from src.plataforma_saas.domain.exceptions import (
@@ -116,6 +116,8 @@ def get_public_tenant_id(
         if not _puede_previsualizar(tenant, user, credentials):
             raise StoreNotPublishedError()
 
+    if is_rls_enabled():
+        set_rls_context(db, tenant_id=tenant.id)
     return tenant.id
 
 

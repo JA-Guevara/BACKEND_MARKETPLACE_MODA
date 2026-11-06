@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.infrastructure.persistence.repositories.user_repository import UserRepository
 from src.auth.infrastructure.security.jwt_service import JWTService
-from src.infrastructure.database.session import get_db
+from src.infrastructure.database.session import get_db, set_rls_context
 from src.plataforma_saas.domain.exceptions import TenantInactiveError
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.shared.context.audit_context import set_audit_actor
@@ -41,6 +41,11 @@ def get_current_user(
                 raise TenantInactiveError()
 
     set_audit_actor(user.id)
+    if "ssid" not in payload:
+        # Solo después de verificar identidad y pertenencia. El soporte debe
+        # validar su sesión delegada en get_access_context antes de fijar RLS.
+        from src.infrastructure.security.access_context import is_platform_account
+        set_rls_context(db, tenant_id=user.tenant_id, is_platform=is_platform_account(user))
     return user
 
 
