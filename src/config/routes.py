@@ -56,3 +56,7 @@ api_router.include_router(ai_reports_router)
 
 from src.integraciones.web.router import router as integrations_router
 api_router.include_router(integrations_router)
+from src.integraciones.web.api_v1_router import router as integrations_v1_router
+from src.plataforma_saas.web.routers.stripe_saas_router import router as stripe_saas_router
+api_router.include_router(integrations_v1_router)
+api_router.include_router(stripe_saas_router)

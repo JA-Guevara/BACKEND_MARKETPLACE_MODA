@@ -1,171 +1,161 @@
+"""RLS real: migración piloto y rol local no dueño, NOSUPERUSER/NOBYPASSRLS."""
+import importlib.util
 import os
+from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
+
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 import pytest
-from sqlalchemy import create_engine, text, Column, String, Uuid
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import Session, declarative_base
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session
 
 from src.infrastructure.database.safety import require_local_database
 from src.infrastructure.database.session import is_rls_enabled, set_rls_context
+from src.shared.context.audit_context import reset_audit_context, set_audit_context
 
-PilotBase = declarative_base()
-
-
-class PilotProduct(PilotBase):
-    __tablename__ = "products"
-    id = Column(Uuid, primary_key=True)
-    tenant_id = Column(Uuid, nullable=False)
-    name = Column(String(100), nullable=False)
-
-
-class PilotOrder(PilotBase):
-    __tablename__ = "commerce_orders"
-    id = Column(Uuid, primary_key=True)
-    tenant_id = Column(Uuid, nullable=False)
-    order_number = Column(String(50), nullable=False)
-
-
-class PilotReservation(PilotBase):
-    __tablename__ = "reservations"
-    id = Column(Uuid, primary_key=True)
-    tenant_id = Column(Uuid, nullable=False)
-    code = Column(String(50), nullable=False)
+TABLES = ("products", "commerce_orders", "reservations")
 
 
 def test_rls_enabled_flag(monkeypatch):
-    monkeypatch.setenv("RLS_ENABLED", "true")
-    assert is_rls_enabled() is True
-    monkeypatch.setenv("RLS_ENABLED", "1")
-    assert is_rls_enabled() is True
-    monkeypatch.setenv("RLS_ENABLED", "false")
-    assert is_rls_enabled() is False
+    for value, expected in (("true", True), ("1", True), ("false", False)):
+        monkeypatch.setenv("RLS_ENABLED", value)
+        assert is_rls_enabled() is expected
     monkeypatch.delenv("RLS_ENABLED", raising=False)
     assert is_rls_enabled() is False
 
 
 def test_set_rls_context_sqlite_safe():
-    """Verifica que en SQLite no se ejecuten comandos SET LOCAL de PostgreSQL."""
     engine = create_engine("sqlite:///:memory:")
-    PilotBase.metadata.create_all(engine)
-    with Session(engine) as db:
-        # No debe lanzar excepción
-        set_rls_context(db, tenant_id=uuid4(), is_platform=False)
-        set_rls_context(db, is_platform=True)
+    try:
+        with Session(engine) as db:
+            set_rls_context(db, tenant_id=uuid4())
+            set_rls_context(db, is_platform=True)
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture
-def pg_rls_database():
-    url_str = os.getenv("TEST_PG_URL") or os.getenv("TEST_DATABASE_URL")
-    if not url_str:
-        pytest.skip("Requiere TEST_PG_URL o TEST_DATABASE_URL con PostgreSQL real para probar RLS")
-
-    url = make_url(url_str)
+def pg_pilot(monkeypatch):
+    value = os.getenv("TEST_PG_URL")
+    if not value:
+        pytest.skip("Requiere TEST_PG_URL local y descartable")
+    url = make_url(value)
     require_local_database(url, allow_remote=False)
-
-    db_name = f"fs_rls_test_{uuid4().hex[:12]}"
-    admin_engine = create_engine(url, isolation_level="AUTOCOMMIT")
-
-    with admin_engine.connect() as conn:
-        conn.execute(text(f'CREATE DATABASE "{db_name}"'))
-
-    target_url = url.set(database=db_name)
-    test_engine = create_engine(target_url)
-
-    # Crear tablas
-    PilotBase.metadata.create_all(test_engine)
-
-    # Aplicar políticas RLS idénticas a la migración 0041
-    with test_engine.connect() as conn:
-        for tbl in ["products", "commerce_orders", "reservations"]:
-            conn.execute(text(f"ALTER TABLE {tbl} ENABLE ROW LEVEL SECURITY;"))
-            conn.execute(text(f"ALTER TABLE {tbl} FORCE ROW LEVEL SECURITY;"))
-            conn.execute(text(f"""
-                CREATE POLICY tenant_isolation_{tbl} ON {tbl}
-                AS PERMISSIVE
-                FOR ALL
-                USING (
-                    (NULLIF(current_setting('app.tenant_id', true), '')::uuid IS NOT NULL 
-                     AND tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
-                    OR current_setting('app.platform', true) = '1'
-                )
-                WITH CHECK (
-                    (NULLIF(current_setting('app.tenant_id', true), '')::uuid IS NOT NULL 
-                     AND tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
-                    OR current_setting('app.platform', true) = '1'
-                );
-            """))
-            conn.commit()
-
-    yield test_engine
-
-    test_engine.dispose()
-    with admin_engine.connect() as conn:
-        conn.execute(text(f'DROP DATABASE IF EXISTS "{db_name}"'))
-    admin_engine.dispose()
+    tag = uuid4().hex
+    name, role = "fs_rls_qa_" + tag, "rls_prueba_" + tag
+    admin = create_engine(url, isolation_level="AUTOCOMMIT")
+    engine = None
+    a, b = uuid4(), uuid4()
+    monkeypatch.setenv("RLS_ENABLED", "false")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE DATABASE "{name}"'))
+        c.execute(text(f'CREATE ROLE "{role}" NOSUPERUSER NOBYPASSRLS NOLOGIN'))
+    try:
+        engine = create_engine(url.set(database=name), pool_size=1, max_overflow=0)
+        with engine.begin() as c:
+            for table in TABLES:
+                c.execute(text(f'CREATE TABLE {table} (id uuid PRIMARY KEY, tenant_id uuid NOT NULL)'))
+                c.execute(text(f'INSERT INTO {table} VALUES (:id, :a), (:other, :b)'),
+                          dict(id=uuid4(), other=uuid4(), a=a, b=b))
+            file = Path(__file__).resolve().parents[2] / "alembic/versions/20261122_0041_rls_piloto.py"
+            spec = importlib.util.spec_from_file_location("qa_real_migration_0041", file)
+            migration = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(migration)
+            with Operations.context(MigrationContext.configure(c)):
+                migration.upgrade()
+            c.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+            for table in TABLES:
+                c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO "{role}"'))
+        yield SimpleNamespace(engine=engine, a=a, b=b, role=role)
+    finally:
+        if engine:
+            engine.dispose()
+        with admin.connect() as c:
+            c.execute(text(f'DROP DATABASE "{name}" WITH (FORCE)'))
+            c.execute(text(f'DROP ROLE "{role}"'))
+        admin.dispose()
 
 
-def test_sql_manual_sin_filtro_ve_solo_empresa_del_contexto(pg_rls_database, monkeypatch):
-    """Prueba obligatoria PX2.3: Una consulta SQL manual sin filtro solo ve filas de la empresa del contexto en PostgreSQL."""
+def app_role(db, world):
+    db.execute(text(f'SET LOCAL ROLE "{world.role}"'))
+    assert db.scalar(text("SELECT rolbypassrls OR rolsuper FROM pg_roles WHERE rolname=current_user")) is False
+
+
+def tenant_rows(db, table):
+    return db.scalars(text(f"SELECT tenant_id FROM {table}")).all()
+
+
+def test_empresa_no_ve_ni_modifica_otra_empresa(pg_pilot):
+    w = pg_pilot
+    for tenant in (w.a, w.b):
+        with Session(w.engine) as db:
+            app_role(db, w)
+            set_rls_context(db, tenant_id=tenant)
+            for table in TABLES:
+                assert tenant_rows(db, table) == [tenant]
+                assert db.execute(text(f"DELETE FROM {table} WHERE tenant_id != :tenant"), {"tenant": tenant}).rowcount == 0
+
+
+def test_plataforma_ve_todas_las_empresas(pg_pilot):
+    w = pg_pilot
+    with Session(w.engine) as db:
+        app_role(db, w)
+        set_rls_context(db, is_platform=True)
+        for table in TABLES:
+            assert set(tenant_rows(db, table)) == {w.a, w.b}
+
+
+def test_tienda_publica_fija_contexto_tras_resolver_slug(pg_pilot, monkeypatch):
+    from src.infrastructure.security import tenancy
+    w = pg_pilot
     monkeypatch.setenv("RLS_ENABLED", "true")
-    engine = pg_rls_database
+    tenant = SimpleNamespace(id=w.a, status="ACTIVA", is_published=True)
+    monkeypatch.setattr(tenancy.SaasRepository, "find_tenant_by_slug", lambda self, slug: tenant)
+    token = set_audit_context(None, None)
+    try:
+        with Session(w.engine) as db:
+            app_role(db, w)
+            resolved = tenancy.get_public_tenant_id(x_tenant_slug="tienda-a", user=None, credentials=None, db=db)
+            assert resolved == w.a
+            assert tenant_rows(db, "products") == [w.a]
+    finally:
+        reset_audit_context(token)
 
-    tenant_a = uuid4()
-    tenant_b = uuid4()
 
-    # Insertar filas para tenant_a y tenant_b como plataforma para sembrar datos
-    with Session(engine) as db:
-        set_rls_context(db, is_platform=True)
-        p1 = PilotProduct(id=uuid4(), tenant_id=tenant_a, name="Camisa Lino Azul")
-        p2 = PilotProduct(id=uuid4(), tenant_id=tenant_b, name="Vestido Seda Rojo")
-        db.add_all([p1, p2])
+def test_sin_contexto_no_lee_ni_escribe_aunque_flag_este_apagado(pg_pilot):
+    w = pg_pilot
+    with Session(w.engine) as db:
+        app_role(db, w)
+        for table in TABLES:
+            assert tenant_rows(db, table) == []
+        with pytest.raises(DBAPIError):
+            db.execute(text("INSERT INTO products VALUES (:id, :tenant)"), dict(id=uuid4(), tenant=w.a))
+        db.rollback()
 
-        o1 = PilotOrder(id=uuid4(), tenant_id=tenant_a, order_number="ORD-001")
-        o2 = PilotOrder(id=uuid4(), tenant_id=tenant_b, order_number="ORD-002")
-        db.add_all([o1, o2])
 
-        r1 = PilotReservation(id=uuid4(), tenant_id=tenant_a, code="RES-001")
-        r2 = PilotReservation(id=uuid4(), tenant_id=tenant_b, code="RES-002")
-        db.add_all([r1, r2])
+def test_contexto_se_reaplica_en_transaccion_y_no_se_filtra_al_pool(pg_pilot):
+    w = pg_pilot
+    with Session(w.engine) as db:
+        app_role(db, w)
+        set_rls_context(db, tenant_id=w.a)
+        assert tenant_rows(db, "products") == [w.a]
         db.commit()
+        app_role(db, w)
+        assert tenant_rows(db, "products") == [w.a]
+    with Session(w.engine) as db:
+        app_role(db, w)
+        assert tenant_rows(db, "products") == []
+        set_rls_context(db, tenant_id=w.b)
+        assert tenant_rows(db, "products") == [w.b]
 
-    # 1. Sesión con contexto de tenant_a: consulta manual sin WHERE debe ver solo tenant_a
-    with Session(engine) as db:
-        set_rls_context(db, tenant_id=tenant_a)
-        res_prod = db.execute(text("SELECT id, tenant_id, name FROM products")).all()
-        assert len(res_prod) == 1
-        assert res_prod[0].tenant_id == tenant_a
-        assert res_prod[0].name == "Camisa Lino Azul"
 
-        res_orders = db.execute(text("SELECT id, tenant_id, order_number FROM commerce_orders")).all()
-        assert len(res_orders) == 1
-        assert res_orders[0].tenant_id == tenant_a
-        assert res_orders[0].order_number == "ORD-001"
-
-        res_res = db.execute(text("SELECT id, tenant_id, code FROM reservations")).all()
-        assert len(res_res) == 1
-        assert res_res[0].tenant_id == tenant_a
-        assert res_res[0].code == "RES-001"
-
-    # 2. Sesión con contexto de tenant_b: consulta manual sin WHERE debe ver solo tenant_b
-    with Session(engine) as db:
-        set_rls_context(db, tenant_id=tenant_b)
-        res_prod = db.execute(text("SELECT id, tenant_id, name FROM products")).all()
-        assert len(res_prod) == 1
-        assert res_prod[0].tenant_id == tenant_b
-        assert res_prod[0].name == "Vestido Seda Rojo"
-
-        res_orders = db.execute(text("SELECT id, tenant_id, order_number FROM commerce_orders")).all()
-        assert len(res_orders) == 1
-        assert res_orders[0].tenant_id == tenant_b
-
-        res_res = db.execute(text("SELECT id, tenant_id, code FROM reservations")).all()
-        assert len(res_res) == 1
-        assert res_res[0].tenant_id == tenant_b
-
-    # 3. Sesión con contexto de plataforma (app.platform = '1'): ve todas las filas
-    with Session(engine) as db:
-        set_rls_context(db, is_platform=True)
-        res_prod = db.execute(text("SELECT id, tenant_id, name FROM products")).all()
-        assert len(res_prod) == 2
-        tenants = {row.tenant_id for row in res_prod}
-        assert tenants == {tenant_a, tenant_b}
+def test_migracion_sin_force_y_rol_app_no_dueno(pg_pilot):
+    w = pg_pilot
+    with w.engine.connect() as c:
+        for table in TABLES:
+            r = c.execute(text("SELECT relrowsecurity,relforcerowsecurity,pg_get_userbyid(relowner) FROM pg_class WHERE oid=CAST(:name AS regclass)"), {"name": table}).one()
+            assert r[0] is True and r[1] is False and r[2] != w.role
