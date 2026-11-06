@@ -47,9 +47,9 @@ def test_production_sin_proxy_confiable_avisa(service, monkeypatch):
     assert checks(service)["forwarded_ips_untrusted"]["level"] == "warning"
 
 
-def test_excepcion_definida_es_error_hasta_que_se_retire(service, monkeypatch):
+def test_fecha_heredada_no_afecta_el_estado_de_configuracion(service, monkeypatch):
     monkeypatch.setenv("MIGRACION_SIN_RESPALDO_AUTORIZADA", "2026-11-05")
-    assert checks(service)["migration_exception_active"]["level"] == "error"
+    assert "migration_exception_active" not in checks(service)
 
 
 def test_copia_ausente_o_mayor_26h_avisa(service, monkeypatch):

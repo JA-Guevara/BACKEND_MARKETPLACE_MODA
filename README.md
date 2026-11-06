@@ -207,7 +207,7 @@ en cada sucursal activa. Escribe en la base configurada en `.env`.
 
 ## Despliegue en Railway
 
-El archivo `railway.json` configura Railpack, ejecuta las migraciones antes del despliegue, inicia FastAPI con el puerto asignado por Railway y valida `/health`.
+El archivo `railway.json` configura Railpack, ejecuta las migraciones pendientes antes del despliegue, inicia FastAPI con el puerto asignado por Railway y valida `/health`. El arranque aplica las migraciones bajo un bloqueo transaccional sin exigir un respaldo ni una autorización fechada.
 
 Configure en Railway al menos `DATABASE_URL`, `JWT_SECRET_KEY`, `APP_ENV=production`, `FRONTEND_URL` y `CORS_ORIGINS`. Las variables SMTP son necesarias para enviar correos reales.
 

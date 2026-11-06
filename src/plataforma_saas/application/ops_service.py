@@ -122,8 +122,6 @@ class OpsService:
         forwarded = {part.strip().lower() for part in os.getenv("FORWARDED_ALLOW_IPS", "").split(",") if part.strip()}
         if settings.app_env == "production" and (not forwarded or forwarded.issubset({"localhost", "127.0.0.1", "::1"})):
             add("forwarded_ips_untrusted", "warning", "FORWARDED_ALLOW_IPS no declara el proxy de producción. Las cuotas podrían compartir la IP del proxy.")
-        if os.getenv("MIGRACION_SIN_RESPALDO_AUTORIZADA", "").strip():
-            add("migration_exception_active", "error", "MIGRACION_SIN_RESPALDO_AUTORIZADA sigue definida. Quítala después de la publicación.")
         try:
             multiple_workers = int(os.getenv("WEB_CONCURRENCY", "1")) > 1
         except ValueError:
