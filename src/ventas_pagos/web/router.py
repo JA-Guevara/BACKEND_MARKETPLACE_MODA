@@ -1,7 +1,7 @@
 from src.infrastructure.security.tenancy import require_feature, TenantScope, get_tenant_context, get_public_tenant_id, require_store_account
 import uuid
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
@@ -25,6 +25,7 @@ from src.ventas_pagos.infrastructure.gateways import verify_event
 from src.ventas_pagos.application.service import CommerceService
 from src.ventas_pagos.application.stock_service import StockService
 from src.ventas_pagos.application.returns_service import ReturnsService
+from src.ventas_pagos.application.exchange_settlement import ExchangeSettlement
 from src.ventas_pagos.domain import transcripcion
 from src.ventas_pagos.application.comprobante import comprobante_de_venta
 from src.ventas_pagos.application.reports_service import ReportsService
@@ -52,8 +53,10 @@ def response(data=None):
 
 
 def return_data(devolucion):
-    data = {column.name: getattr(devolucion, column.name) for column in OrderReturnModel.__table__.columns}
+    data = {column.name: getattr(devolucion, column.name) for column in OrderReturnModel.__table__.columns
+            if column.name not in {'stripe_url', 'stripe_session_id', 'stripe_account_id'}}
     data["refund_amount"] = str(devolucion.refund_amount)
+    data['difference_amount'] = str(devolucion.difference_amount)
     data["kind"] = "exchange" if ReturnsService.es_cambio(devolucion) else "return"
     return data
 
@@ -228,6 +231,8 @@ def clear_cart(user: User, db: Session = Depends(get_db)):
 @router.post("/orders", status_code=201)
 def create_order(data: CheckoutOrder, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
     require_store_account(tenant_id, user)
+    from src.plataforma_saas.application.plan_guard import PlanGuard
+    PlanGuard(db).exigir_funcion(tenant_id,'sales')
     return response(order_data(CommerceService(db, tenant_id).create_order(user, data)))
 
 
@@ -315,7 +320,7 @@ def exchange_options(order_id: uuid.UUID, variant_id: uuid.UUID, user: User,
     order = CommerceService(db, tenant_id).order(order_id, user)
     service = ReturnsService(db, tenant_id)
     state = service.devolvible(order)
-    if not state["can_request"] or not state["units"].get(str(variant_id)):
+    if not state["can_exchange"] or not state["units"].get(str(variant_id)):
         raise NotFoundError("La prenda no está disponible para cambio.")
     return response(service.opciones_cambio(order, variant_id))
 
@@ -331,6 +336,23 @@ def request_exchange(order_id: uuid.UUID, data: ExchangeRequest, user: User,
 @router.get("/returns")
 def my_returns(user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     return response([return_data(row) for row in ReturnsService(db, tenant_id).mias(user, limit, offset)])
+
+
+@router.post('/returns/{return_id}/checkout')
+def exchange_checkout(return_id: uuid.UUID, user: User, channel: Literal['web','mobile'] = 'web', tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    service = ReturnsService(db, tenant_id)
+    request = service.obtener(return_id, user)
+    order = CommerceService(db, tenant_id).order(request.order_id, user)
+    request = db.scalar(select(OrderReturnModel).where(OrderReturnModel.id == request.id).with_for_update())
+    return response(ExchangeSettlement(db).checkout(request, order, channel))
+
+
+@router.post('/returns/{return_id}/payment-status')
+def exchange_payment_status(return_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    request = ReturnsService(db, tenant_id).obtener(return_id, user)
+    CommerceService(db, tenant_id).order(request.order_id, user)
+    request = db.scalar(select(OrderReturnModel).where(OrderReturnModel.id == request.id).with_for_update())
+    return response(return_data(ExchangeSettlement(db).reconcile(request)))
 
 
 @router.get("/admin/pos/orders")

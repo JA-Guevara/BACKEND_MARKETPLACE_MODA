@@ -19,6 +19,7 @@ from src.operacion_offline.infrastructure.models.sync import SyncBatchModel
 from src.operacion_offline.web.sync_schemas import (
     ConflictOut,
     ConflictResolveIn,
+    RefundConfirmIn,
     SyncBatchDetailOut,
     SyncBatchIn,
     SyncBatchLogOut,
@@ -94,7 +95,8 @@ def list_conflicts(
     ctx: TenantCtx,
     user: CurrentUser,
     branch_id: UUID | None = None,
-    status: Literal["OPEN", "RESOLVED"] = "OPEN",
+    status: Literal["OPEN", "RESOLVED", "ALL"] = "OPEN",
+    refund_status: Literal['pending','confirmed'] | None = None,
     type: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -102,7 +104,7 @@ def list_conflicts(
     _perm: UserModel = Depends(require_permissions("sync_conflicts.read")),
 ):
     svc = ConflictService(db, ctx, user)
-    res = svc.listar(branch_id=branch_id, status=status, type=type, page=page, page_size=page_size)
+    res = svc.listar(branch_id=branch_id, status=status, refund_status=refund_status, type=type, page=page, page_size=page_size)
     return ApiResponse(message="Lista de conflictos obtenida.", data=res)
 
 
@@ -187,6 +189,13 @@ def list_batches(
             "pages": (total + page_size - 1) // page_size if page_size else 1,
         },
     )
+
+
+@router.post('/conflicts/{conflict_id}/refund', response_model=ApiResponse[ConflictOut])
+def confirm_conflict_refund(conflict_id: UUID, data: RefundConfirmIn, ctx: TenantCtx, user: CurrentUser,
+                            db: Session = Depends(get_db),
+                            _perm: UserModel = Depends(require_permissions('sync_conflicts.resolve'))):
+    return ApiResponse(message='Reintegro en efectivo confirmado.', data=ConflictService(db,ctx,user).confirmar_reintegro(conflict_id,data))
 
 
 @router.get("/batches/{batch_id}", response_model=ApiResponse[SyncBatchDetailOut], status_code=status.HTTP_200_OK)

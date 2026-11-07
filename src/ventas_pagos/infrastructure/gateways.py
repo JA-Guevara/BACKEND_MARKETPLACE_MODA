@@ -41,7 +41,7 @@ def en_cuenta(stripe_account: str | None) -> dict:
     return {"stripe_account": stripe_account} if stripe_account else {}
 
 
-def create_session(order, payment_return_url=None, stripe_account=None, application_fee_amount=0):
+def create_session(order, payment_return_url=None, stripe_account=None, application_fee_amount=0, return_order_id=None, idempotency_key=None):
     base = settings.frontend_url.rstrip("/")
     if order.sales_channel == "mobile":
         payment_return = payment_return_url or (
@@ -52,8 +52,8 @@ def create_session(order, payment_return_url=None, stripe_account=None, applicat
         success_url = payment_return + "?result=success"
         cancel_url = payment_return + "?result=cancelled"
     else:
-        success_url = base + "/mi-cuenta/pedidos?payment=success&pedido=" + str(order.id)
-        cancel_url = base + "/mi-cuenta/pedidos?payment=cancelled&pedido=" + str(order.id)
+        success_url = base + "/mi-cuenta/pedidos?payment=success&pedido=" + str(return_order_id or order.id)
+        cancel_url = base + "/mi-cuenta/pedidos?payment=cancelled&pedido=" + str(return_order_id or order.id)
     data = {"mode": "payment", "payment_method_types[0]": "card",
         "success_url": success_url,
         "cancel_url": cancel_url,
@@ -69,7 +69,7 @@ def create_session(order, payment_return_url=None, stripe_account=None, applicat
     })
     if application_fee_amount and application_fee_amount > 0:
         data["payment_intent_data[application_fee_amount]"] = str(int(application_fee_amount))
-    return stripe_request("POST", "checkout/sessions", data, "fashion-order-" + str(order.id),
+    return stripe_request("POST", "checkout/sessions", data, idempotency_key or "fashion-order-" + str(order.id),
                           **en_cuenta(stripe_account))
 
 

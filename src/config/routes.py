@@ -60,3 +60,7 @@ from src.integraciones.web.api_v1_router import router as integrations_v1_router
 from src.plataforma_saas.web.routers.stripe_saas_router import router as stripe_saas_router
 api_router.include_router(integrations_v1_router)
 api_router.include_router(stripe_saas_router)
+from src.plataforma_saas.web.routers.analytics_router import router as platform_analytics_router
+api_router.include_router(platform_analytics_router)
+from src.plataforma_saas.web.routers.tenant_backups_router import router as tenant_backups_router
+api_router.include_router(tenant_backups_router)

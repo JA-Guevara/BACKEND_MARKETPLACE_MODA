@@ -2,6 +2,10 @@ from typing import Annotated, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy import select
+from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel,ProductModel
+from src.ventas_pagos.infrastructure.models import StockModel
+from src.ventas_pagos.application.service import CommerceService
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
@@ -70,7 +74,7 @@ def calculate_exchange(
     _perm: UserModel = Depends(require_permissions("exchanges.read")),
 ) -> ApiResponse[ExchangeCalculateOut]:
     svc = ExchangeService(db)
-    res = svc.calcular_cambio(ctx.tenant_id, body.branch_id, [line.model_dump() for line in body.lines])
+    res = svc.calcular_cambio(ctx.tenant_id, body.branch_id, [line.model_dump() for line in body.lines],body.original_order_id)
     data = {
         "total_returned_value": res.total_returned_value,
         "total_delivered_value": res.total_delivered_value,
@@ -90,6 +94,18 @@ def calculate_exchange(
         ],
     }
     return ApiResponse(message="Diferencia de cambio calculada.", data=data)
+
+
+@router.get('/options/{branch_id}')
+def exchange_replacements(branch_id:UUID,ctx:TenantCtx,db:Session=Depends(get_db),
+                          _perm:UserModel=Depends(require_permissions('exchanges.read'))):
+    commerce=CommerceService(db,ctx.tenant_id)
+    commerce.branch(branch_id)
+    variants=db.scalars(select(ProductVariantModel).join(ProductModel).join(StockModel,StockModel.variant_id==ProductVariantModel.id).where(
+        ProductModel.tenant_id==ctx.tenant_id,ProductModel.deleted_at.is_(None),ProductModel.is_active.is_(True),
+        ProductVariantModel.is_active.is_(True),StockModel.branch_id==branch_id,StockModel.quantity>0,
+    ).order_by(ProductModel.name).limit(1000)).all()
+    return ApiResponse(data=[commerce.snapshot(variant,1,branch_id) for variant in variants])
 
 
 @router.post("", response_model=ApiResponse[ExchangeDetailOut], status_code=status.HTTP_201_CREATED)

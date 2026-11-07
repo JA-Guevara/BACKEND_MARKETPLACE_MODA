@@ -34,6 +34,8 @@ class GarmentExchangeModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     notes: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     client_request_id: Mapped[Optional[uuid.UUID]] = mapped_column(unique=True, nullable=True)
 
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+
     lines: Mapped[list["GarmentExchangeLineModel"]] = relationship(
         back_populates="exchange", cascade="all, delete-orphan", lazy="selectin"
     )

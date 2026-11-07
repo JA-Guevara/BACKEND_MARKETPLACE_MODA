@@ -5,6 +5,7 @@ del plazo, y por prendas que el cliente todavía no devolvió. Todo eso se decid
 acá para poder verificarlo sin montar un pedido real.
 """
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal,ROUND_HALF_UP
 
 #: Plazo para pedir una devolución desde que el pedido se entregó.
 DIAS_PARA_DEVOLVER = 15
@@ -69,6 +70,27 @@ def unidades_devolvibles(order, devoluciones) -> dict[str, int]:
         if restante > 0:
             disponibles[clave] = restante
     return disponibles
+
+
+def paid_credit(order, variant_id, quantity, commitments) -> Decimal:
+    """Allocate paid cents cumulatively, including the final rounding cent."""
+    total=Decimal(order.total)
+    gross=sum((Decimal(str(i.get('unit_price',0)))*int(i['quantity']) for i in order.items),Decimal(0))
+    if gross<=0 or total<=0:
+        return Decimal('0.00')
+    prior=unidades_comprometidas(commitments).get(str(variant_id),0)
+    prefix=Decimal(0)
+    cent=Decimal('.01')
+    for item in order.items:
+        line=Decimal(str(item.get('unit_price',0)))*int(item['quantity'])
+        if str(item['variant_id'])==str(variant_id):
+            share=((prefix+line)*total/gross).quantize(cent,rounding=ROUND_HALF_UP)-(prefix*total/gross).quantize(cent,rounding=ROUND_HALF_UP)
+            units=int(item['quantity'])
+            if quantity<1 or prior+quantity>units:
+                raise ValueError('La cantidad supera las unidades disponibles del pedido.')
+            return (share*(prior+quantity)/units).quantize(cent,rounding=ROUND_HALF_UP)-(share*prior/units).quantize(cent,rounding=ROUND_HALF_UP)
+        prefix+=line
+    raise ValueError('La prenda no pertenece al pedido.')
 
 
 def armar_detalle(order, devoluciones, solicitados: list[tuple[str, int]]) -> list[dict]:

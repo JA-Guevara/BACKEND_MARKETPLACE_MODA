@@ -69,8 +69,13 @@ async def ciclo_de_vida(_: FastAPI):
     """
     configurar_logging(settings)
     iniciar_sentry(settings)
-    yield
-    apagar_cola()
+    from src.plataforma_saas.application.tenant_backup_worker import start_worker, stop_worker
+    worker=start_worker()
+    try:
+        yield
+    finally:
+        await stop_worker(worker)
+        apagar_cola()
 
 
 def create_app() -> FastAPI:

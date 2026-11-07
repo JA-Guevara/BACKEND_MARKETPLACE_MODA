@@ -1,5 +1,6 @@
 from logging.config import fileConfig
 from src.plataforma_saas.infrastructure.models import tenant, plan, subscription, support_session, stripe_saas  # noqa: F401
+from src.plataforma_saas.infrastructure.models import tenant_backup  # noqa: F401
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool

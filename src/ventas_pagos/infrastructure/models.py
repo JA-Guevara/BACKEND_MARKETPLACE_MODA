@@ -33,6 +33,7 @@ class OrderModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     cash_point_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cash_points.id", ondelete="RESTRICT"))
     cashier_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     client_request_id: Mapped[uuid.UUID | None] = mapped_column(unique=True)
+
     request_fingerprint: Mapped[str | None] = mapped_column(String(64))
     customer_email: Mapped[str] = mapped_column(String(320))
     branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"))
@@ -112,6 +113,14 @@ class OrderReturnModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     #: Evita duplicar la devolución si el cliente reenvía el formulario.
     client_request_id: Mapped[uuid.UUID | None] = mapped_column(unique=True)
+    difference_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal(0), server_default="0", nullable=False)
+    settlement_status: Mapped[str] = mapped_column(String(30), default="not_required", server_default="not_required", nullable=False)
+    settlement_method: Mapped[str | None] = mapped_column(String(30))
+    settlement_reference: Mapped[str | None] = mapped_column(String(255))
+    settlement_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default='0', nullable=False)
+    stripe_account_id: Mapped[str | None] = mapped_column(String(255))
+    stripe_session_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    stripe_url: Mapped[str | None] = mapped_column(String(2000))
 
 
 from src.ventas_pagos.infrastructure.exchange_models import (

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
     backup_report_token: SecretStr | None = None
+    tenant_backup_encryption_key: SecretStr | None = None
+    tenant_backup_max_mb: int = Field(default=10, ge=1, le=100)
+    tenant_backup_worker_enabled: bool = True
     jobs_token: SecretStr | None = None
     github_dispatch_token: SecretStr | None = None
     github_repo: str | None = None

@@ -56,6 +56,9 @@ class StorefrontService:
                 select(func.count(BranchModel.id)).where(
                     BranchModel.tenant_id == tenant.id,
                     BranchModel.is_active.is_(True),
+                    BranchModel.deleted_at.is_(None),
+                    BranchModel.opening_hours.is_not(None),
+                    BranchModel.opening_hours != '',
                 )
             )
         )
@@ -68,6 +71,7 @@ class StorefrontService:
                 .where(
                     ProductModel.tenant_id == tenant.id,
                     ProductModel.is_active.is_(True),
+                    ProductModel.deleted_at.is_(None),
                 )
             )
             or 0
@@ -83,8 +87,11 @@ class StorefrontService:
             )
         )
 
+        from src.plataforma_saas.application.plan_guard import PlanGuard
+        from src.plataforma_saas.application.jobs.suscripciones import calcular_lifecycle_state
+        subscription=PlanGuard(self.db).repository.open_subscription(tenant.id)
         snap = TenantSnapshot(
-            subscription_active=True,  # Asumida activa mientras no esté cancelada
+            subscription_active=bool(subscription and calcular_lifecycle_state(subscription) in {'active','expiring','grace'}),
             has_branch_with_hours=has_branch,
             logo_url=tenant.logo_url,
             active_products_with_photo_count=products_with_photo,

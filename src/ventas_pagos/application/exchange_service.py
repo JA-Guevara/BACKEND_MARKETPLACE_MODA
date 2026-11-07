@@ -82,7 +82,10 @@ class ExchangeService:
             )
         ).all()
 
-        ya_cambiados: Dict[str, int] = {}
+        from src.ventas_pagos.application.returns_service import ReturnsService
+        from src.ventas_pagos.domain import returns
+        ya_cambiados = returns.unidades_comprometidas(ReturnsService(self.db, tenant_id).compromisos(order))
+        prev_exchanges = []
         for ex in prev_exchanges:
             for line in ex.lines:
                 vid_str = str(line.original_variant_id)
@@ -106,7 +109,7 @@ class ExchangeService:
                 "original_quantity": original_qty,
                 "already_exchanged_quantity": cambiado,
                 "available_for_exchange": disponible_cambio,
-                "unit_price": Decimal(str(it.get("unit_price", 0))),
+                "unit_price": returns.paid_credit(order,vid,1,ReturnsService(self.db,tenant_id).compromisos(order)) if disponible_cambio else Decimal(0),
                 "subtotal": Decimal(str(it.get("subtotal", 0))),
             })
 
@@ -116,7 +119,7 @@ class ExchangeService:
             "purchase_date": fecha_compra.isoformat(),
             "deadline_days": dias_permitidos,
             "remaining_days": dias_restantes,
-            "can_exchange": dias_restantes >= 0 and any(it["available_for_exchange"] > 0 for it in items_cambiables),
+            "can_exchange": order.payment_status == "paid" and order.status in {"delivered","completed"} and dias_restantes >= 0 and any(it["available_for_exchange"] > 0 for it in items_cambiables),
             "customer_email": order.customer_email,
             "branch_id": str(order.branch_id),
             "items": items_cambiables,
@@ -127,8 +130,21 @@ class ExchangeService:
         tenant_id: UUID,
         branch_id: UUID,
         lineas_raw: List[Dict[str, Any]],
+        order_id: UUID | None = None,
     ) -> ResultadoCalculoCambio:
         lineas_calculo: List[LineaCambioCalculo] = []
+        from src.ventas_pagos.application.service import CommerceService
+        from src.ventas_pagos.application.returns_service import ReturnsService
+        from src.ventas_pagos.domain import returns
+        order=CommerceService(self.db,tenant_id).order(order_id) if order_id else None
+        if order and order.branch_id!=branch_id:
+            raise ValidationError('La sucursal no corresponde al pedido.')
+        commitments=ReturnsService(self.db,tenant_id).compromisos(order) if order else []
+        if order:
+            try:
+                returns.armar_detalle(order,commitments,[(str(row['original_variant_id']),int(row['returned_quantity'])) for row in lineas_raw])
+            except ValueError as error:
+                raise ValidationError(str(error)) from error
 
         for item in lineas_raw:
             orig_vid = UUID(str(item["original_variant_id"]))
@@ -137,7 +153,13 @@ class ExchangeService:
 
             new_vid = UUID(str(item["new_variant_id"]))
             deliv_qty = int(item["delivered_quantity"])
-            new_price = Decimal(str(item["new_unit_price"]))
+            from src.ventas_pagos.application.service import CommerceService
+            commerce = CommerceService(self.db, tenant_id)
+            commerce.branch(branch_id)
+            commerce.variant(orig_vid)
+            variant = commerce.variant(new_vid)
+            from src.ventas_pagos.application.pricing_service import PricingService
+            new_price = PricingService(self.db,tenant_id).precio(variant,canal='ONLINE').final
 
             # Verificar existencia del nuevo producto en la sucursal
             stock = self.db.scalar(
@@ -158,6 +180,7 @@ class ExchangeService:
                     new_variant_id=new_vid,
                     delivered_quantity=deliv_qty,
                     new_unit_price=new_price,
+                    original_credit=returns.paid_credit(order,orig_vid,ret_qty,commitments) if order else None,
                 )
             )
 
@@ -170,138 +193,8 @@ class ExchangeService:
         actor_id: Optional[UUID],
         data: Dict[str, Any],
     ) -> Dict[str, Any]:
-        client_req_id = None
-        if data.get("client_request_id"):
-            client_req_id = UUID(str(data["client_request_id"]))
-            existente = self.db.scalar(
-                select(GarmentExchangeModel).where(
-                    GarmentExchangeModel.client_request_id == client_req_id
-                )
-            )
-            if existente:
-                return self.obtener_cambio(tenant_id, existente.id)
-
-        order_id = UUID(str(data["original_order_id"]))
-        order = self.db.scalar(
-            select(OrderModel).where(OrderModel.id == order_id, OrderModel.tenant_id == tenant_id)
-        )
-        if not order:
-            raise NotFoundError("Pedido original no encontrado.")
-
-        # Verificar plazo
-        tenant = self.db.get(TenantModel, tenant_id)
-        dias_permitidos = getattr(tenant, "exchange_days", 15) if tenant else 15
-        fecha_compra = order.paid_at or order.created_at
-        VerificadorPlazoCambio.verificar(fecha_compra, dias_permitidos)
-
-        # Calcular y validar líneas
-        resultado = self.calcular_cambio(tenant_id, branch_id, data["lines"])
-
-        # Crear registro de cambio
-        exchange = GarmentExchangeModel(
-            id=uuid4(),
-            tenant_id=tenant_id,
-            branch_id=branch_id,
-            original_order_id=order.id,
-            user_id=actor_id,
-            customer_id=order.user_id,
-            difference_amount=resultado.difference_amount,
-            payment_method=data.get("payment_method", "none"),
-            cash_received=Decimal(str(data["cash_received"])) if data.get("cash_received") is not None else None,
-            cash_returned=Decimal(str(data["cash_returned"])) if data.get("cash_returned") is not None else None,
-            status="COMPLETED",
-            notes=data.get("notes"),
-            client_request_id=client_req_id,
-        )
-        self.db.add(exchange)
-        self.db.flush()
-
-        now = datetime.now(timezone.utc)
-
-        # Movimientos duales de stock para cada línea
-        for linea in resultado.lineas:
-            # 1. Ingreso de la prenda devuelta (exchange_in)
-            orig_stock = self.db.scalar(
-                select(StockModel).where(
-                    StockModel.branch_id == branch_id,
-                    StockModel.variant_id == linea.original_variant_id,
-                )
-            )
-            if not orig_stock:
-                orig_stock = StockModel(
-                    branch_id=branch_id,
-                    variant_id=linea.original_variant_id,
-                    quantity=0,
-                )
-                self.db.add(orig_stock)
-                self.db.flush()
-
-            q_before_in = orig_stock.quantity
-            orig_stock.quantity += linea.returned_quantity
-            q_after_in = orig_stock.quantity
-
-            mov_in = StockMovementModel(
-                branch_id=branch_id,
-                variant_id=linea.original_variant_id,
-                delta=linea.returned_quantity,
-                quantity_before=q_before_in,
-                quantity_after=q_after_in,
-                kind="exchange_in",
-                reason=f"Cambio de prenda #{str(exchange.id)[:8]} - Reingreso prenda devuelta",
-                reference=str(exchange.id),
-                actor_id=actor_id,
-                actor_email=data.get("actor_email"),
-            )
-            self.db.add(mov_in)
-
-            # 2. Salida de la nueva prenda entregada (exchange_out)
-            new_stock = self.db.scalar(
-                select(StockModel).where(
-                    StockModel.branch_id == branch_id,
-                    StockModel.variant_id == linea.new_variant_id,
-                )
-            )
-            if not new_stock or new_stock.quantity < linea.delivered_quantity:
-                raise ExchangeItemUnavailableError(
-                    str(linea.new_variant_id),
-                    new_stock.quantity if new_stock else 0,
-                    linea.delivered_quantity,
-                )
-
-            q_before_out = new_stock.quantity
-            new_stock.quantity -= linea.delivered_quantity
-            q_after_out = new_stock.quantity
-
-            mov_out = StockMovementModel(
-                branch_id=branch_id,
-                variant_id=linea.new_variant_id,
-                delta=-linea.delivered_quantity,
-                quantity_before=q_before_out,
-                quantity_after=q_after_out,
-                kind="exchange_out",
-                reason=f"Cambio de prenda #{str(exchange.id)[:8]} - Salida prenda entregada",
-                reference=str(exchange.id),
-                actor_id=actor_id,
-                actor_email=data.get("actor_email"),
-            )
-            self.db.add(mov_out)
-
-            # 3. Guardar línea de cambio
-            line_model = GarmentExchangeLineModel(
-                id=uuid4(),
-                exchange_id=exchange.id,
-                original_variant_id=linea.original_variant_id,
-                returned_quantity=linea.returned_quantity,
-                original_unit_price=linea.original_unit_price,
-                new_variant_id=linea.new_variant_id,
-                delivered_quantity=linea.delivered_quantity,
-                new_unit_price=linea.new_unit_price,
-                price_difference=linea.difference,
-            )
-            self.db.add(line_model)
-
-        self.db.commit()
-        return self.obtener_cambio(tenant_id, exchange.id)
+        from src.ventas_pagos.application.counter_exchange import execute
+        return execute(self, tenant_id, branch_id, actor_id, data)
 
     def listar_cambios(
         self,
@@ -356,7 +249,7 @@ class ExchangeService:
                 "original_product_name": orig_v.product.name if orig_v and orig_v.product else None,
                 "returned_quantity": l.returned_quantity,
                 "original_unit_price": l.original_unit_price,
-                "returned_total": l.original_unit_price * l.returned_quantity,
+                "returned_total": l.new_unit_price * l.delivered_quantity - l.price_difference,
                 "new_variant_id": str(l.new_variant_id),
                 "new_sku": new_v.sku if new_v else None,
                 "new_product_name": new_v.product.name if new_v and new_v.product else None,

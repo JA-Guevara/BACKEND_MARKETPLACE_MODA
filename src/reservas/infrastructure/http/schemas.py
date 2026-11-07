@@ -10,6 +10,13 @@ class ReservaItemInput(BaseModel):
     quantity: int = Field(default=1, ge=1, le=10)
 
 
+class ReservationOrderIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    payment_method: Literal['manual', 'stripe'] = 'manual'
+    channel: Literal['web', 'mobile'] = 'web'
+    items: list[ReservaItemInput] | None = Field(default=None, min_length=1, max_length=20)
+
+
 class CrearReservaRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     branch_id: UUID

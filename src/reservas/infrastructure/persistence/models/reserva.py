@@ -26,6 +26,7 @@ class ReservationModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(String(1000))
     tracking: Mapped[list] = mapped_column(JSON, default=list)
     client_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("commerce_orders.id", ondelete="RESTRICT"), unique=True)
     # Las reservas anteriores a esta migración no descontaban existencias.
     # Nunca devolver unidades que no fueron apartadas realmente.
     inventory_held: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)

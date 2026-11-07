@@ -42,16 +42,17 @@ class ExchangeOrderLookupOut(BaseModel):
 
 class ExchangeLineCalculateIn(BaseModel):
     original_variant_id: UUID
-    returned_quantity: int = Field(..., gt=0)
+    returned_quantity: int = Field(..., gt=0, le=99)
     original_unit_price: Decimal = Field(..., ge=0)
     new_variant_id: UUID
-    delivered_quantity: int = Field(..., gt=0)
+    delivered_quantity: int = Field(..., gt=0, le=99)
     new_unit_price: Decimal = Field(..., ge=0)
 
 
 class ExchangeCalculateIn(BaseModel):
+    original_order_id: UUID | None = None
     branch_id: UUID
-    lines: List[ExchangeLineCalculateIn]
+    lines: List[ExchangeLineCalculateIn] = Field(min_length=1, max_length=20)
 
 
 class ExchangeLineCalculateOut(BaseModel):
@@ -76,11 +77,11 @@ class ExecuteExchangeIn(BaseModel):
     original_order_id: UUID
     branch_id: UUID
     payment_method: str = "none"
-    cash_received: Optional[Decimal] = None
-    cash_returned: Optional[Decimal] = None
+    cash_received: Optional[Decimal] = Field(default=None,ge=0,max_digits=12,decimal_places=2)
+    cash_returned: Optional[Decimal] = Field(default=None,ge=0,max_digits=12,decimal_places=2)
     notes: Optional[str] = None
-    client_request_id: Optional[UUID] = None
-    lines: List[ExchangeLineCalculateIn]
+    client_request_id: UUID
+    lines: List[ExchangeLineCalculateIn] = Field(min_length=1, max_length=20)
 
 
 class ExchangeSummaryItem(BaseModel):

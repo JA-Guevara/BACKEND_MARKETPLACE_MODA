@@ -64,7 +64,7 @@ def test_rechazo_libera_reemplazo_y_permite_nueva_solicitud():
     assert service.devolvible(order)["units"][str(world["variant"].id)] == 2
 
 
-def test_no_permite_reemplazo_sin_stock_ni_precio_igual():
+def test_requiere_stock_y_admite_diferencia_pendiente_de_cobro():
     db, world, order, replacement, stock, request = setup()
     stock.quantity = 0
     db.commit()
@@ -73,8 +73,9 @@ def test_no_permite_reemplazo_sin_stock_ni_precio_igual():
     stock.quantity = 2
     replacement.price_override = 120
     db.commit()
-    with pytest.raises(ConflictError):
-        ReturnsService(db).solicitar_cambio(world["cliente"], order, request)
+    change = ReturnsService(db).solicitar_cambio(world['cliente'], order, request)
+    assert change.difference_amount == 20
+    assert change.settlement_status == 'payment_pending'
 
 
 def test_no_permite_mas_unidades_que_el_pedido():

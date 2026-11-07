@@ -682,15 +682,13 @@ class SyncService:
                     )
                 )
             else:
-                conf = None
-                if op.status == "CONFLICT":
-                    conf = self.db.scalar(
-                        select(SyncConflictModel).where(SyncConflictModel.operation_id == op.id)
-                    )
+                conf = self.db.scalar(select(SyncConflictModel).where(SyncConflictModel.operation_id == op.id))
+                refund=(conf.detail or {}).get('refund',{}) if conf else {}
                 results.append(
                     SyncResultOut(
                         client_request_id=crid,
                         status=op.status,  # type: ignore
+                        refund_amount=refund.get('amount'),refund_status=refund.get('status'),
                         server_ref=op.server_ref,
                         server_number=op.server_number,
                         conflict_id=conf.id if conf else None,

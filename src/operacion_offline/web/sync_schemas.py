@@ -60,6 +60,7 @@ class SyncResultOut(BaseModel):
     message: str
     replay: bool = False
     refund_amount: str | None = None
+    refund_status: Literal['pending','confirmed'] | None = None
 
 
 class SyncBatchOut(BaseModel):
@@ -85,6 +86,7 @@ class ConflictLineOut(BaseModel):
 
 
 class ConflictOut(BaseModel):
+    refund: dict | None = None
     id: UUID
     operation_id: UUID
     client_request_id: UUID
@@ -110,6 +112,13 @@ class ConflictResolveIn(BaseModel):
     action: ConflictAction
     quantities: dict[UUID, int] | None = None
     note: str = Field(min_length=5, max_length=300)
+
+
+class RefundConfirmIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: UUID
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    reference: str = Field(min_length=3, max_length=255)
 
 
 class SyncBatchLogOut(BaseModel):

@@ -460,6 +460,8 @@ def devolucion_estado(
     enlace: str | None = None,
     metodo_reembolso: str | None = None,
     cambio: bool = False,
+    diferencia: str | None = None,
+    liquidacion: str | None = None,
 ) -> Mensaje:
     """Aviso al cliente sobre su devolución y su reembolso (CU19)."""
     titulo, distintivo, explicacion, tono = ESTADOS_DEVOLUCION.get(
@@ -471,6 +473,10 @@ def devolucion_estado(
                   "rejected": "No pudimos aprobar tu cambio", "completed": "Completamos tu cambio"}.get(estado, "Actualizamos tu cambio")
         explicacion = "Tu solicitud de cambio se actualizó."
     filas = [("Cambio" if cambio else "Devolución", codigo), ("Pedido", numero_pedido)]
+    if cambio and diferencia is not None and str(diferencia) not in {'0','0.00'}:
+        filas.append(('Diferencia del cambio',f'{diferencia} {moneda}'))
+        filas.append(('Liquidación',{'payment_pending':'Pendiente de cobro','refund_pending':'Pendiente de reintegro',
+            'paid':'Diferencia pagada','refunded':'Reintegro confirmado'}.get(liquidacion or '',liquidacion or 'Por coordinar')))
     if estado == "completed" and metodo_reembolso and not cambio:
         filas.append(("Reembolso por", MEDIOS_PAGO.get(metodo_reembolso, metodo_reembolso)))
 

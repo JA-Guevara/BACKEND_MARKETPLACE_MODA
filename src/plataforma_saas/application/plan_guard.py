@@ -59,6 +59,8 @@ class PlanGuard:
             or "/tenant/support" in clean_path
             or "/sync/batch" in clean_path
             or "export" in clean_path
+            or "/tenant/backups" in clean_path
+            or ('/sync/conflicts/' in clean_path and clean_path.endswith('/refund'))
         ):
             return
         if self.esta_en_solo_lectura(tenant_id):

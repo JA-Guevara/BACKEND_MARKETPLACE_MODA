@@ -55,10 +55,11 @@ class LineaCambioCalculo:
     new_variant_id: UUID
     delivered_quantity: int
     new_unit_price: Decimal
+    original_credit: Decimal | None = None
 
     @property
     def returned_value(self) -> Decimal:
-        return self.original_unit_price * self.returned_quantity
+        return self.original_credit if self.original_credit is not None else self.original_unit_price * self.returned_quantity
 
     @property
     def delivered_value(self) -> Decimal:

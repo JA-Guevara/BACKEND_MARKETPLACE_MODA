@@ -1,4 +1,5 @@
 from typing import Literal
+from decimal import Decimal
 from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict, model_validator
@@ -191,7 +192,7 @@ class ReturnRequest(BaseModel):
 
 
 class ExchangeRequest(BaseModel):
-    """Cambio de una línea del pedido por otra variante de igual precio."""
+    """Replacement with a server-calculated charge or refund when applicable."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     reason: str = Field(min_length=5, max_length=500)
     variant_id: UUID
@@ -216,6 +217,9 @@ class ReturnResolution(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     status: Literal["approved", "rejected", "completed"]
     note: str | None = Field(default=None, max_length=500)
+    settlement_method: Literal['cash'] | None = None
+    settlement_amount: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    settlement_reference: str | None = Field(default=None, min_length=3, max_length=255)
 
     @model_validator(mode="after")
     def rechazo_con_motivo(self):

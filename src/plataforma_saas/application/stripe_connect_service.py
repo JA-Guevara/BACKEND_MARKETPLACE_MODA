@@ -159,6 +159,10 @@ class StripeConnectService:
         if session.get("mode") != "payment" or session.get("payment_status") != "paid" or not session.get("id"):
             return
         order = self.db.scalar(select(OrderModel).where(OrderModel.stripe_session_id == session["id"]).with_for_update())
+        if order is None:
+            from src.ventas_pagos.application.exchange_settlement import ExchangeSettlement
+            ExchangeSettlement(self.db).webhook(cuenta, session)
+            return
         if order is None or order.stripe_account_id != cuenta:
             # Evento de otra cuenta conectada: nunca toca pedidos de otra empresa.
             return

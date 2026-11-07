@@ -23,6 +23,7 @@ def test_exchanges_flujo_completo_y_movimientos_duales(saas_world):
     var_nueva = ProductVariantModel(
         product_id=prod.id,
         sku="SKU-REEMPLAZO-01",
+        price_override=Decimal('180.00'),
         size_id=size_l.id,
         color_id=w.color.id,
         is_active=True,
@@ -169,10 +170,7 @@ def test_exchanges_flujo_completo_y_movimientos_duales(saas_world):
         .order_by(StockMovementModel.created_at.asc())
     ).all()
     assert len(movs) == 2
-    assert movs[0].kind == "exchange_in"
-    assert movs[0].delta == 1
-    assert movs[1].kind == "exchange_out"
-    assert movs[1].delta == -1
+    assert {m.kind:m.delta for m in movs} == {'exchange_in':1,'exchange_out':-1}
 
     # 8. Reintento idempotente con mismo client_request_id
     r_replay = w.client.post(

@@ -33,15 +33,19 @@ class ConflictService:
         self,
         *,
         branch_id: uuid.UUID | None = None,
-        status: Literal["OPEN", "RESOLVED"] = "OPEN",
+        status: Literal["OPEN", "RESOLVED", "ALL"] = "OPEN",
+        refund_status: str | None = None,
         type: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
         query = select(SyncConflictModel).where(
             SyncConflictModel.tenant_id == self.tenant_id,
-            SyncConflictModel.status == status,
         )
+        if status != 'ALL':
+            query = query.where(SyncConflictModel.status == status)
+        if refund_status:
+            query = query.where(SyncConflictModel.detail['refund']['status'].as_string() == refund_status)
         if branch_id:
             query = query.where(SyncConflictModel.branch_id == branch_id)
         if type:
@@ -229,6 +233,16 @@ class ConflictService:
             if data.action == "ADJUST" and op.type == "SALE":
                 op.message += f" Reintegro de efectivo pendiente: Bs {refund:.2f}."
 
+        if op.type == 'SALE' and data.action in {'CANCEL', 'ADJUST'}:
+            due = Decimal(str(op.payload.get('total', '0'))) if data.action == 'CANCEL' else refund
+            if due.is_finite() and due > 0:
+                conflict.detail = {**(conflict.detail or {}), 'refund': {
+                    'amount': str(due.quantize(Decimal('.01'))), 'currency': 'BOB',
+                    'status': 'pending', 'method': 'cash', 'reference': None,
+                }}
+                if data.action == 'CANCEL':
+                    op.message += f' Reintegro de efectivo pendiente: Bs {due:.2f}.'
+
         RecordAuditEvent(self.db).execute(
             action="sync.conflict_resolved",
             entity_type="sync_conflict",
@@ -239,6 +253,34 @@ class ConflictService:
         )
         self.db.commit()
 
+        return self._to_out(conflict)
+
+    def confirmar_reintegro(self, conflict_id, data):
+        conflict = self.db.scalar(select(SyncConflictModel).where(
+            SyncConflictModel.id == conflict_id, SyncConflictModel.tenant_id == self.tenant_id,
+        ).with_for_update().execution_options(populate_existing=True))
+        if not conflict:
+            raise NotFoundError('Conflicto no encontrado.')
+        refund = (conflict.detail or {}).get('refund')
+        if not refund or conflict.status != 'RESOLVED':
+            raise ConflictError('Primero resolvé la operación para determinar su reintegro.')
+        if Decimal(refund['amount']) != data.amount:
+            raise ValidationError('El importe no coincide con el reintegro pendiente.')
+        if refund['status'] == 'confirmed':
+            if refund.get('request_id') != str(data.request_id) or refund.get('reference') != data.reference.strip():
+                raise ConflictError('Este reintegro ya fue confirmado; no se debe volver a entregar dinero.')
+            return self._to_out(conflict)
+        refund = {**refund, 'status': 'confirmed', 'request_id': str(data.request_id),
+                  'reference': data.reference.strip(), 'confirmed_by': str(self.actor.id),
+                  'confirmed_at': datetime.now(timezone.utc).isoformat()}
+        conflict.detail = {**conflict.detail, 'refund': refund}
+        op = self.db.get(SyncOperationModel, conflict.operation_id)
+        if op:
+            op.message = f'Operación revisada. Reintegro de efectivo confirmado: Bs {data.amount:.2f}.'
+        RecordAuditEvent(self.db).execute(action='sync.cash_refund_confirmed', entity_type='sync_conflict',
+            entity_id=str(conflict.id), description='Entrega de reintegro en efectivo confirmada con conexión.',
+            actor_user_id=self.actor.id, metadata={'amount':str(data.amount),'reference':data.reference.strip()})
+        self.db.commit()
         return self._to_out(conflict)
 
     def _to_out(self, c: SyncConflictModel) -> ConflictOut:
@@ -276,6 +318,7 @@ class ConflictService:
                 )
 
         return ConflictOut(
+            refund=(c.detail or {}).get('refund'),
             id=c.id,
             operation_id=c.operation_id,
             client_request_id=op.client_request_id if op else uuid.uuid4(),

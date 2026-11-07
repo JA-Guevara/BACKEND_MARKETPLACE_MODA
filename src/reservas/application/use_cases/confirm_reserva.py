@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
@@ -26,6 +27,8 @@ class ActualizarEstadoReserva:
         self.db = db
 
     def execute(self, reserva: ReservationModel, nuevo_estado: str, actor: UserModel, note: str = "") -> ReservationModel:
+        reserva = self.db.scalar(select(ReservationModel).where(ReservationModel.id == reserva.id)
+            .with_for_update().execution_options(populate_existing=True))
         allowed = TRANSITIONS.get(reserva.status, set())
         if nuevo_estado not in allowed:
             raise TransicionInvalidaError(f"No se puede pasar de '{reserva.status}' a '{nuevo_estado}'.")

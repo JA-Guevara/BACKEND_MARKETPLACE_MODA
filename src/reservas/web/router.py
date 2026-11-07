@@ -22,6 +22,10 @@ from src.reservas.application.use_cases.get_reserva import ObtenerReserva
 from src.reservas.application.use_cases.list_reservas import ListarReservas
 from src.reservas.infrastructure.http.schemas import CrearReservaRequest, EstadoReservaUpdate
 from src.reservas.infrastructure.persistence.models.reserva import ReservationModel
+from src.reservas.infrastructure.http.schemas import ReservationOrderIn
+from src.reservas.application.use_cases.convert_to_order import convert_to_order
+from src.ventas_pagos.infrastructure.models import OrderModel
+from src.ventas_pagos.web.router import order_data
 from src.shared.responses.api_response import ApiResponse
 from src.shared.responses.pagination import Page
 
@@ -63,6 +67,7 @@ def _items_visibles(db: Session, reserva: ReservationModel) -> list[dict]:
 
 def reserva_data(reserva: ReservationModel, db: Session, branch: BranchModel | None = None) -> dict:
     branch = branch or db.get(BranchModel, reserva.branch_id)
+    order = db.get(OrderModel, reserva.order_id) if reserva.order_id else None
     return {
         "id": reserva.id,
         "user_id": reserva.user_id,
@@ -75,6 +80,10 @@ def reserva_data(reserva: ReservationModel, db: Session, branch: BranchModel | N
         "created_at": reserva.created_at,
         "updated_at": reserva.updated_at,
         "inventory_held": reserva.inventory_held,
+        "order_id": reserva.order_id,
+        "order_number": order.number if order else None,
+        "order_status": order.status if order else None,
+        "payment_status": order.payment_status if order else None,
         "origin": reserva.origin,
         "device_id": reserva.device_id,
         "client_created_at": reserva.client_created_at,
@@ -153,6 +162,24 @@ def cancel_reservation(reservation_id: uuid.UUID, ctx: TenantScope, user: User, 
     reserva = ObtenerReserva(db, ctx.tenant_id).execute(reservation_id, user_id=user.id)
     reserva = CancelarReserva(db).execute(reserva, user)
     return ApiResponse(message="Reserva cancelada.", data=reserva_data(reserva, db))
+
+
+@router.post('/{reservation_id}/order')
+def reservation_order(reservation_id: uuid.UUID, data: ReservationOrderIn, ctx: TenantScope, user: User, db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, 'reservations')
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, 'sales')
+    order = convert_to_order(db, ctx.tenant_id, reservation_id, user, data)
+    return ApiResponse(message='Reserva convertida a pedido; pendiente de cobro si corresponde.', data=order_data(order))
+
+
+@router.post('/admin/{reservation_id}/order')
+def admin_reservation_order(reservation_id: uuid.UUID, data: ReservationOrderIn, ctx: TenantScope,
+                            user: Annotated[UserModel, Depends(require_permissions('reservations.write', 'commerce.write'))],
+                            db: Session = Depends(get_db)):
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, 'reservations')
+    PlanGuard(db).exigir_funcion(ctx.tenant_id, 'sales')
+    order = convert_to_order(db, ctx.tenant_id, reservation_id, user, data, owner_only=False)
+    return ApiResponse(message='Pedido vinculado a la reserva.', data=order_data(order))
 
 
 @router.get("/admin/all", response_model=ApiResponse[Page[dict]])

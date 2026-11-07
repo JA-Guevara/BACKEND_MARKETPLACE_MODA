@@ -112,6 +112,8 @@ class ServicioNotificaciones:
             enlace=f"{settings.frontend_url}/mi-cuenta/pedidos",
             metodo_reembolso=order.payment_method,
             cambio=bool(devolucion.items and devolucion.items[0].get("replacement_variant_id")),
+            diferencia=str(getattr(devolucion,'difference_amount',0)),
+            liquidacion=getattr(devolucion,'settlement_status',None),
         )
         return self.correo.execute(
             destinatario=order.customer_email,
