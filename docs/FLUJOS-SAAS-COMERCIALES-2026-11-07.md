@@ -58,6 +58,16 @@ La implementación conserva el modo de prueba. Las pruebas usan un proveedor sim
 
 ## Configuración y datos por empresa
 
+### Avisos destacados de pagos y operaciones · 07/11/2026
+
+`GET /api/v1/notifications` deriva el historial de pedidos, reservas, cambios y comprobantes del plan. Incluye `event_key`, `importante` y `tono`. Aplica empresa del token, titular del pedido y permisos; el personal solo recibe operaciones de sus sucursales autorizadas. La plataforma recibe los comprobantes de suscripción, sin mezclar las ventas de tiendas. La sesión de soporte no recibe avisos personales de facturación.
+
+Los pagos acreditados, la confirmación de reservas, cancelaciones, vencimientos y resoluciones de cambios generan avisos destacados. Los cambios distinguen aprobación, cobro de diferencia y reintegro confirmado. Una diferencia negativa pendiente no se anuncia como dinero devuelto. Los comprobantes del plan distinguen pendiente, vencido y pagado con fecha de pago. Los eventos conservan una clave estable para evitar ventanas repetidas.
+
+La web consulta novedades cada 45 segundos mientras está visible y al recuperar foco o conexión. Las acciones de pago muestran el resultado inmediatamente después de la respuesta del servidor. Android incorpora ventanas globales y «Mi cuenta → Avisos y pagos». El historial conserva los avisos cerrados. Se descartan respuestas de otra sesión y se separa el recuerdo de avisos por usuario y empresa. Esto cubre avisos dentro de la aplicación abierta; no incorpora notificaciones remotas con la aplicación cerrada.
+
+Verificación: 799 pruebas unitarias backend, 697 web y 334 móvil aprobadas (una prueba externa móvil omitida), análisis móvil sin problemas y compilación web. `test_payment_notices.py` comprueba Checkout con cuentas A/B, firma de webhook, repetición, destinatarios, sucursales, cobro del plan y reintegros. El ensayo de navegador `payment-notices.mjs` crea una compra, comprueba un retorno falso sin acreditar, confirma mediante webhook firmado local y verifica ventana, importe, referencia, ausencia de repetición y aislamiento de B. Se inspeccionaron capturas en escritorio y a 390 px. Todas las operaciones financieras del ensayo son simuladas; no certifican la configuración de una cuenta Stripe externa.
+
 «Configuración de la empresa» agrupa tienda pública y marca, perfil, plan, medios de cobro y datos. Permite editar color, eslogan, información, contacto, políticas, SEO, logo y portada; publicar o despublicar; y gestionar medios manuales. Publicar comprueba suscripción, sucursal con horario, logo, catálogo con fotografías y medios de cobro. Cada tienda conserva `/tienda/:slug` y su catálogo propio.
 
 Las copias de negocio por empresa, su programación y su ensayo se describen en [RESPALDOS-POR-EMPRESA.md](RESPALDOS-POR-EMPRESA.md). La custodia necesita `TENANT_BACKUP_ENCRYPTION_KEY`; no se inició ninguna copia real de producción durante el trabajo.
