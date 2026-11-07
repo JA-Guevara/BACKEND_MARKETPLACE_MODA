@@ -103,14 +103,30 @@ def test_el_correo_es_identico_al_de_antes(base):
 def test_en_modo_fondo_el_request_no_espera_al_smtp(base, monkeypatch):
     engine, _db = base
     cola = cola_de_prueba(monkeypatch, engine)
-    # Un SMTP que tarda medio segundo: si el request lo esperara, el reloj lo diria.
-    remitente = RemitenteEspia(demora=0.5)
-
-    inicio = time.monotonic()
-    assert AuthEmailService(remitente).send_verification("ana@fashionstore.test", TOKEN) is True
-    demora = time.monotonic() - inicio
-
-    assert demora < 0.2, f"El request espero {demora:.2f} s: el aviso no se difirio."
+    smtp_iniciado, liberar_smtp, request_terminado = (threading.Event() for _ in range(3))
+    class RemitenteBloqueado(RemitenteEspia):
+        def send(self, **kwargs):
+            smtp_iniciado.set()
+            if not liberar_smtp.wait(15):
+                return False
+            return super().send(**kwargs)
+    remitente = RemitenteBloqueado()
+    resultados = []
+    def request():
+        resultados.append(AuthEmailService(remitente).send_verification("ana@fashionstore.test", TOKEN))
+        request_terminado.set()
+    hilo = threading.Thread(target=request, name="request-de-prueba", daemon=True)
+    hilo.start()
+    try:
+        assert smtp_iniciado.wait(5), "El trabajador no inició el envío."
+        # Verifica el orden real de los eventos; la velocidad del equipo no
+        # decide si una llamada de fondo parece síncrona.
+        assert request_terminado.wait(5), "El request esperó al SMTP bloqueado."
+        assert resultados == [True]
+        assert remitente.enviados == []
+    finally:
+        liberar_smtp.set()
+        hilo.join(5)
     assert cola.esperar(5.0), "La cola no llego a enviar el aviso."
     assert remitente.enviados[-1]["hilo"].startswith("correo-"), (
         "El correo salio en el hilo del request, no en el de la cola."
