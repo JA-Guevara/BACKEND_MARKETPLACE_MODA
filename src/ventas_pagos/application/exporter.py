@@ -104,3 +104,33 @@ def build_metadata(title: str, periodo: str, filtros: str, currency: str, trunca
         "generado": datetime.now(BUSINESS_TZ).strftime("%Y-%m-%d %H:%M %Z"),
         "nota": nota,
     }
+
+def _pdf_value(value):
+    # En PDF no hay riesgo de formulas: se muestra el dato tal cual, legible.
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else f"{value:,.2f}"
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M")
+    return value
+
+
+def to_pdf(title: str, headers: list[str], rows: list[dict], metadata: dict, empresa: str, report_key: str = "reporte") -> bytes:
+    """PDF convencional (CU-29). Reutiliza el generador PDF de reportes con IA
+    (``reportes_ia.application.exportador.Exportador.pdf``) adaptando el
+    conjunto ya filtrado por ReportsService; no hay un segundo generador."""
+    from src.reportes_ia.application.ejecutor import ReportResult
+    from src.reportes_ia.application.exportador import Exportador
+
+    result = ReportResult(
+        definition_code=report_key,
+        title=title,
+        columns=[{"key": key, "label": label(key), "type": "text"} for key in headers],
+        rows=[{key: _pdf_value(row.get(key, "")) for key in headers} for row in rows],
+        totals={},
+        # El limite de filas ya se aplico antes; la nota de truncamiento va en los criterios.
+        truncated=False,
+    )
+    filtros = [(label(key), str(metadata.get(key, "-"))) for key in ("periodo", "filtros", "zona", "moneda", "nota")]
+    return Exportador().pdf(None, result, empresa, filtros=filtros)

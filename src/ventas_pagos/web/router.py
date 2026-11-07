@@ -19,6 +19,7 @@ from src.shared.exceptions.domain_exception import NotFoundError
 from src.shared.responses.api_response import ApiResponse
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductVariantModel, ProductModel
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.ventas_pagos.infrastructure.models import StockModel, StockMovementModel, CartItemModel, OrderModel, OrderReturnModel
 from src.inventario_sucursales.infrastructure.models.organization import CashPointModel
 from src.ventas_pagos.infrastructure.gateways import verify_event
@@ -656,8 +657,8 @@ def export_reports(user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db),
                    branch_id: uuid.UUID | None = None, category_id: uuid.UUID | None = None,
                    status: str | None = Query(default=None, max_length=30)):
     """Exporta el conjunto filtrado autorizado."""
-    if format not in {"xlsx", "csv"}:
-        raise HTTPException(status_code=422, detail="Formato no soportado: use xlsx o csv.")
+    if format not in {"xlsx", "csv", "pdf"}:
+        raise HTTPException(status_code=422, detail="Formato no soportado: use xlsx, csv o pdf.")
     if report not in {"ventas", "pedidos", "pagos", "prendas_vendidas", "existencias", "sucursales"}:
         raise HTTPException(status_code=422, detail="Reporte no soportado.")
     fif = ReportFilters(date_from=date_from, date_to=date_to, branch_id=branch_id, category_id=category_id, status=status)
@@ -676,6 +677,13 @@ def export_reports(user: Analyst, ctx: TenantCtx, db: Session = Depends(get_db),
     )
     metadata = exporter.build_metadata(title, period_text, filtro_text, settings.commerce_currency.upper(), truncated=truncated)
     filename = f"fashionstore_{report}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{format}"
+    if format == "pdf":
+        # La empresa sale del token (RN03), igual que los datos ya filtrados por tenant.
+        tenant = db.get(TenantModel, ctx.tenant_id)
+        empresa = (tenant.trade_name or tenant.legal_name) if tenant else "FashionStore"
+        content = exporter.to_pdf(title, headers, rows, metadata, empresa or "FashionStore", report)
+        return StreamingResponse(iter([content]), media_type="application/pdf",
+                                 headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     if format == "csv":
         content = exporter.to_csv(title, headers, rows, metadata)
         return StreamingResponse(iter([content]), media_type="text/csv; charset=utf-8",

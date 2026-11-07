@@ -63,54 +63,82 @@ class EntrenamientoService:
         preds_test = modelo_demanda.predecir(X_test)
         metricas_demanda = EvaluadorModelos.metricas_regresion(y_test, preds_test)
 
-        # Desactivar modelos anteriores
-        self.db.query(MLModelModel).filter(
-            MLModelModel.tenant_id == tenant_id,
-            MLModelModel.model_type == "DEMAND",
-            MLModelModel.is_active == True,
-        ).update({"is_active": False})
-
-        model_id = str(uuid.uuid4())
-        artifact = self.artefactos.serializar(modelo_demanda)
-
-        ml_model = MLModelModel(
-            id=model_id,
-            tenant_id=tenant_id,
-            name=nombre_modelo,
-            model_type="DEMAND",
-            version=version_modelo,
-            artifact=artifact,
-            artifact_bytes=len(artifact),
-            artifact_sha256=self.artefactos.sha256(artifact),
-            metrics=metricas_demanda,
-            is_active=True,
-            created_at=datetime.now(timezone.utc),
+        # CU-30: el candidato solo reemplaza al modelo activo si no lo empeora
+        # (regla de EvaluadorModelos.validar_candidato_vs_baseline). Sin modelo
+        # previo, el candidato se activa directamente.
+        modelo_previo = (
+            self.db.query(MLModelModel)
+            .filter(
+                MLModelModel.tenant_id == tenant_id,
+                MLModelModel.model_type == "DEMAND",
+                MLModelModel.is_active == True,
+            )
+            .order_by(MLModelModel.created_at.desc())
+            .first()
         )
-        self.db.add(ml_model)
+        promocion: Dict[str, Any] | None = None
+        promovido = True
+        if modelo_previo is not None:
+            promocion = EvaluadorModelos.validar_candidato_vs_baseline(metricas_demanda, modelo_previo.metrics or {})
+            promocion["modelo_baseline_id"] = modelo_previo.id
+            promovido = bool(promocion["aprobado"])
 
-        run_demanda.status = "COMPLETED"
-        run_demanda.metrics = metricas_demanda
         run_demanda.finished_at = datetime.now(timezone.utc)
+        run_demanda.metrics = {**metricas_demanda, "promocion": promocion} if promocion else metricas_demanda
 
-        # Generar predicciones para las últimas semanas
-        self.db.query(MLPredictionModel).filter(MLPredictionModel.tenant_id == tenant_id).delete()
-        for i in range(min(40, len(X_test))):
-            idx_global = split_idx + i
-            m_info = meta[idx_global]
-            pred_val = float(preds_test[i])
-            act_val = float(y_test[i])
-            pred_row = MLPredictionModel(
-                id=str(uuid.uuid4()),
+        if not promovido:
+            # Se conserva el modelo anterior (y sus predicciones); el
+            # entrenamiento queda registrado como rechazado, sin activar nada.
+            model_id = modelo_previo.id
+            run_demanda.status = "REJECTED"
+            run_demanda.error_message = "Candidato no promovido: " + promocion["razon"]
+        else:
+            # Desactivar modelos anteriores
+            self.db.query(MLModelModel).filter(
+                MLModelModel.tenant_id == tenant_id,
+                MLModelModel.model_type == "DEMAND",
+                MLModelModel.is_active == True,
+            ).update({"is_active": False})
+
+            model_id = str(uuid.uuid4())
+            artifact = self.artefactos.serializar(modelo_demanda)
+
+            ml_model = MLModelModel(
+                id=model_id,
                 tenant_id=tenant_id,
-                model_id=model_id,
-                target_date=m_info.get("fecha_semana", f"2026-W{m_info['semana']:02d}"),
-                variant_id=m_info["variante_id"],
-                branch_id=m_info["sucursal_id"],
-                predicted_units=round(pred_val, 1),
-                actual_units=round(act_val, 1),
+                name=nombre_modelo,
+                model_type="DEMAND",
+                version=version_modelo,
+                artifact=artifact,
+                artifact_bytes=len(artifact),
+                artifact_sha256=self.artefactos.sha256(artifact),
+                metrics=metricas_demanda,
+                is_active=True,
                 created_at=datetime.now(timezone.utc),
             )
-            self.db.add(pred_row)
+            self.db.add(ml_model)
+
+            run_demanda.status = "COMPLETED"
+
+            # Generar predicciones para las últimas semanas
+            self.db.query(MLPredictionModel).filter(MLPredictionModel.tenant_id == tenant_id).delete()
+            for i in range(min(40, len(X_test))):
+                idx_global = split_idx + i
+                m_info = meta[idx_global]
+                pred_val = float(preds_test[i])
+                act_val = float(y_test[i])
+                pred_row = MLPredictionModel(
+                    id=str(uuid.uuid4()),
+                    tenant_id=tenant_id,
+                    model_id=model_id,
+                    target_date=m_info.get("fecha_semana", f"2026-W{m_info['semana']:02d}"),
+                    variant_id=m_info["variante_id"],
+                    branch_id=m_info["sucursal_id"],
+                    predicted_units=round(pred_val, 1),
+                    actual_units=round(act_val, 1),
+                    created_at=datetime.now(timezone.utc),
+                )
+                self.db.add(pred_row)
 
         # 2. ENTRENAR SEGMENTACIÓN RFM
         extractor_rfm = ExtractorCaracteristicasRFM()
@@ -169,6 +197,9 @@ class EntrenamientoService:
         return {
             "demand_model_id": model_id,
             "demand_metrics": metricas_demanda,
+            "demand_promoted": promovido,
+            "demand_promotion": promocion,
+            "demand_run_status": run_demanda.status,
             "segmented_customers": len(clientes),
             "detected_anomalies": anomalias_detectadas,
             "status": "COMPLETED",

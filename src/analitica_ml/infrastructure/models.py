@@ -11,7 +11,7 @@ class MLTrainingRunModel(Base):
     id = Column(String(36), primary_key=True)
     tenant_id = Column(Uuid(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     model_type = Column(String(50), nullable=False)  # DEMAND, RFM, ANOMALY
-    status = Column(String(30), nullable=False, default="RUNNING")  # RUNNING, COMPLETED, FAILED
+    status = Column(String(30), nullable=False, default="RUNNING")  # RUNNING, COMPLETED, REJECTED (CU-30: candidato no promovido), FAILED
     metrics = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

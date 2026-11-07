@@ -2,6 +2,7 @@ import csv
 import io
 from datetime import datetime
 from typing import Any
+from xml.sax.saxutils import escape
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from reportlab.lib import colors
@@ -104,7 +105,18 @@ class Exportador:
         wb.save(buf)
         return buf.getvalue()
 
-    def pdf(self, spec: ReportSpec, result: ReportResult, empresa: str, narrativa: str = "") -> bytes:
+    def pdf(
+        self,
+        spec: ReportSpec | None,
+        result: ReportResult,
+        empresa: str,
+        narrativa: str = "",
+        filtros: list[tuple[str, str]] | None = None,
+    ) -> bytes:
+        """PDF de reporte convencional: empresa, titulo, fecha de generacion,
+        filtros aplicados (opcional), tabla con encabezados y totales.
+        Lo reutilizan los reportes con IA (CU-28) y la exportacion
+        convencional del dashboard (CU-29, ``filtros``)."""
         if result.truncated:
             raise ValidationError("export_rows_exceeded: Supera el límite de filas para exportar.")
 
@@ -141,8 +153,12 @@ class Exportador:
         )
 
         elements = []
-        elements.append(Paragraph(f"<b>{empresa.upper()}</b>", title_style))
-        elements.append(Paragraph(f"Reporte: {result.title} · Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", sub_style))
+        elements.append(Paragraph(f"<b>{escape(empresa.upper())}</b>", title_style))
+        elements.append(Paragraph(f"Reporte: {escape(result.title)} · Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", sub_style))
+
+        if filtros:
+            filtros_html = "<br/>".join(f"<b>{escape(str(k))}:</b> {escape(str(v))}" for k, v in filtros)
+            elements.append(Paragraph(filtros_html, sub_style))
 
         if narrativa:
             elements.append(Paragraph(f"<b>Lectura inteligente:</b> {narrativa}", narrative_style))
@@ -203,7 +219,7 @@ class Exportador:
         elements.append(t)
 
         elements.append(Spacer(1, 15))
-        elements.append(Paragraph(f"<i>Datos de {empresa} · Consulta verificada por el sistema.</i>", sub_style))
+        elements.append(Paragraph(f"<i>Datos de {escape(empresa)} · Consulta verificada por el sistema.</i>", sub_style))
 
         doc.build(elements)
         return buf.getvalue()
