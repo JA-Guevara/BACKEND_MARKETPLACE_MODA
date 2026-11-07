@@ -1,10 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock, get_ident
 from datetime import datetime, timezone
 import os
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from starlette.testclient import TestClient
@@ -12,6 +13,8 @@ from starlette.testclient import TestClient
 from src.main import create_app
 from src.infrastructure.database.safety import require_local_database
 from src.infrastructure.database.session import get_db
+from src.dispositivos.infrastructure.models import DeviceModel
+from src.bitacora.infrastructure.persistence.models.evento_bitacora import AuditEventModel
 from src.operacion_offline.infrastructure.models.sync import SyncOperationModel
 from tests.unit.plataforma_saas.conftest import create_world
 
@@ -50,7 +53,32 @@ def saas_world():
         admin.dispose()
 
 
-def test_concurrencia_sync_idempotente(saas_world):
+@pytest.fixture
+def simultaneous_device_registration(saas_world):
+    """Fuerza ambos primeros accesos antes del alta, sin depender del scheduler."""
+    barrier = Barrier(2, timeout=15)
+    guard = Lock()
+    participants = set()
+
+    def after_device_read(connection, cursor, statement, parameters, context, executemany):
+        if not statement.lstrip().startswith("SELECT") or "FROM devices " not in statement:
+            return
+        with guard:
+            thread = get_ident()
+            wait = len(participants) < 2 and thread not in participants
+            if wait:
+                participants.add(thread)
+        if wait:
+            barrier.wait()
+
+    event.listen(saas_world.engine, "after_cursor_execute", after_device_read)
+    try:
+        yield
+    finally:
+        event.remove(saas_world.engine, "after_cursor_execute", after_device_read)
+
+
+def test_concurrencia_sync_idempotente(saas_world, simultaneous_device_registration):
     """Verifica que dos hilos concurrentes enviando el mismo client_request_id
     se resuelvan sin duplicación ni corrupción de inventario en PostgreSQL."""
     w = saas_world
@@ -87,8 +115,8 @@ def test_concurrencia_sync_idempotente(saas_world):
         r1 = f1.result()
         r2 = f2.result()
 
-    assert r1.status_code == 200
-    assert r2.status_code == 200
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
 
     res1 = r1.json()["data"]["results"][0]
     res2 = r2.json()["data"]["results"][0]
@@ -98,9 +126,17 @@ def test_concurrencia_sync_idempotente(saas_world):
     assert w.db.scalar(select(func.count()).select_from(SyncOperationModel).where(
         SyncOperationModel.client_request_id == crid,
     )) == 1
+    device = w.db.scalar(select(DeviceModel).where(
+        DeviceModel.tenant_id == w.tenant_a.id, DeviceModel.device_id == "test-device-thread",
+    ))
+    assert device is not None
+    assert w.db.scalar(select(func.count()).select_from(AuditEventModel).where(
+        AuditEventModel.tenant_id == w.tenant_a.id,
+        AuditEventModel.action == "devices.registered", AuditEventModel.entity_id == str(device.id),
+    )) == 1
 
 
-def test_different_sales_competing_for_last_stock_do_not_oversell(saas_world):
+def test_different_sales_competing_for_last_stock_do_not_oversell(saas_world, simultaneous_device_registration):
     w = saas_world
     def send():
         return w.client.post("/api/v1/sync/batch", headers=w.headers(w.admin_a), json={
@@ -114,7 +150,7 @@ def test_different_sales_competing_for_last_stock_do_not_oversell(saas_world):
         })
     with ThreadPoolExecutor(max_workers=2) as executor:
         responses = list(executor.map(lambda _: send(), range(2)))
-    assert all(response.status_code == 200 for response in responses)
+    assert all(response.status_code == 200 for response in responses), [(r.status_code, r.text) for r in responses]
     statuses = sorted(response.json()["data"]["results"][0]["status"] for response in responses)
     assert statuses == ["CONFIRMED", "CONFLICT"]
     from src.ventas_pagos.infrastructure.models import StockModel

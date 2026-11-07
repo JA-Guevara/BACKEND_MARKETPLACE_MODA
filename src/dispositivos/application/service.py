@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.bitacora.infrastructure.persistence.models.evento_bitacora import AuditEventModel
@@ -71,7 +72,7 @@ class DeviceService:
         stmt = select(DeviceModel).where(
             DeviceModel.tenant_id == tenant_id,
             DeviceModel.device_id == dev_id,
-        )
+        ).with_for_update(of=DeviceModel).execution_options(populate_existing=True)
         device = self.db.scalar(stmt)
         now = datetime.now(timezone.utc)
 
@@ -125,8 +126,22 @@ class DeviceService:
             status="ACTIVO",
             rejected_attempts=0,
         )
-        self.db.add(device)
-        self.db.flush()
+        try:
+            # Dos primeras peticiones pueden observar que aún no existe. El
+            # savepoint conserva la transacción y su contexto al perder el alta.
+            with self.db.begin_nested():
+                self.db.add(device)
+                self.db.flush()
+        except IntegrityError:
+            concurrent = self.db.scalar(stmt)
+            if concurrent is None:
+                raise
+            # La fila ganadora ya está bloqueada: volver por la validación de
+            # estado impide aceptar un dispositivo bloqueado o auditar dos altas.
+            return self.verificar_y_registrar(
+                tenant_id, dev_id, platform, app_version, user_id, branch_id,
+                op_type, batch_id,
+            )
 
         self._auditar(
             tenant_id=tenant_id,

@@ -27,6 +27,8 @@ Dos dispositivos desconectados no pueden conocer sus operaciones mutuamente. Las
 
 Al sincronizar, venta, reserva y conversión comparten bloqueos de inventario. Con una sola talla M disponible, solo una operación puede consumirla; la otra conserva un conflicto revisable. Los reintentos son idempotentes y no descuentan existencias dos veces.
 
+Se corrigió además el primer registro simultáneo del mismo dispositivo: el alta usa un savepoint y, ante un registro concurrente, relee la fila ganadora y valida su estado bajo bloqueo. No se duplica la auditoría ni se ignora un dispositivo bloqueado. Una barrera en las pruebas PostgreSQL reproduce de forma determinista la carrera que antes devolvía `503` por un duplicado en `devices`.
+
 Si una venta en efectivo se ajusta, queda pendiente la diferencia entre el total original y el aceptado. Si se cancela por conflicto, queda pendiente el total original. Resolver el conflicto no certifica que el dinero se entregó. El personal registra en línea el importe exacto y la referencia de caja, después de entregar el efectivo. Una segunda confirmación incompatible se rechaza. El dispositivo recibe el estado del reintegro al consultar de nuevo; no reenvía la venta confirmada.
 
 ## Cambiar una prenda es distinto de devolverla
@@ -79,6 +81,7 @@ No convierten reservas históricas automáticamente ni reescriben importes de op
 - Web: 666 pruebas y compilación de producción aprobadas en una copia que excluye las ediciones concurrentes de autenticación. La prueba del probador espera el primer fotograma procesado, en lugar de depender de una pausa fija.
 - Móvil: análisis estático sin problemas, 307 pruebas aprobadas y APK debug compilado. No equivale a una prueba en un teléfono físico.
 - Validación adicional del retiro: 148 pruebas focalizadas del backend y 16 comprobaciones del mismo grupo PostgreSQL que ejecuta CI, aprobadas. El control remoto anterior aprobó pruebas generales y migraciones, pero falló en su grupo PostgreSQL; se añadieron anotaciones de fallo para obtener el caso exacto si se repite.
+- Diagnóstico del control remoto: las anotaciones identificaron los dos casos de sincronización concurrente. La barrera local reprodujo ambos fallos (`23505`, tabla `devices`) antes del arreglo. Después pasaron 36 pruebas: todo el grupo PostgreSQL de CI más dispositivos y operación offline, manteniendo la barrera y verificando una sola auditoría de alta.
 - Navegador con API y SQLite locales: configuración pública y medios de cobro; reserva → pedido sin descontar dos veces → pago → retiro sin envío → cambio en mostrador; cambio solicitado de precio distinto con cobro y recepción; panel ejecutivo con filtros, gráficos y XLSX; copia de empresa A restaurada y descargada; empresa B sin acceso a sus copias; reportes empresariales conservados. Sin errores HTTP ni de página en esos recorridos.
 - Stripe simulado: Checkout cobra solo la diferencia, reutiliza sesión, valida avisos firmados y cuenta conectada, y conserva pendiente un reintegro fallido. No se procesaron cargos ni reintegros reales.
 
