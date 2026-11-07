@@ -12,7 +12,7 @@ from src.infrastructure.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
-def stripe_request(method: str, path: str, data=None, key=None, stripe_account: str | None = None):
+def stripe_request(method: str, path: str, data=None, key=None, stripe_account: str | None = None, *, api_version: str | None = None):
     """Llamada a Stripe en modo prueba. Con stripe_account la operación ocurre en la
     cuenta conectada de la empresa (cargo directo, cabecera Stripe-Account)."""
     if not settings.stripe_secret_key.startswith("sk_test_"):
@@ -20,9 +20,12 @@ def stripe_request(method: str, path: str, data=None, key=None, stripe_account: 
     headers = {"Idempotency-Key": key} if key else {}
     if stripe_account:
         headers["Stripe-Account"] = stripe_account
+    if api_version:
+        headers['Stripe-Version'] = api_version
     try:
-        response = httpx.request(method, "https://api.stripe.com/v1/" + path,
-            auth=(settings.stripe_secret_key, ""), data=data,
+        is_v2 = path.startswith('v2/')
+        response = httpx.request(method, "https://api.stripe.com/" + (path if is_v2 else 'v1/' + path),
+            auth=(settings.stripe_secret_key, ""), **({'json': data} if is_v2 else {'data': data}),
             headers=headers, timeout=20)
         response.raise_for_status()
         return response.json()

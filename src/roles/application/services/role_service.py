@@ -171,7 +171,17 @@ class RoleService:
         if self.tenant_id is not None:
             if role.tenant_id is not None and role.tenant_id != self.tenant_id:
                 raise NotFoundError("Rol no encontrado.")
-            if role.tenant_id is None and role.code in ("platform_admin", "client"):
+            if role.tenant_id is None and (
+                role.audience != "TENANT"
+                or role.code in (
+                    "platform_admin",
+                    "client",
+                    "superadmin",
+                    "platform_support",
+                    "platform_billing",
+                    "platform_auditor",
+                )
+            ):
                 raise NotFoundError("Rol no encontrado.")
         return role
 

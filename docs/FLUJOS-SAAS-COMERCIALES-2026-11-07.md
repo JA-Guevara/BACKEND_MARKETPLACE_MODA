@@ -52,9 +52,23 @@ El mostrador valida cantidades contra ambos circuitos, usa precios del servidor,
 ## Dos cobros distintos con Stripe
 
 - **FashionStore cobra a las empresas:** Billing, Checkout de suscripción, portal de facturación y webhooks del plan. La empresa lo ve en «Plan y facturación».
-- **Cada empresa cobra sus prendas:** Connect Express y cargos directos con `Stripe-Account`. La empresa configura su cuenta en «Cobros de prendas». No entrega claves secretas de su cuenta a FashionStore.
+- **Cada empresa cobra sus prendas:** Accounts v2 para las altas y cargos directos con `Stripe-Account`. La empresa configura su cuenta en «Cobros de prendas». No entrega claves secretas de su cuenta a FashionStore.
 
 La implementación conserva el modo de prueba. Las pruebas usan un proveedor simulado y avisos firmados de prueba; no se movió dinero real. Para una prueba con Stripe real se necesitan las claves de prueba, los precios mensuales de los planes, los secretos de ambos webhooks y cuentas Connect habilitadas.
+
+### Alta Accounts v2 · revisión del 07/11/2026
+
+El alta usa `POST /v2/core/accounts`, cuerpo JSON y versión `2026-10-28.endive`. Solicita la configuración `merchant` con `card_payments`, panel `full` y responsabilidades de comisiones y pérdidas a cargo de Stripe (`fees_collector=stripe`, `losses_collector=stripe`). La cuenta sandbox existente rechazó que la plataforma asumiera las pérdidas sin completar su configuración adicional. No se usa la variante Express con Managed Risk, que Stripe documenta como preview.
+
+La empresa se obtiene del token. La creación se serializa por empresa, usa clave de idempotencia y guarda únicamente el ID y el estado. Nunca acepta un ID de cuenta aportado por otra empresa. Una respuesta sin `object=v2.core.account`, `livemode=false` e ID `acct_` se rechaza. Solo se admiten claves `sk_test_`.
+
+El formulario alojado y la lectura de estado usan la compatibilidad documentada de las cuentas v2 con `account_links` y `GET /v1/accounts/{id}`. Se conservan los webhooks snapshot `account.updated` y los de Checkout de cuentas conectadas; no se necesitan nuevos destinos thin para este circuito. «Actualizar estado» consulta Stripe y persiste el resultado; regresar del formulario no habilita cobros por sí mismo. Un enlace vencido solicita otro enlace y sus errores siguen visibles aunque no se haya cargado la tarjeta de cuenta.
+
+`STRIPE_CONNECT_TEST_COUNTRY=US` es el valor predeterminado exclusivamente para las cuentas ficticias. No habilita operar en vivo en ese país ni sustituye la elegibilidad de una empresa real. El código no carga identidades ni bancos ficticios en las cuentas normales de las empresas. El titular completa los datos y acepta las condiciones en Stripe; el servidor no acepta esas condiciones en su nombre.
+
+Validación realizada durante esta revisión: se creó una cuenta v2 en la cuenta Stripe TEST elegida por el usuario, se comprobó su representación compatible v1 y se generó su enlace de alta; sus cargos seguían deshabilitados por requisitos pendientes. Pasaron 31 pruebas focalizadas de backend, 815 pruebas generales y 697 pruebas web con compilación. Las pruebas locales cubren separación A/B, webhook del pago, idempotencia, incompatibilidad de cuenta, bloqueo de clave live y permisos. La prueba externa de venta sobre una cuenta v2 completamente habilitada y el push de esta revisión permanecen pendientes; no deben deducirse de los resultados unitarios. La revisión automática de operaciones externas se interrumpió por falta de créditos del workspace.
+
+Referencias de Stripe: [Accounts v2](https://docs.stripe.com/connect/accounts-v2), [responsabilidades y panel](https://docs.stripe.com/connect/accounts-v2/connected-account-configuration), [Managed Risk](https://docs.stripe.com/connect/risk-management/connected-accounts-with-managed-risk). Esta revisión no requiere migraciones.
 
 ## Configuración y datos por empresa
 

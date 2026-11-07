@@ -28,7 +28,15 @@ class RoleRepository:
                         RoleModel.tenant_id == tenant_id,
                         and_(
                             RoleModel.tenant_id.is_(None),
-                            RoleModel.code.notin_(["platform_admin", "client"]),
+                            RoleModel.audience == "TENANT",
+                            RoleModel.code.notin_([
+                                "platform_admin",
+                                "client",
+                                "superadmin",
+                                "platform_support",
+                                "platform_billing",
+                                "platform_auditor",
+                            ]),
                         ),
                     )
                 )

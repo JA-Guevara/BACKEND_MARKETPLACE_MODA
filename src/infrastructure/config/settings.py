@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     stripe_billing_webhook_secret: str = ""
     stripe_connect_webhook_secret: str = ""
     stripe_connect_enabled: bool = False
+    # Solo cuentas ficticias: el país real se configura al habilitar cobros live.
+    stripe_connect_test_country: str = Field(default='US', pattern=r'^[A-Z]{2}$')
     # Alta pública cerrada por defecto (signup_service lee SIGNUP_ENABLED en cada petición).
     signup_enabled: bool = False
     # Opcional: límite de peticiones compartido y caché de IA (infrastructure/cache/redis.py).

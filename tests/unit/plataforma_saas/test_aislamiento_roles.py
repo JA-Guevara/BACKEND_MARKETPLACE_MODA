@@ -176,3 +176,31 @@ def test_admin_a_patch_user_actualiza_roles(world):
     user_data = resp_patch.json()['data']
     user_roles = [r['id'] for r in user_data['roles']]
     assert custom_role_id in user_roles
+
+
+def test_admin_a_get_roles_no_incluye_roles_de_plataforma_ni_superadmin(world):
+    for rcode, rname, raudience in [
+        ("platform_support", "Soporte de plataforma", "PLATFORM"),
+        ("platform_billing", "Comercial y facturación", "PLATFORM"),
+        ("platform_auditor", "Auditor de plataforma", "PLATFORM"),
+        ("superadmin", "Propietario de empresa", "TENANT"),
+    ]:
+        existing = world.db.scalar(select(RoleModel).where(RoleModel.code == rcode))
+        if not existing:
+            world.db.add(RoleModel(code=rcode, name=rname, audience=raudience, is_system=True, is_active=True))
+    world.db.commit()
+
+    resp = world.client.get("/api/v1/roles?include_inactive=true", headers=world.headers(world.admins[0]))
+    assert resp.status_code == 200
+    codes = [r["code"] for r in resp.json()["data"]]
+    for forbidden in ["platform_admin", "platform_support", "platform_billing", "platform_auditor", "superadmin", "client"]:
+        assert forbidden not in codes
+
+    support_role = world.db.scalar(select(RoleModel).where(RoleModel.code == "platform_support"))
+    user_a = world.customers[0]
+    resp_assign = world.client.put(
+        f"/api/v1/users/{user_a.id}/roles",
+        headers=world.headers(world.admins[0]),
+        json={"role_ids": [str(support_role.id)]},
+    )
+    assert resp_assign.status_code in (403, 404)

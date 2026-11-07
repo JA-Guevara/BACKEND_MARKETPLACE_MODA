@@ -1,4 +1,4 @@
-"""Stripe Connect: cada empresa cobra sus ventas con su propia cuenta Express (PS-PX O1.6).
+"""Stripe Connect: altas Accounts v2 y cargos directos por empresa, solo TEST.
 
 RN-ST1: la plataforma solo guarda el id de la cuenta conectada y su estado; nunca
 claves de la empresa. RN-ST2: la tarjeta se ofrece solo con charges_enabled.
@@ -25,6 +25,8 @@ from src.plataforma_saas.infrastructure.models.stripe_saas import TenantPaymentA
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.shared.exceptions.domain_exception import ConflictError, NotFoundError
 from src.ventas_pagos.infrastructure import gateways
+
+ACCOUNTS_API_VERSION = '2026-10-28.endive'
 
 
 class CardPaymentsUnavailableError(ConflictError):
@@ -78,33 +80,42 @@ class StripeConnectService:
         if account is None:
             return {"status": "not_connected", "charges_enabled": False, "payouts_enabled": False,
                     "details_submitted": False, "account_ref": None, "updated_at": None}
+        # Stripe documenta la representación v1 de cuentas v2. Se conserva también
+        # la compatibilidad con cuentas históricas y los webhooks account.updated.
+        if not settings.stripe_connect_enabled or not (settings.stripe_secret_key or '').startswith('sk_test_'):
+            raise BillingNotConfiguredError()
+        fresh = gateways.stripe_request('GET', 'accounts/' + account.stripe_account_id)
+        if fresh.get('id') != account.stripe_account_id:
+            raise ConflictError('Stripe devolvió una cuenta distinta a la conectada.')
+        self._cuenta_actualizada(account.stripe_account_id, fresh)
         return {"status": account.status, "charges_enabled": account.charges_enabled,
                 "payouts_enabled": account.payouts_enabled, "details_submitted": account.details_submitted,
                 "account_ref": enmascarar_cuenta(account.stripe_account_id), "updated_at": account.updated_at}
 
-    # --- E5 · onboarding Express -----------------------------------------------------------
+    # --- E5 · alta Accounts v2 + formulario alojado por Stripe -------------------------------
     def onboarding(self, tenant_id: UUID) -> dict[str, Any]:
         if not settings.stripe_connect_enabled or not (settings.stripe_secret_key or "").startswith("sk_test_"):
             raise BillingNotConfiguredError("Los cobros con tarjeta aún no están habilitados en la plataforma.")
-        tenant = self.db.get(TenantModel, tenant_id)
+        tenant = self.db.scalar(select(TenantModel).where(TenantModel.id == tenant_id).with_for_update())
         if tenant is None:
             raise NotFoundError("Empresa no encontrada.", code="tenant_not_found")
         account = cuenta_de_empresa(self.db, tenant_id)
         if account is None:
-            created = gateways.stripe_request("POST", "accounts", data={
-                "type": "express",
-                "email": tenant.contact_email,
-                "business_profile[name]": tenant.trade_name,
-                "capabilities[card_payments][requested]": "true",
-                "capabilities[transfers][requested]": "true",
-                "metadata[tenant_id]": str(tenant.id),
-            }, key=f"fs-connect-account-{tenant.id}")
+            created = gateways.stripe_request('POST', 'v2/core/accounts', data={
+                'display_name': tenant.trade_name,
+                'contact_email': tenant.contact_email,
+                'identity': {'country': settings.stripe_connect_test_country.lower()},
+                'dashboard': 'full',
+                'defaults': {'responsibilities': {'fees_collector': 'stripe', 'losses_collector': 'stripe'}},
+                'configuration': {'merchant': {'capabilities': {'card_payments': {'requested': True}}}},
+                'metadata': {'tenant_id': str(tenant.id)},
+            }, key=f'fs-connect-v2-account-{tenant.id}', api_version=ACCOUNTS_API_VERSION)
+            if created.get('object') != 'v2.core.account' or created.get('livemode') is not False or not str(created.get('id', '')).startswith('acct_'):
+                raise ConflictError('Stripe no devolvió una cuenta válida de prueba.')
             account = TenantPaymentAccountModel(
                 tenant_id=tenant.id, stripe_account_id=created["id"],
-                charges_enabled=bool(created.get("charges_enabled")),
-                payouts_enabled=bool(created.get("payouts_enabled")),
-                details_submitted=bool(created.get("details_submitted")),
-                status=estado_de(bool(created.get("charges_enabled")), bool(created.get("details_submitted"))),
+                charges_enabled=False, payouts_enabled=False, details_submitted=False,
+                status='pending',
                 updated_at=datetime.now(timezone.utc),
             )
             self.db.add(account)

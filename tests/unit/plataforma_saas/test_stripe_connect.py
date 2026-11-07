@@ -20,16 +20,19 @@ def activate(w,number=0):
     w.db.add(account);w.db.commit();return account
 
 
-def test_onboarding_crea_express_una_vez(world,monkeypatch):
+def test_onboarding_crea_cuenta_v2_una_vez(world,monkeypatch):
     monkeypatch.setattr(settings,'stripe_secret_key','sk_test_unit_only');monkeypatch.setattr(settings,'stripe_connect_enabled',True)
     calls=[]
     def fake(method,path,data=None,key=None,**kwargs):
         calls.append((path,data))
-        return {'id':'acct_test_0','charges_enabled':False,'payouts_enabled':False,'details_submitted':False} if path=='accounts' else {'url':'https://connect.stripe.com/setup/unit','expires_at':int(time.time())+300}
+        return {'id':'acct_test_0','object':'v2.core.account','livemode':False} if path=='v2/core/accounts' else {'url':'https://connect.stripe.com/setup/unit','expires_at':int(time.time())+300}
     monkeypatch.setattr(gateways,'stripe_request',fake)
     for _ in range(2):
         response=world.client.post('/api/v1/tenant/payments/stripe-account/onboarding',headers=world.headers(world.admins[0]));assert response.status_code==200,response.text
-    assert len([p for p,_ in calls if p=='accounts'])==1 and calls[0][1]['type']=='express'
+    assert len([p for p,_ in calls if p=='v2/core/accounts'])==1
+    assert calls[0][1]['dashboard']=='full'
+    assert calls[0][1]['defaults']['responsibilities']=={'fees_collector':'stripe','losses_collector':'stripe'}
+    assert calls[0][1]['metadata']['tenant_id']==str(world.tenants[0].id)
 
 
 def test_account_updated_actualiza_estado(world,monkeypatch):
@@ -70,8 +73,11 @@ def test_connect_confirma_solo_pedido_de_su_cuenta(world,monkeypatch):
     assert response.status_code==200 and order.payment_status=='pending'
 
 
-def test_estado_enmascara_cuenta_y_no_revela_secreto(world):
+def test_estado_enmascara_cuenta_y_no_revela_secreto(world,monkeypatch):
     activate(world)
+    monkeypatch.setattr(settings,'stripe_secret_key','sk_test_unit_only')
+    monkeypatch.setattr(settings,'stripe_connect_enabled',True)
+    monkeypatch.setattr(gateways,'stripe_request',lambda *args,**kwargs:{'id':'acct_test_0','charges_enabled':True,'payouts_enabled':True,'details_submitted':True})
     response=world.client.get('/api/v1/tenant/payments/stripe-account',headers=world.headers(world.admins[0]))
     assert response.status_code==200,response.text
     assert 'acct_test_0' not in response.text and response.json()['data']['account_ref'].startswith('acct_')

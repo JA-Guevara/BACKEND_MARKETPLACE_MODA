@@ -56,13 +56,15 @@ def billing_webhook(body: RawBody, stripe_signature: str | None = Header(default
 
 @router.get("/tenant/payments/stripe-account", response_model=ApiResponse[StripeAccountOut])
 def stripe_account(ctx: TenantScope, actor: PaymentWriter, db: Session = Depends(get_db)):
-    return ApiResponse(data=StripeConnectService(db).estado(ctx.tenant_id))
+    result = StripeConnectService(db).estado(ctx.tenant_id)
+    db.commit()  # conserva el estado verificado tras volver del alta de Stripe
+    return ApiResponse(data=result)
 
 
 @router.post("/tenant/payments/stripe-account/onboarding", response_model=ApiResponse[StripeOnboardingOut])
 def stripe_onboarding(ctx: TenantScope, actor: PaymentWriter, db: Session = Depends(get_db)):
     result = StripeConnectService(db).onboarding(ctx.tenant_id)
-    db.commit()  # la cuenta Express se crea una sola vez por empresa
+    db.commit()  # la cuenta se crea una sola vez por empresa
     return ApiResponse(data=result)
 
 

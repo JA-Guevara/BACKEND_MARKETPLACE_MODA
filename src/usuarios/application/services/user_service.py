@@ -50,6 +50,25 @@ class UserService:
             raise EmailAlreadyExistsError()
         if data.document_number and self.users.get_by_document(data.document_number):
             raise ConflictError("El numero de documento ya esta registrado.")
+        if self.tenant_id is not None:
+            visible_roles = self.roles.list_visible(self.tenant_id, include_inactive=True)
+            visible_ids = {r.id for r in visible_roles}
+            for rid in data.role_ids:
+                if rid not in visible_ids:
+                    target_role = self.roles.get_role(rid)
+                    if target_role and (
+                        target_role.audience == "PLATFORM"
+                        or target_role.code in (
+                            "platform_admin",
+                            "superadmin",
+                            "platform_support",
+                            "platform_billing",
+                            "platform_auditor",
+                        )
+                    ):
+                        from src.shared.exceptions.domain_exception import AuthorizationError
+                        raise AuthorizationError("No puede asignar roles de plataforma a una cuenta de empresa.")
+                    raise NotFoundError("Uno o mas roles no existen o no pertenecen a su empresa.")
         roles = self._resolve_roles(data.role_ids)
         self._tenant_roles(roles)
         user = UserModel(
@@ -94,12 +113,21 @@ class UserService:
         if user.id == actor.id and not role_ids:
             raise ConflictError("No puede retirarse todos sus propios roles.")
         if self.tenant_id is not None:
-            visible_roles = self.roles.list_visible(self.tenant_id)
+            visible_roles = self.roles.list_visible(self.tenant_id, include_inactive=True)
             visible_ids = {r.id for r in visible_roles}
             for rid in role_ids:
                 if rid not in visible_ids:
                     target_role = self.roles.get_role(rid)
-                    if target_role and target_role.code == "platform_admin":
+                    if target_role and (
+                        target_role.audience == "PLATFORM"
+                        or target_role.code in (
+                            "platform_admin",
+                            "superadmin",
+                            "platform_support",
+                            "platform_billing",
+                            "platform_auditor",
+                        )
+                    ):
                         from src.shared.exceptions.domain_exception import AuthorizationError
                         raise AuthorizationError("No puede asignar roles de plataforma a una cuenta de empresa.")
                     raise NotFoundError("Uno o mas roles no existen o no pertenecen a su empresa.")
@@ -218,6 +246,15 @@ class UserService:
         )
 
     def _tenant_roles(self, roles):
-        if self.tenant_id and any(role.code == "platform_admin" for role in roles):
-            from src.shared.exceptions.domain_exception import AuthorizationError
-            raise AuthorizationError("No puede asignar roles de plataforma a una cuenta de empresa.")
+        if self.tenant_id:
+            platform_codes = {
+                "platform_admin",
+                "superadmin",
+                "platform_support",
+                "platform_billing",
+                "platform_auditor",
+            }
+            for role in roles:
+                if role.audience == "PLATFORM" or role.code in platform_codes:
+                    from src.shared.exceptions.domain_exception import AuthorizationError
+                    raise AuthorizationError("No puede asignar roles de plataforma a una cuenta de empresa.")
