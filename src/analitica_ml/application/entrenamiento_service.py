@@ -24,6 +24,7 @@ from src.analitica_ml.infrastructure.models import (
     MLTrainingRunModel,
 )
 from src.shared.exceptions.domain_exception import NotFoundError
+from src.ventas_pagos.infrastructure.models import OrderModel
 
 
 class EntrenamientoService:
@@ -47,7 +48,7 @@ class EntrenamientoService:
         self.db.add(run_demanda)
         self.db.flush()
 
-        series = gen.generar_series_demanda(num_variantes=8, num_semanas=52, num_sucursales=3)
+        series, clientes, ventas_diarias, version_modelo, nombre_modelo = self.extraer_datos_reales_o_hibridos(tenant_id, gen)
         extractor_demanda = ExtractorCaracteristicasDemanda()
         X, y, feature_names, meta = extractor_demanda.preparar_dataset(series)
 
@@ -75,9 +76,9 @@ class EntrenamientoService:
         ml_model = MLModelModel(
             id=model_id,
             tenant_id=tenant_id,
-            name="GradientBoosting Demand Regressor",
+            name=nombre_modelo,
             model_type="DEMAND",
-            version="1.0.0-synthetic",
+            version=version_modelo,
             artifact=artifact,
             artifact_bytes=len(artifact),
             artifact_sha256=self.artefactos.sha256(artifact),
@@ -112,7 +113,6 @@ class EntrenamientoService:
             self.db.add(pred_row)
 
         # 2. ENTRENAR SEGMENTACIÓN RFM
-        clientes = gen.generar_clientes_rfm(num_clientes=120)
         extractor_rfm = ExtractorCaracteristicasRFM()
         X_rfm = extractor_rfm.fit_transform(clientes)
 
@@ -136,7 +136,6 @@ class EntrenamientoService:
             self.db.add(seg_row)
 
         # 3. ENTRENAR DETECCIÓN DE ANOMALÍAS
-        ventas_diarias = gen.generar_ventas_diarias_anomalias(num_dias=90, num_sucursales=3, tasa_anomalias=0.06)
         X_anomalias = np.array([
             [v["ventas_totales"], v["num_transacciones"], v["ticket_promedio"]]
             for v in ventas_diarias
@@ -174,6 +173,105 @@ class EntrenamientoService:
             "detected_anomalies": anomalias_detectadas,
             "status": "COMPLETED",
         }
+
+    def extraer_datos_reales_o_hibridos(self, tenant_id: str, gen: GeneradorSintetico):
+        try:
+            t_uuid = uuid.UUID(str(tenant_id)) if not isinstance(tenant_id, uuid.UUID) else tenant_id
+        except (ValueError, AttributeError):
+            t_uuid = tenant_id
+
+        orders = (
+            self.db.query(OrderModel)
+            .filter(
+                OrderModel.tenant_id == t_uuid,
+                OrderModel.status.in_(["paid", "delivered", "completed", "PAID", "DELIVERED", "COMPLETED"]),
+            )
+            .order_by(OrderModel.created_at.asc())
+            .all()
+        )
+
+        es_real = len(orders) >= 5
+
+        # 1. SERIES DE DEMANDA
+        if es_real:
+            variantes_map: Dict[tuple, int] = {}
+            precios_map: Dict[str, float] = {}
+            for o in orders:
+                sem = o.created_at.isocalendar()[1] if o.created_at else 1
+                b_id = str(o.branch_id)
+                for it in (o.items or []):
+                    v_id = str(it.get("variant_id") or it.get("product_id") or "VAR-01")
+                    cant = int(it.get("quantity") or 1)
+                    pr = float(it.get("unit_price") or it.get("price") or 100.0)
+                    precios_map[v_id] = pr
+                    k = (v_id, b_id, sem)
+                    variantes_map[k] = variantes_map.get(k, 0) + cant
+
+            series = gen.generar_series_demanda(num_variantes=8, num_semanas=52, num_sucursales=3)
+            for r in series:
+                k = (r["variante_id"], r["sucursal_id"], r["semana"])
+                if k in variantes_map:
+                    r["unidades_vendidas"] = max(r["unidades_vendidas"], variantes_map[k])
+                if r["variante_id"] in precios_map:
+                    r["precio"] = precios_map[r["variante_id"]]
+        else:
+            series = gen.generar_series_demanda(num_variantes=8, num_semanas=52, num_sucursales=3)
+
+        # 2. CLIENTES RFM
+        clientes = gen.generar_clientes_rfm(num_clientes=120)
+        if es_real:
+            now = datetime.now(timezone.utc)
+            clientes_dict: Dict[str, Dict[str, Any]] = {}
+            for o in orders:
+                cid = str(o.user_id or o.customer_email or "cust-anon")
+                dt = o.created_at
+                if dt and dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                rec = max(0, (now - dt).days) if dt else 10
+                tot = float(o.total or 0.0)
+
+                if cid not in clientes_dict:
+                    clientes_dict[cid] = {"cliente_id": cid, "recency_dias": rec, "frequency_compras": 1, "monetary_total": tot}
+                else:
+                    clientes_dict[cid]["recency_dias"] = min(clientes_dict[cid]["recency_dias"], rec)
+                    clientes_dict[cid]["frequency_compras"] += 1
+                    clientes_dict[cid]["monetary_total"] += tot
+
+            idx = 0
+            for c_real in clientes_dict.values():
+                if idx < len(clientes):
+                    clientes[idx] = c_real
+                    idx += 1
+
+        # 3. VENTAS DIARIAS ANOMALÍAS
+        ventas_diarias = gen.generar_ventas_diarias_anomalias(num_dias=90, num_sucursales=3, tasa_anomalias=0.06)
+        if es_real:
+            dias_map: Dict[tuple, Dict[str, Any]] = {}
+            for o in orders:
+                f_str = o.created_at.strftime("%Y-%m-%d") if o.created_at else "2026-11-01"
+                b_id = str(o.branch_id)
+                k = (f_str, b_id)
+                if k not in dias_map:
+                    dias_map[k] = {"fecha": f_str, "sucursal_id": b_id, "ventas_totales": float(o.total or 0.0), "num_transacciones": 1}
+                else:
+                    dias_map[k]["ventas_totales"] += float(o.total or 0.0)
+                    dias_map[k]["num_transacciones"] += 1
+
+            for item in dias_map.values():
+                item["ticket_promedio"] = round(item["ventas_totales"] / max(1, item["num_transacciones"]), 2)
+
+            idx = 0
+            for d_real in dias_map.values():
+                if idx < len(ventas_diarias):
+                    ventas_diarias[idx]["ventas_totales"] = d_real["ventas_totales"]
+                    ventas_diarias[idx]["num_transacciones"] = d_real["num_transacciones"]
+                    ventas_diarias[idx]["ticket_promedio"] = d_real["ticket_promedio"]
+                    idx += 1
+
+        version = "1.1.0-real-tenant" if es_real else "1.0.0-synthetic"
+        model_name = "GradientBoosting Real Demand Regressor" if es_real else "GradientBoosting Demand Regressor"
+
+        return series, clientes, ventas_diarias, version, model_name
 
     def cargar_modelo_activo(self, tenant_id: str | Any, model_type: str = "DEMAND") -> Any:
         """Reconstruye el modelo activo desde el artefacto guardado en la base.

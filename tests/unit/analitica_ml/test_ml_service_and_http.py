@@ -1,3 +1,6 @@
+from decimal import Decimal
+from datetime import datetime, timezone
+from src.ventas_pagos.infrastructure.models import OrderModel
 from src.analitica_ml.application.dashboard_service import DashboardMLService
 from src.analitica_ml.application.entrenamiento_service import EntrenamientoService
 from src.analitica_ml.infrastructure.models import (
@@ -124,3 +127,61 @@ def test_platform_training_uses_only_the_demo(saas_world):
     assert response.status_code == 200, response.text
     models = w.client.get("/api/v1/platform/ml/models", headers=platform).json()["data"]
     assert {model["tenant_id"] for model in models} == {str(w.tenant_a.id)}
+
+
+def test_entrenamiento_con_ventas_reales_y_recomendaciones(saas_world):
+    w = saas_world
+    admin = w.admins[1]
+    tenant_id = w.tenants[1].id
+    headers = w.headers(admin)
+
+    # Crear 6 órdenes reales con prendas variadas
+    for i in range(6):
+        order = OrderModel(
+            tenant_id=tenant_id,
+            number=f"TEST-REAL-ORD-{i+1}",
+            user_id=w.customers[0].id,
+            sales_channel="web",
+            customer_email="cliente@moda.com",
+            branch_id=w.branches[0].id,
+            status="paid",
+            payment_status="paid",
+            payment_method="qr",
+            total=Decimal("250.00"),
+            items=[
+                {"variant_id": "VAR-PRENDA-A", "quantity": 2, "unit_price": 75.0},
+                {"variant_id": "VAR-PRENDA-B", "quantity": 1, "unit_price": 100.0},
+            ],
+            created_at=datetime.now(timezone.utc),
+        )
+        w.db.add(order)
+    w.db.commit()
+
+    # Re-entrenar modelos con ventas reales
+    svc = EntrenamientoService(w.db)
+    res = svc.inicializar_datos_y_modelos(tenant_id, seed=42)
+    assert res["status"] == "COMPLETED"
+
+    # Verificar que el modelo guardado sea real-tenant
+    modelo_activo = (
+        w.db.query(MLModelModel)
+        .filter(MLModelModel.tenant_id == str(tenant_id), MLModelModel.is_active == True)
+        .first()
+    )
+    assert modelo_activo is not None
+    assert "real-tenant" in modelo_activo.version
+
+    # Consultar dashboard y verificar recomendaciones estratégicas con IA
+    resp = w.client.get("/api/v1/analytics/ml/dashboard", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    recoms = data.get("recomendaciones_ia", [])
+    assert len(recoms) >= 4
+    tipos = {r["tipo"] for r in recoms}
+    assert "INVENTARIO" in tipos
+    assert "CLIENTES" in tipos
+    assert "PRECIOS" in tipos
+    assert "OPERATIVO" in tipos
+    for r in recoms:
+        assert "impacto_estimado" in r
+        assert "accion" in r

@@ -103,3 +103,39 @@ class BranchSummary(BaseModel):
     city_name: str
     is_active: bool
     cash_points: int
+
+
+class TopConsumerItem(BaseModel):
+    tenant_id: str
+    trade_name: str
+    plan_name: str
+    consumption_type: str
+    metric_value: str
+    saturation_pct: float
+
+
+class PlatformUpgradeRecommendation(BaseModel):
+    tenant_id: str
+    trade_name: str
+    current_plan: str
+    recommended_plan: str
+    reason: str
+    urgency: str
+    potential_impact: str
+
+
+class PlatformFeatureRecommendation(BaseModel):
+    feature_code: str
+    title: str
+    description: str
+    target_tenants_count: int
+    rationale: str
+
+
+class PlatformIntelligence(BaseModel):
+    top_consumers: list[TopConsumerItem]
+    upgrade_recommendations: list[PlatformUpgradeRecommendation]
+    feature_recommendations: list[PlatformFeatureRecommendation]
+    total_ai_queries_30d: int
+    total_revenue_volume_30d: float
+    total_active_tenants: int

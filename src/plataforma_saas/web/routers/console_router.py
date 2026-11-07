@@ -13,6 +13,7 @@ from src.plataforma_saas.web.schemas.console import (
     GlobalUserResponse,
     PlatformDashboard,
     TenantOverview,
+    PlatformIntelligence,
 )
 from src.shared.responses.api_response import ApiResponse
 from src.shared.responses.pagination import Page
@@ -82,4 +83,17 @@ def get_tenant_branches(
     return ApiResponse(
         message="Operación completada.",
         data=service.sucursales_empresa(tenant_id),
+    )
+
+@router.get("/intelligence", response_model=ApiResponse[PlatformIntelligence])
+def get_platform_intelligence(
+    actor: Reader,
+    db: Session = Depends(get_db),
+    today: date | None = None,
+):
+    current_date = today or date.today()
+    service = ConsoleService(db)
+    return ApiResponse(
+        message="Inteligencia de plataforma obtenida.",
+        data=service.inteligencia_plataforma(current_date),
     )

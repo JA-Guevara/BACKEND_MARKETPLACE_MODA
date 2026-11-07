@@ -39,12 +39,22 @@ class AnomaliaItem(BaseModel):
     notas: Optional[str] = None
 
 
+class RecomendacionIAOut(BaseModel):
+    tipo: str
+    prioridad: str
+    titulo: str
+    descripcion: str
+    accion: str
+    impacto_estimado: str
+
+
 class MLDashboardOut(BaseModel):
     modelo_activo: MLModelInfo
     kpis: DashboardKPIs
     serie_demanda: List[DemandaSeriePunto]
     segmentos: List[SegmentoResumen]
     anomalias_recientes: List[AnomaliaItem]
+    recomendaciones_ia: List[RecomendacionIAOut] = Field(default_factory=list)
 
 
 class CustomerSegmentOut(BaseModel):

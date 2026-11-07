@@ -133,3 +133,21 @@ def test_console_forbidden_para_admin_empresa(world):
         headers=world.headers(world.admins[0]),
     )
     assert resp.status_code == 403
+
+
+def test_get_platform_intelligence(world):
+    resp = world.client.get(
+        "/api/v1/platform/intelligence",
+        headers=world.headers(world.platform),
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert "top_consumers" in data
+    assert "upgrade_recommendations" in data
+    assert "feature_recommendations" in data
+    assert data["total_active_tenants"] >= 2
+    assert len(data["feature_recommendations"]) >= 3
+    for f in data["feature_recommendations"]:
+        assert "feature_code" in f
+        assert "title" in f
+        assert "rationale" in f
