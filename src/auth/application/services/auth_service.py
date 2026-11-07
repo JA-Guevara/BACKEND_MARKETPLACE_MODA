@@ -43,7 +43,21 @@ class AuthService:
 
     def register(self, data: RegisterRequest, *, ip_address: str | None, user_agent: str | None) -> UserModel:
         PasswordPolicy.validate(data.password, email=str(data.email))
-        if self.users.get_by_email(str(data.email), include_deleted=True):
+        existing_user = self.users.get_by_email(str(data.email), include_deleted=True)
+        if existing_user:
+            is_client = bool(existing_user.roles) and all(getattr(r, "code", "") == "client" for r in existing_user.roles)
+            if is_client and self.passwords.verify(data.password, existing_user.password_hash):
+                self.audit.execute(
+                    actor_user_id=existing_user.id,
+                    action="auth.client_store_linked",
+                    entity_type="user",
+                    entity_id=str(existing_user.id),
+                    description="Cuenta de cliente existente vinculada a tienda.",
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+                self.db.commit()
+                return existing_user
             raise EmailAlreadyExistsError()
         client_role = self.roles.get_role_by_code("client")
         if not client_role:
@@ -105,10 +119,17 @@ class AuthService:
             )
             self.db.commit()
             raise InvalidCredentialsError()
+        target_tenant_id = None
         if tenant_slug:
             tenant = SaasRepository(self.db).find_tenant_by_slug(tenant_slug)
-            if platform_login or tenant is None or user.tenant_id != tenant.id:
+            if platform_login or tenant is None:
                 raise InvalidCredentialsError()
+            is_client = bool(user.roles) and all(getattr(r, "code", "") == "client" for r in user.roles)
+            if not is_client and user.tenant_id != tenant.id:
+                raise InvalidCredentialsError()
+            target_tenant_id = tenant.id
+        elif user.tenant_id:
+            target_tenant_id = user.tenant_id
         if platform_login and not is_platform_account(user):
             raise InvalidCredentialsError()
         if not user.is_active:
@@ -131,11 +152,11 @@ class AuthService:
             )
             self.db.commit()
             raise InvalidCredentialsError()
-        self._check_tenant(user)
+        self._check_tenant(user, tenant_id=target_tenant_id)
         user.failed_login_attempts = 0
         user.locked_until = None
         user.last_login_at = now
-        response = self._issue_tokens(user, ip_address, user_agent=user_agent)
+        response = self._issue_tokens(user, ip_address, user_agent=user_agent, effective_tenant_id=target_tenant_id)
         self.audit.execute(
             actor_user_id=user.id,
             action="auth.login",
@@ -315,8 +336,9 @@ class AuthService:
         self.db.commit()
         self.email.send_verification(user.email, raw_token)
 
-    def _issue_tokens(self, user: UserModel, ip_address: str | None, *, user_agent: str | None = None, device_label: str | None = None) -> TokenResponse:
-        access_token, expires_in = self.jwt.create_access_token(str(user.id), str(user.tenant_id) if user.tenant_id else None)
+    def _issue_tokens(self, user: UserModel, ip_address: str | None, *, user_agent: str | None = None, device_label: str | None = None, effective_tenant_id=None) -> TokenResponse:
+        actual_tenant_id = effective_tenant_id if effective_tenant_id is not None else user.tenant_id
+        access_token, expires_in = self.jwt.create_access_token(str(user.id), str(actual_tenant_id) if actual_tenant_id else None)
         refresh_token, jti, expires_at = self.jwt.create_refresh_token(str(user.id))
         self.tokens.add_refresh(
             RefreshTokenModel(
@@ -330,11 +352,15 @@ class AuthService:
             )
         )
         response_user = AuthUserResponse.model_validate(user)
-        if user.tenant_id:
+        is_client = bool(user.roles) and all(getattr(r, "code", "") == "client" for r in user.roles)
+        if actual_tenant_id:
             from src.plataforma_saas.application.plan_guard import PlanGuard
             from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
-            response_user.tenant = TenantSummary.model_validate(SaasRepository(self.db).get_tenant(user.tenant_id))
-            response_user.subscription = PlanGuard(self.db).resumen(user.tenant_id)
+            response_user.tenant = TenantSummary.model_validate(SaasRepository(self.db).get_tenant(actual_tenant_id))
+            if not is_client:
+                response_user.subscription = PlanGuard(self.db).resumen(actual_tenant_id)
+            else:
+                response_user.subscription = None
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -342,11 +368,12 @@ class AuthService:
             user=response_user,
         )
 
-    def _check_tenant(self, user):
+    def _check_tenant(self, user, tenant_id=None):
         from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
         from src.plataforma_saas.domain.exceptions import TenantInactiveError
-        if user.tenant_id:
-            tenant = SaasRepository(self.db).get_tenant(user.tenant_id)
+        check_id = tenant_id if tenant_id is not None else user.tenant_id
+        if check_id:
+            tenant = SaasRepository(self.db).get_tenant(check_id)
             if tenant is None or tenant.status != "ACTIVA":
                 raise TenantInactiveError()
 

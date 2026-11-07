@@ -176,7 +176,11 @@ def me(ctx: AccessContext = Depends(get_access_context), db: Session = Depends(g
         db.commit()
     elif user.tenant_id:
         response.tenant = TenantSummary.model_validate(SaasRepository(db).get_tenant(user.tenant_id))
-        response.subscription = PlanGuard(db).resumen(user.tenant_id)
+        is_client = bool(user.roles) and all(getattr(r, "code", "") == "client" for r in user.roles)
+        if not is_client:
+            response.subscription = PlanGuard(db).resumen(user.tenant_id)
+        else:
+            response.subscription = None
         db.commit()
     response.authorized_branches = _authorized_branches(db, ctx)
     return ApiResponse(message="Usuario autenticado.", data=response)
