@@ -30,6 +30,15 @@ def stripe_request(method: str, path: str, data=None, key=None, stripe_account: 
         # El cliente recibe un mensaje seguro; Railway conserva únicamente el
         # estado HTTP para diagnosticar la configuración sin registrar claves.
         logger.warning("Stripe rechazó la solicitud: metodo=%s ruta=%s estado=%s", method, path, exc.response.status_code)
+        if method == 'POST' and path == 'accounts' and exc.response.status_code == 400:
+            try:
+                message = exc.response.json().get('error', {}).get('message', '')
+            except (ValueError, AttributeError):
+                message = ''
+            if isinstance(message, str) and 'Accounts v1' in message and 'support' in message:
+                raise HTTPException(409, 'Stripe requiere habilitar Accounts v1 support en los ajustes de API del entorno de prueba para conectar esta tienda.') from exc
+            if isinstance(message, str) and 'signed up for Connect' in message:
+                raise HTTPException(409, 'Primero habilitá Stripe Connect en la cuenta de prueba de FashionStore. Después podés conectar la tienda.') from exc
         raise HTTPException(502, "Stripe no esta disponible; vuelva a intentar.") from exc
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Stripe no estuvo disponible: metodo=%s ruta=%s causa=%s", method, path, type(exc).__name__)

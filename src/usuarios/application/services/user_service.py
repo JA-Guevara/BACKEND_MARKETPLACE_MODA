@@ -71,6 +71,9 @@ class UserService:
     def update(self, user_id: uuid.UUID, data: UserUpdate, actor: UserModel) -> UserModel:
         user = self.get(user_id)
         changes = data.model_dump(exclude_unset=True)
+        role_ids = changes.pop("role_ids", None)
+        if role_ids is not None:
+            self.assign_roles(user.id, role_ids, actor)
         if "email" in changes and changes["email"] != user.email:
             existing = self.users.get_by_email(changes["email"], include_deleted=True)
             if existing and existing.id != user.id:

@@ -155,3 +155,24 @@ def test_catalogo_de_permisos_lista_solo_permisos_de_empresa(world):
     assert response.status_code == 200, response.text
     permissions = response.json()["data"]
     assert permissions and {permission["scope"] for permission in permissions} == {"tenant"}
+
+
+def test_admin_a_patch_user_actualiza_roles(world):
+    resp_create = world.client.post(
+        '/api/v1/roles',
+        headers=world.headers(world.admins[0]),
+        json={'code': 'jefe_tienda', 'name': 'Jefe de Tienda', 'description': 'Rol de prueba'},
+    )
+    assert resp_create.status_code == 201
+    custom_role_id = resp_create.json()['data']['id']
+
+    user_a = world.customers[0]
+    resp_patch = world.client.patch(
+        f'/api/v1/users/{user_a.id}',
+        headers=world.headers(world.admins[0]),
+        json={'role_ids': [custom_role_id]},
+    )
+    assert resp_patch.status_code == 200, resp_patch.text
+    user_data = resp_patch.json()['data']
+    user_roles = [r['id'] for r in user_data['roles']]
+    assert custom_role_id in user_roles

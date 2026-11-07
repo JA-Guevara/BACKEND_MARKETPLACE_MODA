@@ -176,7 +176,7 @@ def me(ctx: AccessContext = Depends(get_access_context), db: Session = Depends(g
         db.commit()
     elif user.tenant_id:
         response.tenant = TenantSummary.model_validate(SaasRepository(db).get_tenant(user.tenant_id))
-        is_client = bool(user.roles) and all(getattr(r, "code", "") == "client" for r in user.roles)
+        is_client = AuthService.is_client_user(user)
         if not is_client:
             response.subscription = PlanGuard(db).resumen(user.tenant_id)
         else:

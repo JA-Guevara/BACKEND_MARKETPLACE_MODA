@@ -41,23 +41,40 @@ class AuthService:
         self.jwt = JWTService()
         self.email = AuthEmailService()
 
+    @classmethod
+    def is_client_user(cls, user: UserModel | None) -> bool:
+        if not user:
+            return False
+        staff_codes = {"superadmin", "admin", "store_manager", "cashier", "platform_admin"}
+        user_roles = getattr(user, "roles", []) or []
+        user_codes = {getattr(r, "code", "").lower().strip() for r in user_roles if getattr(r, "code", None)}
+        user_names = {getattr(r, "name", "").lower().strip() for r in user_roles if getattr(r, "name", None)}
+        if user_codes.intersection(staff_codes):
+            return False
+        if "client" in user_codes or "cliente" in user_codes or "cliente" in user_names or "customer" in user_codes:
+            return True
+        return len(user_codes) == 0
+
+
     def register(self, data: RegisterRequest, *, ip_address: str | None, user_agent: str | None) -> UserModel:
         PasswordPolicy.validate(data.password, email=str(data.email))
         existing_user = self.users.get_by_email(str(data.email), include_deleted=True)
         if existing_user:
-            is_client = bool(existing_user.roles) and all(getattr(r, "code", "") == "client" for r in existing_user.roles)
-            if is_client and self.passwords.verify(data.password, existing_user.password_hash):
-                self.audit.execute(
-                    actor_user_id=existing_user.id,
-                    action="auth.client_store_linked",
-                    entity_type="user",
-                    entity_id=str(existing_user.id),
-                    description="Cuenta de cliente existente vinculada a tienda.",
-                    ip_address=ip_address,
-                    user_agent=user_agent,
-                )
-                self.db.commit()
-                return existing_user
+            is_client = self.is_client_user(existing_user)
+            if is_client:
+                if self.passwords.verify(data.password, existing_user.password_hash):
+                    self.audit.execute(
+                        actor_user_id=existing_user.id,
+                        action="auth.client_store_linked",
+                        entity_type="user",
+                        entity_id=str(existing_user.id),
+                        description="Cuenta de cliente existente vinculada a tienda.",
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+                    self.db.commit()
+                    return existing_user
+                raise ConflictError("Ya existe una cuenta de cliente con este correo. Iniciá sesión para acceder a esta tienda.")
             raise EmailAlreadyExistsError()
         client_role = self.roles.get_role_by_code("client")
         if not client_role:
@@ -124,7 +141,7 @@ class AuthService:
             tenant = SaasRepository(self.db).find_tenant_by_slug(tenant_slug)
             if platform_login or tenant is None:
                 raise InvalidCredentialsError()
-            is_client = bool(user.roles) and all(getattr(r, "code", "") == "client" for r in user.roles)
+            is_client = self.is_client_user(user)
             if not is_client and user.tenant_id != tenant.id:
                 raise InvalidCredentialsError()
             target_tenant_id = tenant.id
@@ -352,7 +369,7 @@ class AuthService:
             )
         )
         response_user = AuthUserResponse.model_validate(user)
-        is_client = bool(user.roles) and all(getattr(r, "code", "") == "client" for r in user.roles)
+        is_client = self.is_client_user(user)
         if actual_tenant_id:
             from src.plataforma_saas.application.plan_guard import PlanGuard
             from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository

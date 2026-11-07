@@ -29,6 +29,7 @@ class UserUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=30)
     document_number: str | None = Field(default=None, max_length=50)
     is_verified: bool | None = None
+    role_ids: list[uuid.UUID] | None = None
 
     @field_validator("email")
     @classmethod
