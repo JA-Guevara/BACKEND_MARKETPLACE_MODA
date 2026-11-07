@@ -48,7 +48,10 @@ def execute(service, tenant_id, branch_id, actor_id, data):
             raise ConflictError('La clave de intento ya fue utilizada para otro cambio.')
         return service.obtener_cambio(tenant_id, existing.id)
     if order.branch_id != branch_id:
-        raise ValidationError('Atendé el cambio en la sucursal del pedido original.')
+        from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+        target_branch = db.scalar(select(BranchModel).where(BranchModel.id == branch_id, BranchModel.tenant_id == tenant_id, BranchModel.is_active.is_(True)))
+        if not target_branch:
+            raise ValidationError('La sucursal de atención no pertenece a la misma empresa del pedido.')
     if order.payment_status != 'paid' or order.status not in {'delivered', 'completed'}:
         raise ConflictError('Solo se cambian prendas de pedidos pagados y entregados.')
     tenant = db.get(TenantModel, tenant_id)

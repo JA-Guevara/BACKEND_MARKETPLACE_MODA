@@ -15,6 +15,9 @@ from src.infrastructure.security.tenancy import TenantScope, get_tenant_context
 from src.shared.responses.api_response import ApiResponse
 from src.ventas_pagos.application.exchange_service import ExchangeService
 from src.ventas_pagos.web.exchange_schemas import (
+    BranchStockAvailabilityOut,
+    InterbranchTransferIn,
+    InterbranchTransferOut,
     ExchangeCalculateIn,
     ExchangeCalculateOut,
     ExchangeDetailOut,
@@ -106,6 +109,42 @@ def exchange_replacements(branch_id:UUID,ctx:TenantCtx,db:Session=Depends(get_db
         ProductVariantModel.is_active.is_(True),StockModel.branch_id==branch_id,StockModel.quantity>0,
     ).order_by(ProductModel.name).limit(1000)).all()
     return ApiResponse(data=[commerce.snapshot(variant,1,branch_id) for variant in variants])
+
+
+
+@router.get("/availability/{variant_id}", response_model=ApiResponse[list[BranchStockAvailabilityOut]])
+def check_multibranch_availability(
+    variant_id: UUID,
+    ctx: TenantCtx,
+    db: Session = Depends(get_db),
+    _perm: UserModel = Depends(require_permissions("exchanges.read")),
+) -> ApiResponse[list[BranchStockAvailabilityOut]]:
+    """Consulta la disponibilidad de existencias de una prenda en todas las sucursales de la empresa (CU-12/CU-26)."""
+    svc = ExchangeService(db)
+    data = svc.consultar_disponibilidad_multisucursal(ctx.tenant_id, variant_id)
+    return ApiResponse(message="Disponibilidad multi-sucursal consultada con éxito.", data=data)
+
+
+@router.post("/transfer", response_model=ApiResponse[InterbranchTransferOut])
+def transfer_stock_between_branches(
+    body: InterbranchTransferIn,
+    ctx: TenantCtx,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    _perm: UserModel = Depends(require_permissions("exchanges.write")),
+) -> ApiResponse[InterbranchTransferOut]:
+    """Solicita y ejecuta el traslado de una prenda entre sucursales para atender cambios o pedidos (CU-26/CU-38)."""
+    svc = ExchangeService(db)
+    data = svc.transferir_prenda_intersucursal(
+        tenant_id=ctx.tenant_id,
+        variant_id=body.variant_id,
+        from_branch_id=body.from_branch_id,
+        to_branch_id=body.to_branch_id,
+        quantity=body.quantity,
+        actor_id=user.id,
+        notes=body.notes,
+    )
+    return ApiResponse(message="Traslado intersucursal completado con éxito.", data=data)
 
 
 @router.post("", response_model=ApiResponse[ExchangeDetailOut], status_code=status.HTTP_201_CREATED)

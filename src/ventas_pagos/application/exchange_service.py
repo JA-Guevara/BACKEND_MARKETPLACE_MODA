@@ -137,8 +137,8 @@ class ExchangeService:
         from src.ventas_pagos.application.returns_service import ReturnsService
         from src.ventas_pagos.domain import returns
         order=CommerceService(self.db,tenant_id).order(order_id) if order_id else None
-        if order and order.branch_id!=branch_id:
-            raise ValidationError('La sucursal no corresponde al pedido.')
+        if order and order.tenant_id != tenant_id:
+            raise ValidationError('El pedido no pertenece a esta empresa.')
         commitments=ReturnsService(self.db,tenant_id).compromisos(order) if order else []
         if order:
             try:
@@ -289,4 +289,142 @@ class ExchangeService:
             "status": ex.status,
             "lines_count": len(ex.lines),
             "created_at": ex.created_at.isoformat(),
+        }
+
+    def consultar_disponibilidad_multisucursal(
+        self, tenant_id: UUID, variant_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """Consulta el stock de una variante en todas las sucursales activas de la empresa (CU-12/CU-26)."""
+        from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+        variant = self.db.get(ProductVariantModel, variant_id)
+        if not variant or variant.product.tenant_id != tenant_id:
+            raise NotFoundError("Variante no encontrada en esta empresa.")
+
+        branches = self.db.scalars(
+            select(BranchModel)
+            .where(BranchModel.tenant_id == tenant_id, BranchModel.is_active.is_(True))
+            .order_by(BranchModel.name)
+        ).all()
+
+        stocks = {
+            s.branch_id: s.quantity
+            for s in self.db.scalars(
+                select(StockModel).where(StockModel.variant_id == variant_id)
+            ).all()
+        }
+
+        return [
+            {
+                "branch_id": str(b.id),
+                "branch_name": b.name,
+                "city": b.city or "Central",
+                "address": b.address or "",
+                "phone": b.phone or "",
+                "available_quantity": stocks.get(b.id, 0),
+                "can_transfer": stocks.get(b.id, 0) > 0,
+            }
+            for b in branches
+        ]
+
+    def transferir_prenda_intersucursal(
+        self,
+        tenant_id: UUID,
+        variant_id: UUID,
+        from_branch_id: UUID,
+        to_branch_id: UUID,
+        quantity: int,
+        actor_id: Optional[UUID],
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Ejecuta un traslado de prendas entre sucursales de la misma empresa con trazabilidad de kardex (CU-26/CU-38)."""
+        if from_branch_id == to_branch_id:
+            raise ValidationError("La sucursal de origen y destino deben ser distintas.")
+        if quantity <= 0:
+            raise ValidationError("La cantidad a trasladar debe ser mayor a 0.")
+
+        from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+        from src.ventas_pagos.application.stock_service import StockService
+        from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
+
+        from_branch = self.db.scalar(
+            select(BranchModel).where(BranchModel.id == from_branch_id, BranchModel.tenant_id == tenant_id)
+        )
+        to_branch = self.db.scalar(
+            select(BranchModel).where(BranchModel.id == to_branch_id, BranchModel.tenant_id == tenant_id)
+        )
+        if not from_branch or not to_branch:
+            raise NotFoundError("Una de las sucursales no pertenece a esta empresa.")
+
+        variant = self.db.get(ProductVariantModel, variant_id)
+        if not variant or variant.product.tenant_id != tenant_id:
+            raise NotFoundError("Variante no encontrada en esta empresa.")
+
+        inventory = StockService(self.db, tenant_id)
+        inventory.locked_stock(variant_id, from_branch_id)
+        inventory.locked_stock(variant_id, to_branch_id)
+
+        current_from_stock = self.db.scalar(
+            select(StockModel.quantity).where(
+                StockModel.variant_id == variant_id, StockModel.branch_id == from_branch_id
+            )
+        ) or 0
+
+        if current_from_stock < quantity:
+            raise ValidationError(
+                f"Stock insuficiente en '{from_branch.name}'. Disponible: {current_from_stock}, solicitado: {quantity}."
+            )
+
+        ref_note = notes or f"Traslado intersucursal de {from_branch.name} a {to_branch.name} para cambio/reposición."
+        inventory.change(
+            variant_id,
+            from_branch_id,
+            -quantity,
+            "transfer_out",
+            f"Salida por traslado intersucursal hacia {to_branch.name}.",
+            reference=ref_note,
+            actor_id=actor_id,
+        )
+        inventory.change(
+            variant_id,
+            to_branch_id,
+            quantity,
+            "transfer_in",
+            f"Entrada por traslado intersucursal desde {from_branch.name}.",
+            reference=ref_note,
+            actor_id=actor_id,
+        )
+
+        RecordAuditEvent(self.db).execute(
+            action="inventory.interbranch_transfer",
+            entity_type="product_variant",
+            entity_id=str(variant_id),
+            description=f"Traslado de {quantity} unidad(es) de {from_branch.name} a {to_branch.name}.",
+            actor_user_id=actor_id,
+            metadata={
+                "variant_id": str(variant_id),
+                "from_branch_id": str(from_branch_id),
+                "to_branch_id": str(to_branch_id),
+                "quantity": quantity,
+            },
+        )
+        self.db.commit()
+
+        new_to_stock = self.db.scalar(
+            select(StockModel.quantity).where(
+                StockModel.variant_id == variant_id, StockModel.branch_id == to_branch_id
+            )
+        ) or 0
+
+        return {
+            "variant_id": str(variant_id),
+            "product_name": variant.product.name,
+            "size": variant.size.name if variant.size else "",
+            "color": variant.color.name if variant.color else "",
+            "from_branch_id": str(from_branch_id),
+            "from_branch_name": from_branch.name,
+            "to_branch_id": str(to_branch_id),
+            "to_branch_name": to_branch.name,
+            "transferred_quantity": quantity,
+            "destination_available_stock": new_to_stock,
+            "message": f"Traslado de {quantity} unidad(es) completado exitosamente hacia {to_branch.name}.",
         }

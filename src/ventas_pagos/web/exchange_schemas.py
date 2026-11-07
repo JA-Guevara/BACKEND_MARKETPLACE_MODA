@@ -134,3 +134,35 @@ class ExchangeDetailOut(BaseModel):
     notes: Optional[str] = None
     created_at: str
     lines: List[ExchangeLineDetailOut]
+
+
+class InterbranchTransferIn(BaseModel):
+    variant_id: UUID
+    from_branch_id: UUID
+    to_branch_id: UUID
+    quantity: int = Field(..., gt=0, le=500)
+    notes: Optional[str] = None
+
+
+class InterbranchTransferOut(BaseModel):
+    variant_id: str
+    product_name: str
+    size: str
+    color: str
+    from_branch_id: str
+    from_branch_name: str
+    to_branch_id: str
+    to_branch_name: str
+    transferred_quantity: int
+    destination_available_stock: int
+    message: str
+
+
+class BranchStockAvailabilityOut(BaseModel):
+    branch_id: str
+    branch_name: str
+    city: str
+    address: str
+    phone: str
+    available_quantity: int
+    can_transfer: bool
