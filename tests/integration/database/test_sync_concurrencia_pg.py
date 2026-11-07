@@ -98,3 +98,24 @@ def test_concurrencia_sync_idempotente(saas_world):
     assert w.db.scalar(select(func.count()).select_from(SyncOperationModel).where(
         SyncOperationModel.client_request_id == crid,
     )) == 1
+
+
+def test_different_sales_competing_for_last_stock_do_not_oversell(saas_world):
+    w = saas_world
+    def send():
+        return w.client.post("/api/v1/sync/batch", headers=w.headers(w.admin_a), json={
+            "device_id": "offline-stock-qa", "client_version": "qa", "operations": [{
+                "client_request_id": str(uuid4()), "type": "SALE", "branch_id": str(w.branch_a.id),
+                "device_id": "offline-stock-qa", "client_created_at": datetime.now(timezone.utc).isoformat(),
+                "payload": {"user_id": str(w.admin_a.id), "cash_point_id": str(w.cash_point_a.id),
+                            "items": [{"variant_id": str(w.variant_a.id), "quantity": 15, "unit_price": "150.00"}],
+                            "total": "2250.00", "cash_received": "2250.00"},
+            }],
+        })
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _: send(), range(2)))
+    assert all(response.status_code == 200 for response in responses)
+    statuses = sorted(response.json()["data"]["results"][0]["status"] for response in responses)
+    assert statuses == ["CONFIRMED", "CONFLICT"]
+    from src.ventas_pagos.infrastructure.models import StockModel
+    assert w.db.scalar(select(StockModel.quantity).where(StockModel.variant_id == w.variant_a.id)) == 5

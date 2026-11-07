@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
@@ -6,7 +6,9 @@ from src.auth.infrastructure.http.schemas import TenantSummary
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.infrastructure.persistence.models.evento_bitacora import AuditEventModel
 from src.infrastructure.security.authorization import get_permission_codes
-from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+from src.inventario_sucursales.infrastructure.models.organization import BranchModel, CashPointModel
+from src.inventario_sucursales.application.services.user_branch_service import UserBranchService
+from src.infrastructure.config.settings import settings
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.operacion_offline.web.schemas import OfflineSnapshot, SnapshotProduct, SnapshotVariant, SnapshotCustomer, SnapshotRemoved
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, ProductVariantModel, ProductImageModel
@@ -28,6 +30,10 @@ class SnapshotService:
                 raise ValidationError("La versión de la instantánea no puede estar en el futuro.")
         branches = list(self.db.scalars(select(BranchModel).where(BranchModel.tenant_id == self.ctx.tenant_id,
             BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None)).order_by(BranchModel.name, BranchModel.id)))
+        permissions = get_permission_codes(self.ctx.user)
+        if {"commerce.write", "reservations.write"} & permissions and not getattr(self.ctx, "support_session_id", None):
+            branches = UserBranchService(self.db, self.ctx.tenant_id).autorizadas(self.ctx.user)
+        branch_ids = [branch.id for branch in branches]
         if branch_id and not any(branch.id == branch_id for branch in branches):
             raise NotFoundError("Sucursal no encontrada.")
         query = select(ProductModel).where(ProductModel.tenant_id == self.ctx.tenant_id).options(selectinload(ProductModel.variants), selectinload(ProductModel.images))
@@ -40,6 +46,7 @@ class SnapshotService:
         stock_query = select(StockModel).join(BranchModel, BranchModel.id == StockModel.branch_id).join(ProductVariantModel, ProductVariantModel.id == StockModel.variant_id).join(ProductModel, ProductModel.id == ProductVariantModel.product_id).where(
             BranchModel.tenant_id == self.ctx.tenant_id, ProductModel.tenant_id == self.ctx.tenant_id,
             BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None), ProductModel.is_active.is_(True), ProductModel.deleted_at.is_(None), ProductVariantModel.is_active.is_(True))
+        stock_query = stock_query.where(StockModel.branch_id.in_(branch_ids))
         if branch_id:
             stock_query = stock_query.where(StockModel.branch_id == branch_id)
         stock = list(self.db.scalars(stock_query))
@@ -68,6 +75,12 @@ class SnapshotService:
             ))
         snapshot = OfflineSnapshot(version=generated.isoformat(), generated_at=generated, full=since is None,
             tenant=TenantSummary.model_validate(tenant), branches=branches,
+            cash_points=list(self.db.scalars(select(CashPointModel).where(
+                CashPointModel.tenant_id == self.ctx.tenant_id,
+                CashPointModel.branch_id.in_(branch_ids),
+                CashPointModel.is_active.is_(True), CashPointModel.deleted_at.is_(None),
+            ))) if "commerce.write" in permissions else [],
+            price_valid_until=generated + timedelta(hours=settings.offline_price_validity_hours),
             products=product_dtos,
             variants=[SnapshotVariant(id=v.id, product_id=v.product_id, sku=v.sku, size=v.size.name, color=v.color.name,
                 color_hex=v.color.hex_code, price=v.price_override, is_active=v.is_active) for v in variants],

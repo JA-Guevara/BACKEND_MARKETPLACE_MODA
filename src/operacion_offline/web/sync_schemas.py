@@ -3,13 +3,31 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 
 OperationType = Literal["SALE", "RESERVATION"]
 OperationStatus = Literal["CONFIRMED", "CONFLICT", "REJECTED", "UNKNOWN", "RETRY"]
 ConflictType = Literal["STOCK", "PRICE", "SUBSCRIPTION", "PRODUCT_INACTIVE"]
 ConflictAction = Literal["ADJUST", "AUTHORIZE_PRICE", "CANCEL", "RETRY"]
+
+
+class OfflineSaleLine(BaseModel):
+    variant_id: UUID
+    quantity: StrictInt = Field(gt=0, le=10000)
+    unit_price: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class OfflineSalePayload(BaseModel):
+    user_id: UUID | None = None
+    customer_id: UUID | None = None
+    cash_point_id: UUID | None = None
+    items: list[OfflineSaleLine] = Field(min_length=1, max_length=100)
+    subtotal: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    total: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    discount_total: Decimal = Field(default=Decimal("0"), ge=0, allow_inf_nan=False)
+    cash_received: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    payment_method: Literal["cash"] = "cash"
 
 
 class SyncOperationIn(BaseModel):
@@ -70,6 +88,7 @@ class ConflictOut(BaseModel):
     id: UUID
     operation_id: UUID
     client_request_id: UUID
+    operation_type: OperationType
     type: str
     status: str
     branch_id: UUID | None = None

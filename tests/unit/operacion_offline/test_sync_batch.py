@@ -108,8 +108,8 @@ def test_sync_batch_uuid_reused_con_distinto_payload(saas_world):
                 "payload": {
                     "user_id": str(w.admins[0].id),
                     "items": [{"variant_id": str(w.variants[0].id), "quantity": 1}],
-                    "subtotal": "100.00",
-                    "total": "100.00",
+                    "subtotal": str(w.products[0].base_price),
+                    "total": str(w.products[0].base_price),
                 },
             }
         ],
@@ -165,8 +165,8 @@ def test_sync_status_y_detalle_lotes(saas_world):
                     "payload": {
                         "user_id": str(w.admins[0].id),
                         "items": [{"variant_id": str(w.variants[0].id), "quantity": 1}],
-                        "subtotal": "50.00",
-                        "total": "50.00",
+                        "subtotal": str(w.products[0].base_price),
+                        "total": str(w.products[0].base_price),
                     },
                 }
             ],

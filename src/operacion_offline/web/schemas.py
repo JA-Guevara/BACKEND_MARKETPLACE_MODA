@@ -28,6 +28,14 @@ class SnapshotProduct(BaseModel):
     is_featured: bool
 
 
+class SnapshotCashPoint(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    branch_id: UUID
+    code: str
+    name: str
+
+
 class SnapshotVariant(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -66,6 +74,8 @@ class OfflineSnapshot(BaseModel):
     full: bool
     tenant: TenantSummary
     branches: list[SnapshotBranch]
+    cash_points: list[SnapshotCashPoint] = []
+    price_valid_until: datetime
     products: list[SnapshotProduct]
     variants: list[SnapshotVariant]
     stock: list[SnapshotStock]

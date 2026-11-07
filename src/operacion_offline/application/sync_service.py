@@ -8,6 +8,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from pydantic import ValidationError as PayloadValidationError
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
@@ -27,10 +28,16 @@ from src.operacion_offline.web.sync_schemas import (
     SyncOperationIn,
     SyncOperationSummaryOut,
     SyncResultOut,
+    OfflineSalePayload,
 )
+from src.inventario_sucursales.application.services.user_branch_service import UserBranchService
 from src.reservas.application.use_cases.create_reserva import CrearReserva, ReservationStockError
 from src.reservas.infrastructure.http.schemas import CrearReservaRequest
 from src.infrastructure.security.authorization import get_permission_codes
+from src.plataforma_saas.application.plan_guard import PlanGuard
+from src.plataforma_saas.domain.exceptions import (
+    FeatureNotInPlanError, SubscriptionInactiveError, SubscriptionReadOnlyError,
+)
 from src.shared.exceptions.domain_exception import (
     AppException,
     AuthorizationError,
@@ -79,20 +86,48 @@ class OfflineSaleService:
     ) -> OrderModel:
         payload = op.payload
         branch_id = op.branch_id
+        try:
+            validated = OfflineSalePayload.model_validate(payload)
+        except PayloadValidationError:
+            raise ValidationError("La venta contiene cantidades, importes o una forma de pago inválidos.") from None
+        if len({line.variant_id for line in validated.items}) != len(validated.items):
+            raise ValidationError("La venta contiene variantes repetidas.")
+        if ajustes is not None:
+            original = {line.variant_id: line.quantity for line in validated.items}
+            if any(key not in original or value < 0 or value > original[key] for key, value in ajustes.items()):
+                raise ValidationError("Las cantidades ajustadas deben estar dentro de la venta original.")
+        if validated.discount_total != 0:
+            raise ValidationError("Los descuentos manuales requieren validación en línea.")
 
         # 1. Validar sucursal
         branch = self.db.scalar(
             select(BranchModel).where(BranchModel.id == branch_id, BranchModel.tenant_id == self.tenant_id)
         )
-        if not branch:
+        if not branch or not branch.is_active or branch.deleted_at:
             raise NotFoundError(f"Sucursal {branch_id} no encontrada en la empresa.")
 
         # 2. Validar o resolver usuario/cajero
         user_id_val = payload.get("user_id")
         user_id = uuid.UUID(str(user_id_val)) if user_id_val else actor.id
+        cashier = self.db.get(UserModel, user_id)
+        if not cashier or cashier.tenant_id != self.tenant_id or not cashier.is_active or cashier.deleted_at:
+            raise ValidationError("El responsable de la venta no pertenece a esta empresa.")
+        if not UserBranchService(self.db, self.tenant_id).puede_operar(cashier, branch_id):
+            raise ValidationError("El responsable no tiene asignada esta sucursal.")
+        cash_point = self.db.scalar(select(CashPointModel).where(
+            CashPointModel.tenant_id == self.tenant_id, CashPointModel.branch_id == branch_id,
+            CashPointModel.is_active.is_(True), CashPointModel.deleted_at.is_(None),
+            *([CashPointModel.id == validated.cash_point_id] if validated.cash_point_id else []),
+        ).order_by(CashPointModel.code).limit(1))
+        if not cash_point:
+            raise ValidationError("La caja no está disponible en esta sucursal.")
 
         customer_id_val = payload.get("customer_id")
         customer_id = uuid.UUID(str(customer_id_val)) if customer_id_val else None
+        if customer_id:
+            customer = self.db.get(UserModel, customer_id)
+            if not customer or customer.tenant_id != self.tenant_id or customer.deleted_at:
+                raise ValidationError("El cliente no pertenece a esta empresa.")
 
         # 3. Validar items, variantes, stock y precio
         items_in = payload.get("items", [])
@@ -114,7 +149,9 @@ class OfflineSaleService:
                 raise NotFoundError(f"Variante {vid} no encontrada.")
 
             product = self.db.get(ProductModel, variant.product_id)
-            if not product or product.tenant_id != self.tenant_id or not variant.is_active:
+            if not product or product.tenant_id != self.tenant_id:
+                raise NotFoundError("La prenda no pertenece a esta empresa.")
+            if not product.is_active or product.deleted_at or not variant.is_active:
                 raise SyncConflictException(
                     "PRODUCT_INACTIVE",
                     f"La prenda {variant.sku} está inactiva o ya no pertenece al catálogo.",
@@ -131,7 +168,7 @@ class OfflineSaleService:
                 select(StockModel).where(
                     StockModel.variant_id == vid,
                     StockModel.branch_id == branch_id,
-                )
+                ).with_for_update().execution_options(populate_existing=True)
             )
             avail = stock_row.quantity if stock_row else 0
 
@@ -183,8 +220,8 @@ class OfflineSaleService:
                                 "current_price": str(server_reg),
                                 "reason_code": "offer_expired",
                             })
-                except Exception:
-                    pass
+                except (ValueError, TypeError):
+                    raise ValidationError("La oferta de una línea no es válida.") from None
             elif abs(server_reg - client_unit) > Decimal("0.01") and not precio_autorizado:
                 price_conflict = True
                 conflict_lines.append({
@@ -196,7 +233,7 @@ class OfflineSaleService:
                     "current_price": str(server_reg),
                 })
 
-            final_unit = client_unit if precio_autorizado else server_reg
+            final_unit = client_unit
             line_tot = (final_unit * Decimal(req_qty)).quantize(Decimal("0.01"))
             subtotal += line_tot
 
@@ -227,6 +264,16 @@ class OfflineSaleService:
                 {"lines": conflict_lines},
             )
 
+        if not order_items:
+            raise ValidationError("La venta debe conservar al menos una unidad.")
+        if ajustes is None:
+            if validated.subtotal is not None and validated.subtotal != subtotal:
+                raise ValidationError("El subtotal no coincide con las líneas de la venta.")
+            if validated.total is not None and validated.total != subtotal:
+                raise ValidationError("El total no coincide con las líneas de la venta.")
+        if validated.cash_received is not None and validated.cash_received < subtotal:
+            raise ValidationError("El efectivo recibido es insuficiente.")
+
         # 4. Descontar stock
         stock_svc = StockService(self.db)
         order_number = f"FS-{uuid.uuid4().hex[:6].upper()}"
@@ -253,7 +300,7 @@ class OfflineSaleService:
             user_id=customer_id or user_id,
             cashier_user_id=user_id,
             sales_channel="pos",
-            cash_point_id=uuid.UUID(str(payload["cash_point_id"])) if payload.get("cash_point_id") else None,
+            cash_point_id=cash_point.id,
             branch_id=branch_id,
             status="delivered",
             payment_status="paid",
@@ -317,29 +364,6 @@ class SyncService:
         # Ordenar por client_created_at ascendente (gana la venta anterior)
         sorted_ops = sorted(data.operations, key=lambda x: x.client_created_at)
 
-        from src.plataforma_saas.application.plan_guard import PlanGuard
-
-        if PlanGuard(self.db).esta_en_solo_lectura(self.ctx.tenant_id):
-            results = [
-                SyncResultOut(
-                    client_request_id=op.client_request_id,
-                    status="RETRY",
-                    reason_code="subscription_read_only",
-                    message="rechazada temporalmente",
-                )
-                for op in sorted_ops
-            ]
-            batch.received = len(sorted_ops)
-            batch.rejected = len(sorted_ops)
-            batch.finished_at = datetime.now(timezone.utc)
-            self.db.commit()
-            return SyncBatchOut(
-                batch_id=batch.id,
-                received_at=started_at,
-                request_id=batch.request_id,
-                results=results,
-            )
-
         results: list[SyncResultOut] = []
         confirmed_count = 0
         conflicts_count = 0
@@ -372,6 +396,11 @@ class SyncService:
                     )
                 )
                 if existing:
+                    if existing.payload_hash != _canonical_hash(op):
+                        results.append(SyncResultOut(client_request_id=op.client_request_id, status="REJECTED",
+                            reason_code="uuid_reused", message="Ese identificador ya fue utilizado con otro contenido."))
+                        rejected_count += 1
+                        continue
                     replays_count += 1
                     results.append(
                         SyncResultOut(
@@ -384,13 +413,16 @@ class SyncService:
                             replay=True,
                         )
                     )
+                else:
+                    results.append(SyncResultOut(client_request_id=op.client_request_id, status="RETRY",
+                        reason_code="server_error", message="No se pudo confirmar la operación. Se conserva para reintentar."))
             except Exception as e:
                 self.db.rollback()
                 results.append(
                     SyncResultOut(
                         client_request_id=op.client_request_id,
                         status="RETRY",
-                        message=f"Error transaccional en el servidor: {str(e)}",
+                        message="No se pudo confirmar la operación. Se conservará para reintentar.",
                         reason_code="server_error",
                     )
                 )
@@ -467,11 +499,30 @@ class SyncService:
         # 2. Validar tipo y permisos
         user_perms = get_permission_codes(self.ctx.user) if getattr(self.ctx, "user", None) else set()
         if op.type == "SALE":
-            if "commerce.write" not in user_perms and "sync.write" not in user_perms:
+            if "commerce.write" not in user_perms:
                 return self._record_rejection(op, batch, "forbidden_operation_type", "No tiene permisos para sincronizar ventas.")
+            if op.payload.get("user_id") and str(op.payload["user_id"]) != str(self.ctx.user.id):
+                return self._record_rejection(op, batch, "invalid_payload", "El responsable no coincide con quien envía la operación.")
         elif op.type == "RESERVATION":
             if "reservations.write" not in user_perms and "sync.write" not in user_perms:
                 return self._record_rejection(op, batch, "forbidden_operation_type", "No tiene permisos para sincronizar reservas.")
+
+        try:
+            PlanGuard(self.db).exigir_funcion(self.ctx.tenant_id, "offline")
+        except SubscriptionReadOnlyError:
+            return SyncResultOut(client_request_id=op.client_request_id, status="RETRY",
+                reason_code="subscription_read_only",
+                message="Operación rechazada temporalmente: la suscripción está en solo lectura. Se conserva para reintentar.")
+        except SubscriptionInactiveError as error:
+            return self._record_conflict(op, batch, "SUBSCRIPTION", str(error), {}, phash)
+        except FeatureNotInPlanError as error:
+            return self._record_rejection(op, batch, "feature_not_in_plan", str(error), phash)
+        if op.type == "RESERVATION" and str(op.payload.get("branch_id")) != str(op.branch_id):
+            return self._record_rejection(op, batch, "invalid_payload", "La sucursal no coincide con la reserva.", phash)
+        if op.type == "RESERVATION" and "reservations.write" in user_perms:
+            allowed = UserBranchService(self.db, self.ctx.tenant_id).autorizadas(self.ctx.user)
+            if op.branch_id not in {branch.id for branch in allowed}:
+                return self._record_rejection(op, batch, "forbidden_branch", "La sucursal no está asignada a esta cuenta.", phash)
 
         # 3. Procesar según tipo
         if op.type == "SALE":
@@ -488,7 +539,7 @@ class SyncService:
                     device_id=op.device_id,
                     user_id=uuid.UUID(str(op.payload.get("user_id"))) if op.payload.get("user_id") else getattr(self.ctx.user, "id", None),
                     batch_id=batch.id,
-                    payload=op.payload,
+                    payload={**op.payload, "_client_created_at": op.client_created_at.isoformat()},
                     payload_hash=phash,
                     server_ref=order.id,
                     server_number=order.number,
@@ -505,49 +556,8 @@ class SyncService:
                     message=rec.message,
                 )
             except SyncConflictException as ce:
-                rec = SyncOperationModel(
-                    id=uuid.uuid4(),
-                    tenant_id=self.ctx.tenant_id,
-                    client_request_id=op.client_request_id,
-                    type="SALE",
-                    status="CONFLICT",
-                    branch_id=op.branch_id,
-                    device_id=op.device_id,
-                    user_id=uuid.UUID(str(op.payload.get("user_id"))) if op.payload.get("user_id") else getattr(self.ctx.user, "id", None),
-                    batch_id=batch.id,
-                    payload=op.payload,
-                    payload_hash=phash,
-                    message=str(ce),
-                    submitted_by_user_id=getattr(self.ctx.user, "id", None),
-                )
-                self.db.add(rec)
-                self.db.flush()
-                conf = SyncConflictModel(
-                    id=uuid.uuid4(),
-                    tenant_id=self.ctx.tenant_id,
-                    operation_id=rec.id,
-                    branch_id=op.branch_id,
-                    type=ce.conflict_type,
-                    detail=ce.detail,
-                    status="OPEN",
-                )
-                self.db.add(conf)
-                self.db.flush()
-                RecordAuditEvent(self.db).execute(
-                    action="sync.conflict_created",
-                    entity_type="sync_conflict",
-                    entity_id=str(conf.id),
-                    description=f"Conflicto de sincronización ({ce.conflict_type}): {str(ce)}",
-                    actor_user_id=getattr(self.ctx.user, "id", None),
-                )
-                return SyncResultOut(
-                    client_request_id=op.client_request_id,
-                    status="CONFLICT",
-                    conflict_id=conf.id,
-                    conflict_type=conf.type,
-                    message=str(ce),
-                )
-            except (ValidationError, NotFoundError) as ve:
+                return self._record_conflict(op, batch, ce.conflict_type, str(ce), ce.detail, phash)
+            except (ValidationError, NotFoundError, AuthorizationError) as ve:
                 return self._record_rejection(op, batch, "validation_error", str(ve), phash)
 
         elif op.type == "RESERVATION":
@@ -565,7 +575,7 @@ class SyncService:
                     device_id=op.device_id,
                     user_id=getattr(self.ctx.user, "id", None),
                     batch_id=batch.id,
-                    payload=op.payload,
+                    payload={**op.payload, "_client_created_at": op.client_created_at.isoformat()},
                     payload_hash=phash,
                     server_ref=reserva.id,
                     server_number=str(reserva.id)[:8].upper(),
@@ -582,45 +592,41 @@ class SyncService:
                     message=rec.message,
                 )
             except ReservationStockError as rse:
-                rec = SyncOperationModel(
-                    id=uuid.uuid4(),
-                    tenant_id=self.ctx.tenant_id,
-                    client_request_id=op.client_request_id,
-                    type="RESERVATION",
-                    status="CONFLICT",
-                    branch_id=op.branch_id,
-                    device_id=op.device_id,
-                    user_id=getattr(self.ctx.user, "id", None),
-                    batch_id=batch.id,
-                    payload=op.payload,
-                    payload_hash=phash,
-                    message=str(rse),
-                    submitted_by_user_id=getattr(self.ctx.user, "id", None),
-                )
-                self.db.add(rec)
-                self.db.flush()
-                conf = SyncConflictModel(
-                    id=uuid.uuid4(),
-                    tenant_id=self.ctx.tenant_id,
-                    operation_id=rec.id,
-                    branch_id=op.branch_id,
-                    type="STOCK",
-                    detail={"lines": getattr(rse, "lines", [])},
-                    status="OPEN",
-                )
-                self.db.add(conf)
-                self.db.flush()
-                return SyncResultOut(
-                    client_request_id=op.client_request_id,
-                    status="CONFLICT",
-                    conflict_id=conf.id,
-                    conflict_type="STOCK",
-                    message=str(rse),
-                )
-            except (ValidationError, NotFoundError) as ve:
+                lines = [{**line, "product_name": line.get("product"),
+                          "requested_quantity": line.get("requested", 1),
+                          "available_quantity": line.get("quantity", 0)} for line in rse.lines]
+                return self._record_conflict(op, batch, "STOCK", str(rse), {"lines": lines}, phash)
+            except PayloadValidationError:
+                return self._record_rejection(op, batch, "invalid_payload", "La reserva contiene datos inválidos.", phash)
+            except (ValidationError, NotFoundError, AuthorizationError) as ve:
                 return self._record_rejection(op, batch, "validation_error", str(ve), phash)
 
         return self._record_rejection(op, batch, "unsupported_type", f"Tipo de operación {op.type} no soportado.", phash)
+
+    def _record_conflict(self, op, batch, conflict_type, message, detail, payload_hash):
+        record = SyncOperationModel(
+            id=uuid.uuid4(), tenant_id=self.ctx.tenant_id, client_request_id=op.client_request_id,
+            type=op.type, status="CONFLICT", branch_id=op.branch_id, device_id=op.device_id,
+            user_id=self.ctx.user.id, submitted_by_user_id=self.ctx.user.id, batch_id=batch.id,
+            payload={**op.payload, "_client_created_at": op.client_created_at.isoformat()},
+            payload_hash=payload_hash, message=message,
+        )
+        self.db.add(record)
+        self.db.flush()
+        conflict = SyncConflictModel(
+            id=uuid.uuid4(), tenant_id=self.ctx.tenant_id, operation_id=record.id,
+            branch_id=op.branch_id, type=conflict_type, detail=detail, status="OPEN",
+        )
+        self.db.add(conflict)
+        self.db.flush()
+        RecordAuditEvent(self.db).execute(action="sync.conflict_created", entity_type="sync_conflict",
+            entity_id=str(conflict.id), tenant_id=self.ctx.tenant_id, actor_user_id=self.ctx.user.id,
+            description=f"Operación sin conexión pendiente por conflicto {conflict_type}.",
+            metadata={"operation_id": str(record.id), "conflict_type": conflict_type})
+        return SyncResultOut(
+            client_request_id=op.client_request_id, status="CONFLICT", conflict_id=conflict.id,
+            conflict_type=conflict_type, message=message,
+        )
 
     def _record_rejection(
         self,
@@ -640,7 +646,7 @@ class SyncService:
             device_id=op.device_id,
             user_id=getattr(self.ctx.user, "id", None),
             batch_id=batch.id,
-            payload=op.payload,
+            payload={**op.payload, "_client_created_at": op.client_created_at.isoformat()},
             payload_hash=phash or _canonical_hash(op),
             reason_code=reason_code,
             message=message,

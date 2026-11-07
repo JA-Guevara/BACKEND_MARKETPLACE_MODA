@@ -76,7 +76,7 @@ class ConflictService:
             select(SyncConflictModel).where(
                 SyncConflictModel.id == conflict_id,
                 SyncConflictModel.tenant_id == self.tenant_id,
-            )
+            ).with_for_update().execution_options(populate_existing=True)
         )
         if not conflict:
             raise NotFoundError("Conflicto no encontrado.")
@@ -90,8 +90,41 @@ class ConflictService:
         from src.operacion_offline.application.sync_service import OfflineSaleService
 
         now = datetime.now(timezone.utc)
+        if data.action != "CANCEL":
+            from src.plataforma_saas.application.plan_guard import PlanGuard
+            PlanGuard(self.db).exigir_funcion(self.tenant_id, "offline")
 
-        if data.action == "CANCEL":
+        if op.type == "RESERVATION" and data.action in ("ADJUST", "RETRY"):
+            from src.reservas.application.use_cases.create_reserva import CrearReserva
+            from src.reservas.infrastructure.http.schemas import CrearReservaRequest
+            if data.action == "ADJUST" and conflict.type != "STOCK":
+                raise ValidationError("Solo se pueden ajustar cantidades en un conflicto de existencias.")
+            payload = dict(op.payload)
+            if data.action == "ADJUST":
+                if not data.quantities:
+                    raise ValidationError("Indicá las cantidades que querés conservar.")
+                quantities = {str(key): value for key, value in data.quantities.items()}
+                original = {item["variant_id"]: item["quantity"] for item in payload["items"]}
+                if any(key not in original or value < 0 or value > original[key] for key, value in quantities.items()):
+                    raise ValidationError("Las cantidades ajustadas deben estar dentro de la reserva original.")
+                payload["items"] = [
+                    {**item, "quantity": quantities.get(item["variant_id"], item["quantity"])}
+                    for item in payload["items"]
+                    if quantities.get(item["variant_id"], item["quantity"]) > 0
+                ]
+                if not payload["items"]:
+                    raise ValidationError("Conservá al menos una prenda o rechazá la reserva.")
+            customer = self.db.get(UserModel, op.user_id)
+            if not customer or customer.tenant_id != self.tenant_id:
+                raise NotFoundError("El responsable de la reserva no pertenece a esta empresa.")
+            reservation = CrearReserva(self.db, tenant_id=self.tenant_id).execute(
+                customer, CrearReservaRequest(**payload), commit=False
+            )
+            op.status, op.server_ref, op.server_number = "CONFIRMED", reservation.id, str(reservation.id)[:8].upper()
+            op.resolved_at = now
+            conflict.status, conflict.resolution = "RESOLVED", data.action
+            conflict.resolution_note, conflict.resolved_by, conflict.resolved_at = data.note, self.actor.id, now
+        elif data.action == "CANCEL":
             op.status = "REJECTED"
             op.reason_code = "cancelled_by_manager"
             op.message = f"Cancelado por el encargado: {data.note}"
@@ -112,7 +145,7 @@ class ConflictService:
                 type="SALE",
                 branch_id=op.branch_id,  # type: ignore
                 device_id=op.device_id,
-                client_created_at=op.first_received_at,
+                client_created_at=datetime.fromisoformat(op.payload["_client_created_at"]) if op.payload.get("_client_created_at") else op.first_received_at,
                 payload=op.payload,
             )
             order = sale_svc.confirmar(op_in, self.actor, precio_autorizado=True)
@@ -139,7 +172,7 @@ class ConflictService:
                 type="SALE",
                 branch_id=op.branch_id,  # type: ignore
                 device_id=op.device_id,
-                client_created_at=op.first_received_at,
+                client_created_at=datetime.fromisoformat(op.payload["_client_created_at"]) if op.payload.get("_client_created_at") else op.first_received_at,
                 payload=op.payload,
             )
             order = sale_svc.confirmar(op_in, self.actor, ajustes=data.quantities)
@@ -173,7 +206,7 @@ class ConflictService:
                 type="SALE",
                 branch_id=op.branch_id,  # type: ignore
                 device_id=op.device_id,
-                client_created_at=op.first_received_at,
+                client_created_at=datetime.fromisoformat(op.payload["_client_created_at"]) if op.payload.get("_client_created_at") else op.first_received_at,
                 payload=op.payload,
             )
             order = sale_svc.confirmar(op_in, self.actor)
@@ -190,7 +223,11 @@ class ConflictService:
         else:
             raise ValidationError(f"Acción {data.action} no soportada.")
 
-        self.db.commit()
+        if op.status == "CONFIRMED":
+            op.reason_code = None
+            op.message = "Operación confirmada después de la revisión del encargado."
+            if data.action == "ADJUST" and op.type == "SALE":
+                op.message += f" Reintegro de efectivo pendiente: Bs {refund:.2f}."
 
         RecordAuditEvent(self.db).execute(
             action="sync.conflict_resolved",
@@ -200,6 +237,7 @@ class ConflictService:
             actor_user_id=self.actor.id,
             metadata={"action": data.action, "note": data.note, "operation_id": str(op.id)},
         )
+        self.db.commit()
 
         return self._to_out(conflict)
 
@@ -241,6 +279,7 @@ class ConflictService:
             id=c.id,
             operation_id=c.operation_id,
             client_request_id=op.client_request_id if op else uuid.uuid4(),
+            operation_type=op.type if op else "SALE",
             type=c.type,
             status=c.status,
             branch_id=c.branch_id,

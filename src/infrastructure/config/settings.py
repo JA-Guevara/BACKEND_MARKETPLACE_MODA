@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     media_backend: Literal["local", "s3"] = "local"
     sync_batch_max: int = 50
     sync_status_max: int = 200
+    offline_price_validity_hours: int = Field(default=24, ge=1, le=720)
     database_url: str = "postgresql://postgres:postgres@localhost:5432/fashionstore"
     # Pool de conexiones. El total real es replicas x workers x (size + overflow) y el
     # plan gratuito de Supabase admite 60 conexiones directas, de las cuales la propia
