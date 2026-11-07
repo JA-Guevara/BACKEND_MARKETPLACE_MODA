@@ -436,14 +436,22 @@ class CommerceService:
             raise
 
     def tracking(self, order, data):
-        if data.status not in TRANSITIONS.get(order.status, set()):
+        pickup = bool((order.address or {}).get("pickup"))
+        allowed = (
+            {"paid": {"processing", "delivered"}, "processing": {"delivered"}}
+            if pickup else TRANSITIONS
+        )
+        if data.status not in allowed.get(order.status, set()) or (pickup and order.payment_status != "paid"):
             raise ConflictError("Transicion de seguimiento no permitida.")
         if data.status == "shipped" and not (data.carrier and data.tracking_number):
             raise ValidationError("Indique transportista y numero de seguimiento.")
         order.status = data.status
         order.carrier = data.carrier or order.carrier
         order.tracking_number = data.tracking_number or order.tracking_number
-        self.track(order, data.note or "Estado actualizado por administracion.")
+        self.track(order, data.note or (
+            "Retiro en sucursal confirmado por el personal."
+            if pickup and data.status == "delivered" else "Estado actualizado por administracion."
+        ))
         self.audit(order, "tracking_updated", "Seguimiento del pedido actualizado.")
         self.db.commit()
         notificar_pedido(self.db, order, data.note)

@@ -55,6 +55,34 @@ def test_reservation_partial_purchase_releases_declined_quantity(world):
     assert result.json()['data']['total']=='150.00'
 
 
+def test_reservation_order_is_paid_and_collected_without_fake_shipping(world):
+    w=world;r,stock=reservation(w)
+    order=w.client.post(f'/api/v1/reservations/{r.id}/order',headers=w.headers(w.customer_a),json={}).json()['data']
+    path=f"/api/v1/commerce/admin/orders/{order['id']}"
+    assert w.client.patch(path+'/tracking',headers=w.headers(w.admin_a),json={'status':'delivered'}).status_code==409
+    paid=w.client.post(path+'/payment',headers=w.headers(w.admin_a),json={'method':'cash','reference':'Caja QA-103'})
+    assert paid.status_code==200,paid.text
+    assert w.client.patch(path+'/tracking',headers=w.headers(w.admin_a),json={'status':'shipped','carrier':'Falso','tracking_number':'Falso'}).status_code==409
+    received=w.client.patch(path+'/tracking',headers=w.headers(w.admin_a),json={'status':'delivered'})
+    assert received.status_code==200,received.text
+    assert not received.json()['data']['carrier'] and received.json()['data']['payment_status']=='paid'
+    w.db.refresh(stock);assert stock.quantity==0
+    linked=w.client.get(f'/api/v1/reservations/{r.id}',headers=w.headers(w.customer_a)).json()['data']
+    assert linked['order_status']=='delivered' and linked['payment_status']=='paid'
+
+
+def test_shipping_order_keeps_its_shipping_states(world):
+    w=world;r,_=reservation(w)
+    order=w.client.post(f'/api/v1/reservations/{r.id}/order',headers=w.headers(w.customer_a),json={}).json()['data']
+    from uuid import UUID
+    saved=w.db.get(OrderModel,UUID(order['id']));saved.address={'recipient':'Cliente','line1':'Domicilio'}
+    saved.status='paid';saved.payment_status='paid';w.db.commit()
+    path=f"/api/v1/commerce/admin/orders/{order['id']}/tracking"
+    assert w.client.patch(path,headers=w.headers(w.admin_a),json={'status':'delivered'}).status_code==409
+    assert w.client.patch(path,headers=w.headers(w.admin_a),json={'status':'processing'}).status_code==200
+    assert w.client.patch(path,headers=w.headers(w.admin_a),json={'status':'shipped'}).status_code==422
+
+
 def change_world(w,new_price=180,method='cash',discount=0):
     size=SizeModel(tenant_id=w.tenant_a.id,code='L2',name='L')
     w.db.add(size);w.db.flush()

@@ -19,6 +19,8 @@ stateDiagram-v2
 
 `reservations.order_id` es único. Un reintento devuelve el mismo pedido; otro contenido se rechaza. Una reserva convertida no se cancela para liberar inventario: se gestiona su pedido. Las reservas históricas atendidas pueden convertirse, pero necesitan disponibilidad real porque su apartado ya se había liberado.
 
+El pedido de una reserva se retira en su sucursal. Después de acreditar el pago, el personal puede registrar el retiro desde «Pagado» o «En preparación»: no se exige transportista ni número de envío. El retiro no descuenta otra vez el inventario. Web y móvil muestran este recorrido sin «En camino», y el pedido entregado permite solicitar un cambio. Los pedidos a domicilio conservan sus etapas de preparación, envío y entrega.
+
 ## Última prenda y operación sin conexión
 
 Dos dispositivos desconectados no pueden conocer sus operaciones mutuamente. Las ventas de contado y reservas locales son provisionales, con folio y estado visible, hasta que el servidor las confirma. No se simula un cobro de tarjeta sin conexión.
@@ -74,9 +76,10 @@ No convierten reservas históricas automáticamente ni reescriben importes de op
 ## Evidencia de cierre
 
 - Backend: 790 pruebas aprobadas; 18 omitidas en la ejecución sin servicios externos. Los ensayos que necesitan PostgreSQL se ejecutaron también por separado: 17 aprobados, incluyendo migración completa y reversión, coincidencia ORM, RLS y concurrencia por la última unidad.
-- Web: 665 pruebas y compilación de producción aprobadas. La prueba del probador espera el primer fotograma procesado, en lugar de depender de una pausa fija.
+- Web: 666 pruebas y compilación de producción aprobadas en una copia que excluye las ediciones concurrentes de autenticación. La prueba del probador espera el primer fotograma procesado, en lugar de depender de una pausa fija.
 - Móvil: análisis estático sin problemas, 307 pruebas aprobadas y APK debug compilado. No equivale a una prueba en un teléfono físico.
-- Navegador con API y SQLite locales: configuración pública y medios de cobro; reserva → pedido sin descontar dos veces; cambio de precio distinto con cobro y recepción; panel ejecutivo con filtros, gráficos y XLSX; copia de empresa A restaurada y descargada; empresa B sin acceso a sus copias; reportes empresariales conservados. Sin errores HTTP ni de página en esos recorridos.
+- Validación adicional del retiro: 148 pruebas focalizadas del backend y 16 comprobaciones del mismo grupo PostgreSQL que ejecuta CI, aprobadas. El control remoto anterior aprobó pruebas generales y migraciones, pero falló en su grupo PostgreSQL; se añadieron anotaciones de fallo para obtener el caso exacto si se repite.
+- Navegador con API y SQLite locales: configuración pública y medios de cobro; reserva → pedido sin descontar dos veces → pago → retiro sin envío → cambio en mostrador; cambio solicitado de precio distinto con cobro y recepción; panel ejecutivo con filtros, gráficos y XLSX; copia de empresa A restaurada y descargada; empresa B sin acceso a sus copias; reportes empresariales conservados. Sin errores HTTP ni de página en esos recorridos.
 - Stripe simulado: Checkout cobra solo la diferencia, reutiliza sesión, valida avisos firmados y cuenta conectada, y conserva pendiente un reintegro fallido. No se procesaron cargos ni reintegros reales.
 
 Ensayo reproducible: `python tests/e2e/saas_workflows_server.py` en el backend y las instrucciones de `frontend/scripts/qa/README-SAAS.md` en la web. Los datos, contraseñas y claves de ese entorno son exclusivamente sintéticos.
