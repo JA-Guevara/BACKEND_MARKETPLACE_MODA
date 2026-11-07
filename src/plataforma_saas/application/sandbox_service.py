@@ -6,12 +6,13 @@ from sqlalchemy.orm import Session
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.plataforma_saas.application.entitlement_service import EntitlementService
+from src.plataforma_saas.application.sandbox_seed import seed_demo
 from src.plataforma_saas.domain.exceptions import SandboxOnlyError
 from src.plataforma_saas.infrastructure.models.module import PlatformModuleModel
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.plataforma_saas.web.schemas.governance import SandboxOut
 from src.plataforma_saas.web.schemas.support import SupportSessionStartResponse
-from src.shared.exceptions.domain_exception import NotFoundError
+from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
 from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel as ProductoModel
 
 
@@ -53,10 +54,14 @@ class SandboxService:
         ]
 
         b_count = self.db.scalar(
-            select(func.count(BranchModel.id)).where(BranchModel.tenant_id == demo.id)
+            select(func.count(BranchModel.id)).where(
+                BranchModel.tenant_id == demo.id, BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None)
+            )
         ) or 0
         p_count = self.db.scalar(
-            select(func.count(ProductoModel.id)).where(ProductoModel.tenant_id == demo.id)
+            select(func.count(ProductoModel.id)).where(
+                ProductoModel.tenant_id == demo.id, ProductoModel.is_active.is_(True), ProductoModel.deleted_at.is_(None)
+            )
         ) or 0
 
         return SandboxOut(
@@ -73,8 +78,10 @@ class SandboxService:
         from src.plataforma_saas.application.support_service import SupportService
 
         demo = self._demo_tenant()
-        if not demo:
-            raise NotFoundError("No existe empresa demo configurada.")
+        if not demo or demo.status != "ACTIVA":
+            raise NotFoundError("Prepará la empresa demo antes de probar un módulo.")
+        if not EntitlementService(self.db).tiene(demo.id, module_code):
+            raise NotFoundError("Este módulo no está disponible en la empresa demo.")
 
         mod = self.db.get(PlatformModuleModel, module_code)
         now = datetime.now(timezone.utc)
@@ -90,12 +97,13 @@ class SandboxService:
             duration_minutes=60,
             mode="WRITE",
             landing_module=module_code,
+            require_consent=False,
         )
 
     def restablecer(self, confirm: bool = False) -> SandboxOut:
-        demo = self._demo_tenant()
-        if not demo or not demo.is_sandbox:
-            raise SandboxOnlyError()
+        if not confirm:
+            raise ValidationError("Confirmá que querés preparar o restablecer la empresa demo.")
+        demo = seed_demo(self.db, reset=True)
 
         if self.actor:
             RecordAuditEvent(self.db).execute(

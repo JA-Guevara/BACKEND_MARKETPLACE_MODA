@@ -1,11 +1,12 @@
 from typing import Annotated, Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.auth.web.dependencies import get_current_user
 from src.infrastructure.database.session import get_db
-from src.infrastructure.security.authorization import require_permissions
+from src.infrastructure.security.authorization import require_permissions, require_platform_permissions
 from src.infrastructure.security.tenancy import TenantScope, get_tenant_context
 from src.analitica_ml.application.dashboard_service import DashboardMLService
 from src.analitica_ml.application.entrenamiento_service import EntrenamientoService
@@ -17,6 +18,8 @@ from src.analitica_ml.web.schemas import (
     MLTrainingRunOut,
     ResolveAnomalyIn,
 )
+from src.plataforma_saas.infrastructure.models.tenant import TenantModel
+from src.shared.exceptions.domain_exception import ConflictError
 from src.shared.responses.api_response import ApiResponse
 
 router = APIRouter(prefix="/analytics/ml", tags=["PAQ-10 · Analítica y Machine Learning"])
@@ -91,19 +94,32 @@ def initialize_ml_models(
 
 # Rutas para administración de modelos
 platform_ml_router = APIRouter(prefix="/platform/ml", tags=["PAQ-10 · Plataforma ML"])
+PlatformMLAdmin = Annotated[UserModel, Depends(require_platform_permissions("ml_models.manage"))]
+
+
+@platform_ml_router.post("/initialize", response_model=ApiResponse[Dict[str, Any]])
+def initialize_demo_ml(
+    _actor: PlatformMLAdmin,
+    seed: int = Query(42, ge=0, le=2**32 - 1),
+    db: Session = Depends(get_db),
+) -> ApiResponse[Dict[str, Any]]:
+    demo = db.scalar(select(TenantModel).where(
+        TenantModel.is_sandbox.is_(True), TenantModel.status == "ACTIVA",
+    ).with_for_update())
+    if demo is None:
+        raise ConflictError("Prepará la empresa demo antes de entrenar con datos de prueba.")
+    summary = EntrenamientoService(db).inicializar_datos_y_modelos(demo.id, seed=seed)
+    return ApiResponse(message="Entrenamiento de la empresa demo completado.", data=summary)
 
 
 @platform_ml_router.get("/runs", response_model=ApiResponse[List[MLTrainingRunOut]])
 def get_training_runs(
-    ctx: TenantCtx,
-    user: CurrentUser,
+    _actor: PlatformMLAdmin,
     db: Session = Depends(get_db),
-    _perm: UserModel = Depends(require_permissions("ml_models.manage")),
 ) -> ApiResponse[List[MLTrainingRunOut]]:
-    tenant_id_str = str(ctx.tenant_id)
     runs = (
-        db.query(MLTrainingRunModel)
-        .filter(MLTrainingRunModel.tenant_id == tenant_id_str)
+        db.query(MLTrainingRunModel, TenantModel.trade_name)
+        .join(TenantModel, TenantModel.id == MLTrainingRunModel.tenant_id)
         .order_by(MLTrainingRunModel.created_at.desc())
         .limit(50)
         .all()
@@ -112,28 +128,26 @@ def get_training_runs(
         MLTrainingRunOut(
             id=r.id,
             tenant_id=r.tenant_id,
+            tenant_name=tenant_name,
             model_type=r.model_type,
             status=r.status,
             metrics=r.metrics,
             created_at=r.created_at.isoformat(),
             finished_at=r.finished_at.isoformat() if r.finished_at else None,
         )
-        for r in runs
+        for r, tenant_name in runs
     ]
     return ApiResponse(message="Ejecuciones de entrenamiento obtenidas.", data=result)
 
 
 @platform_ml_router.get("/models", response_model=ApiResponse[List[Dict[str, Any]]])
 def get_models_list(
-    ctx: TenantCtx,
-    user: CurrentUser,
+    _actor: PlatformMLAdmin,
     db: Session = Depends(get_db),
-    _perm: UserModel = Depends(require_permissions("ml_models.manage")),
 ) -> ApiResponse[List[Dict[str, Any]]]:
-    tenant_id_str = str(ctx.tenant_id)
     models = (
-        db.query(MLModelModel)
-        .filter(MLModelModel.tenant_id == tenant_id_str)
+        db.query(MLModelModel, TenantModel.trade_name)
+        .join(TenantModel, TenantModel.id == MLModelModel.tenant_id)
         .order_by(MLModelModel.created_at.desc())
         .all()
     )
@@ -142,6 +156,8 @@ def get_models_list(
         data=[
             {
                 "id": m.id,
+                "tenant_id": m.tenant_id,
+                "tenant_name": tenant_name,
                 "name": m.name,
                 "model_type": m.model_type,
                 "version": m.version,
@@ -149,6 +165,6 @@ def get_models_list(
                 "is_active": m.is_active,
                 "created_at": m.created_at.isoformat(),
             }
-            for m in models
+            for m, tenant_name in models
         ],
     )

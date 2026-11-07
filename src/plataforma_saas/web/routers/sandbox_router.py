@@ -6,7 +6,7 @@ from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_platform_permissions
 from src.plataforma_saas.application.sandbox_service import SandboxService
-from src.plataforma_saas.web.schemas.governance import PreviewIn, SandboxOut
+from src.plataforma_saas.web.schemas.governance import PreviewIn, SandboxOut, SandboxResetIn
 from src.plataforma_saas.web.schemas.support import SupportSessionStart
 from src.shared.responses.api_response import ApiResponse
 
@@ -46,12 +46,12 @@ def preview_module(
 
 @router.post("/reset", response_model=ApiResponse[SandboxOut])
 def reset_sandbox(
+    body: SandboxResetIn,
     actor: SandboxAdmin,
     db: Session = Depends(get_db),
-    confirm: bool = True,
 ):
     service = SandboxService(db, actor=actor)
     return ApiResponse(
         message="Empresa demo restablecida.",
-        data=service.restablecer(confirm=confirm),
+        data=service.restablecer(confirm=body.confirm),
     )

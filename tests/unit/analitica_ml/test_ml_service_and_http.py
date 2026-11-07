@@ -93,14 +93,34 @@ def test_platform_ml_endpoints_http(saas_world):
     assert resp_init.status_code == 200
     assert resp_init.json()["data"]["status"] == "COMPLETED"
 
-    # Consultar runs y models
-    resp_runs = w.client.get("/api/v1/platform/ml/runs", headers=headers)
+    # Las rutas globales se reservan para la cuenta de plataforma.
+    assert w.client.get("/api/v1/platform/ml/runs", headers=headers).status_code == 403
+    assert w.client.get("/api/v1/platform/ml/models", headers=headers).status_code == 403
+    platform_headers = w.headers(w.platform)
+    resp_runs = w.client.get("/api/v1/platform/ml/runs", headers=platform_headers)
     assert resp_runs.status_code == 200
     runs = resp_runs.json()["data"]
     assert len(runs) >= 1
     assert runs[0]["model_type"] == "DEMAND"
+    assert runs[0]["tenant_name"] == w.tenant_b.trade_name
 
-    resp_models = w.client.get("/api/v1/platform/ml/models", headers=headers)
+    resp_models = w.client.get("/api/v1/platform/ml/models", headers=platform_headers)
     assert resp_models.status_code == 200
     models = resp_models.json()["data"]
     assert len(models) >= 1
+    assert models[0]["tenant_id"] == str(w.tenant_b.id)
+
+
+def test_platform_training_uses_only_the_demo(saas_world):
+    w = saas_world
+    route = "/api/v1/platform/ml/initialize"
+    platform = w.headers(w.platform)
+    assert w.client.post(route, headers=w.headers(w.admin_b)).status_code == 403
+    assert w.client.post(route, headers=platform).status_code == 409
+
+    w.tenant_a.is_sandbox = True
+    w.db.commit()
+    response = w.client.post(route, headers=platform)
+    assert response.status_code == 200, response.text
+    models = w.client.get("/api/v1/platform/ml/models", headers=platform).json()["data"]
+    assert {model["tenant_id"] for model in models} == {str(w.tenant_a.id)}

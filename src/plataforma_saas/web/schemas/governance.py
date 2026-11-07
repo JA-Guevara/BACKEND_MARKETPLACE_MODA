@@ -249,6 +249,10 @@ class PermissionUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class SandboxResetIn(BaseModel):
+    confirm: bool
+
+
 class SandboxOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tenant_id: UUID | None

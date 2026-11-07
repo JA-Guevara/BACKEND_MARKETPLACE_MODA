@@ -114,7 +114,28 @@ def test_sandbox_preview_opens_write_with_landing_module(client, world):
     data = resp.json()["data"]
     assert data["session"]["landing_module"] == "ai_reports"
     assert data["session"]["mode"] == "WRITE"
+    assert data["session"]["status"] == "active"
+    assert data["access_token"]
 
     # Verificar que se actualizó last_preview_at del módulo
     world.db.refresh(mod)
     assert mod.last_preview_at is not None
+
+
+def test_sandbox_prepare_and_reset_reuse_demo_without_touching_other_tenants(client, world):
+    route = "/api/v1/platform/sandbox"
+    headers = {"Authorization": f"Bearer {make_token(world.platform_user)}"}
+    assert client.post(route + "/reset", json={"confirm": False}, headers=headers).status_code == 422
+
+    response = client.post(route + "/reset", json={"confirm": True}, headers=headers)
+    assert response.status_code == 200, response.text
+    demo = response.json()["data"]
+    assert demo["is_active"] and demo["modules"]
+    assert demo["branches_count"] == 3
+    assert demo["products_count"] == 120
+
+    again = client.post(route + "/reset", json={"confirm": True}, headers=headers)
+    assert again.status_code == 200, again.text
+    assert again.json()["data"]["tenant_id"] == demo["tenant_id"]
+    world.db.refresh(world.product_a)
+    assert world.product_a.is_active

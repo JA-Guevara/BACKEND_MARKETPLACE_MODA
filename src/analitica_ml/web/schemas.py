@@ -75,6 +75,7 @@ class ResolveAnomalyIn(BaseModel):
 class MLTrainingRunOut(BaseModel):
     id: str
     tenant_id: str
+    tenant_name: str
     model_type: str
     status: str
     metrics: Optional[Dict[str, Any]] = None
