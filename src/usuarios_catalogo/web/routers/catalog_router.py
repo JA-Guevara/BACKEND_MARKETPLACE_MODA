@@ -156,7 +156,8 @@ def draft_product(data: ProductDraftRequest, ctx: TenantScope, actor: CatalogWri
             json={
                 "model": settings.ai_model,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": data.message}],
-                "max_tokens": 300,
+                "max_tokens": max(settings.ai_max_tokens, 1500),
+                "reasoning_effort": "low",
                 "response_format": {"type": "json_schema", "json_schema": {"name": "product_draft", "strict": True, "schema": PRODUCT_DRAFT_SCHEMA}},
             },
             timeout=25,

@@ -126,6 +126,8 @@ class PrepararPrenda:
                 json={
                     "model": settings.ai_model,
                     "temperature": 0,
+                    "max_tokens": max(settings.ai_max_tokens, 1500),
+                    "reasoning_effort": "low",
                     "response_format": {"type": "json_object"},
                     "messages": [
                         {

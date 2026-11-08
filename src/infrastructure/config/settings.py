@@ -93,10 +93,10 @@ class Settings(BaseSettings):
     commerce_currency: str = "bob"
     ai_api_key: str = ""
     ai_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
-    ai_model: str = "gemini-3.8-flash"
+    ai_model: str = "gemini-3.5-flash"
     # Modelo separado para convertir audios breves del asistente a texto.
     # Se puede reemplazar desde `AI_TRANSCRIPTION_MODEL` sin tocar el código.
-    ai_transcription_model: str = "gemini-3.8-flash"
+    ai_transcription_model: str = "gemini-3.5-flash"
     ai_timeout: int = 30
     ai_max_tokens: int = 600
 
@@ -105,6 +105,8 @@ class Settings(BaseSettings):
         base = (self.ai_base_url or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
         if base.endswith("/chat/completions"):
             return base
+        if "generativelanguage.googleapis.com" in base and base.endswith("/v1"):
+            base = base[:-3]
         return f"{base}/chat/completions"
     report_export_max_rows: int = 10000
     low_stock_threshold: int = 5

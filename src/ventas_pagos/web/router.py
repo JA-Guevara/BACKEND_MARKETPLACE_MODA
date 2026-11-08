@@ -124,7 +124,7 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
         result = httpx.post(settings.ai_chat_completions_url, headers={"Authorization": "Bearer " + settings.ai_api_key},
             json={"model": settings.ai_model, "messages": [
                 {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content}], "max_tokens": 350}, timeout=25)
+                {"role": "user", "content": user_content}], "max_tokens": max(settings.ai_max_tokens, 1500), "reasoning_effort": "low"}, timeout=25)
         result.raise_for_status()
         return response({"available": True, "reply": result.json()["choices"][0]["message"]["content"]})
     except (httpx.HTTPError, KeyError, ValueError, IndexError):
@@ -602,7 +602,7 @@ def insights(user: Analyst, ctx: TenantCtx, data: InsightsRequest | None = None,
     try:
         result = httpx.post(settings.ai_chat_completions_url, headers={"Authorization": "Bearer " + settings.ai_api_key},
             json={"model": settings.ai_model, "messages": [{"role": "system", "content": "Eres analista de FashionStore. Da 3 recomendaciones breves en espanol basadas solo en metricas agregadas. No inventes tendencias ni causalidad. Senala cuando faltan datos."},
-            {"role": "user", "content": str(snapshot)}], "max_tokens": min(450, settings.ai_max_tokens)}, timeout=settings.ai_timeout)
+            {"role": "user", "content": str(snapshot)}], "max_tokens": max(settings.ai_max_tokens, 1500), "reasoning_effort": "low"}, timeout=settings.ai_timeout)
         result.raise_for_status()
         return response({"available": True, "message": result.json()["choices"][0]["message"]["content"]})
     except (httpx.HTTPError, KeyError, ValueError, IndexError):

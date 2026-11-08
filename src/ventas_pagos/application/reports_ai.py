@@ -31,7 +31,8 @@ def _chat(system: str, content: str, max_tokens: int = 350) -> str:
         json={
             "model": settings.ai_model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-            "max_tokens": min(max_tokens, settings.ai_max_tokens),
+            "max_tokens": max(settings.ai_max_tokens, 1500),
+            "reasoning_effort": "low",
             "temperature": 0.2,
         },
         timeout=settings.ai_timeout,
