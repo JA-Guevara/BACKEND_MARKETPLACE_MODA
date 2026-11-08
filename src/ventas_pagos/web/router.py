@@ -1,3 +1,4 @@
+import json
 from src.infrastructure.security.tenancy import require_feature, TenantScope, get_tenant_context, get_public_tenant_id, require_store_account
 import uuid
 from datetime import datetime
@@ -15,6 +16,7 @@ from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.infrastructure.database.session import get_db, set_rls_context
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.config.settings import settings
+from src.infrastructure.services.ai_client import AIService
 from src.shared.exceptions.domain_exception import NotFoundError
 from src.shared.responses.api_response import ApiResponse
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductVariantModel, ProductModel
@@ -117,18 +119,70 @@ asistente interprete las metricas reales del dashboard)."""
 def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db)):
     if not settings.ai_api_key:
         return response({"available": False, "reply": "El asistente de IA no esta configurado todavia. Mientras tanto podes consultar el catalogo o contactar a una sucursal."})
+
+    tenant_id = user.tenant_id
+    branches = db.scalars(
+        select(BranchModel.name).where(
+            BranchModel.tenant_id == tenant_id,
+            BranchModel.is_active.is_(True),
+            BranchModel.deleted_at.is_(None),
+        )
+    ).all()
+    branch_names = ", ".join(branches) if branches else "No hay sucursales registradas"
+
+    categories = db.scalars(
+        select(CategoryModel.name).where(
+            CategoryModel.tenant_id == tenant_id,
+            CategoryModel.is_active.is_(True),
+        )
+    ).all()
+    category_names = ", ".join(categories) if categories else "Sin categorias registradas"
+
+    is_staff = bool(user.role and user.role.name not in ["Cliente", "cliente"])
+    role_name = user.role.name if user.role else ("Personal de tienda" if is_staff else "Cliente")
+
+    system_instruction = (
+        f"{ASSISTANT_SYSTEM_PROMPT}\n\n"
+        f"--- CONTEXTO EN VIVO DE ESTE COMERCIO ---\n"
+        f"- Usuario: {user.first_name} {user.last_name} (Rol: {role_name}).\n"
+        f"- Sucursales activas: {branch_names}.\n"
+        f"- Categorias activas: {category_names}.\n\n"
+        f"INSTRUCCIONES DE ACCION:\n"
+        f"Responde SIEMPRE en formato JSON valido con este esquema:\n"
+        f'{{"reply": "Mensaje en espanol claro y cordial", "action": null}}\n'
+        f"Si el usuario solicita una accion operativa (por ejemplo, registrar una prenda, exportar reportes, ajustar existencias o consultar datos), "
+        f"asigna la accion en el objeto 'action':\n"
+        f'- Para crear prenda: {{"id": "product.create", "data": {{"name": "...", "category_name": "...", "base_price": ..., "description": "..."}}}}\n'
+        f'- Para exportar reporte: {{"id": "report.export", "data": {{"reports": ["ventas"], "format": "xlsx"}}}}\n'
+        f'- Para ajustar existencias: {{"id": "stock.adjust", "data": {{"product_name": "...", "branch_name": "...", "quantity": ...}}}}\n'
+        f'- Para consultas ordinarias, deja "action": null.\n'
+    )
+
     user_content = data.message
     if data.context:
         user_content = f"Seccion actual del sitio: {data.context}\n\nPregunta: {data.message}"
+
     try:
-        result = httpx.post(settings.ai_chat_completions_url, headers={"Authorization": "Bearer " + settings.ai_api_key},
-            json={"model": settings.ai_model, "messages": [
-                {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content}], "max_tokens": max(settings.ai_max_tokens, 1500), "reasoning_effort": "low"}, timeout=25)
-        result.raise_for_status()
-        return response({"available": True, "reply": result.json()["choices"][0]["message"]["content"]})
-    except (httpx.HTTPError, KeyError, ValueError, IndexError):
-        return response({"available": False, "reply": "No pude responder en este momento. Intenta de nuevo en unos minutos."})
+        raw_output = AIService.generate(
+            prompt=user_content,
+            system_instruction=system_instruction,
+            json_mode=True,
+            timeout=settings.ai_timeout,
+        )
+        parsed = json.loads(raw_output) if raw_output else {}
+        reply = str(parsed.get("reply") or raw_output or "Estoy a tu disposición.")
+        action = parsed.get("action")
+        return response({"available": True, "reply": reply, "action": action})
+    except Exception:
+        try:
+            fallback = AIService.generate(
+                prompt=user_content,
+                system_instruction=ASSISTANT_SYSTEM_PROMPT,
+                timeout=settings.ai_timeout,
+            )
+            return response({"available": True, "reply": fallback})
+        except Exception:
+            return response({"available": False, "reply": "No pude responder en este momento. Intenta de nuevo en unos minutos."})
 
 
 @router.post("/assistant/transcribe")
