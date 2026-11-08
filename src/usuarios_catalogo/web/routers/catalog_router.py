@@ -151,7 +151,7 @@ def draft_product(data: ProductDraftRequest, ctx: TenantScope, actor: CatalogWri
     )
     try:
         result = httpx.post(
-            "https://api.openai.com/v1/chat/completions",
+            settings.ai_chat_completions_url,
             headers={"Authorization": "Bearer " + settings.ai_api_key},
             json={
                 "model": settings.ai_model,

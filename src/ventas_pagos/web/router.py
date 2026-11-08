@@ -121,7 +121,7 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
     if data.context:
         user_content = f"Seccion actual del sitio: {data.context}\n\nPregunta: {data.message}"
     try:
-        result = httpx.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": "Bearer " + settings.ai_api_key},
+        result = httpx.post(settings.ai_chat_completions_url, headers={"Authorization": "Bearer " + settings.ai_api_key},
             json={"model": settings.ai_model, "messages": [
                 {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content}], "max_tokens": 350}, timeout=25)
@@ -600,7 +600,7 @@ def insights(user: Analyst, ctx: TenantCtx, data: InsightsRequest | None = None,
     filters = data.filters if data and data.filters else ReportFilters()
     snapshot = ReportsService(db, ctx.tenant_id).dashboard(filters.date_from, filters.date_to, filters.branch_id, filters.category_id, filters.status)
     try:
-        result = httpx.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": "Bearer " + settings.ai_api_key},
+        result = httpx.post(settings.ai_chat_completions_url, headers={"Authorization": "Bearer " + settings.ai_api_key},
             json={"model": settings.ai_model, "messages": [{"role": "system", "content": "Eres analista de FashionStore. Da 3 recomendaciones breves en espanol basadas solo en metricas agregadas. No inventes tendencias ni causalidad. Senala cuando faltan datos."},
             {"role": "user", "content": str(snapshot)}], "max_tokens": min(450, settings.ai_max_tokens)}, timeout=settings.ai_timeout)
         result.raise_for_status()

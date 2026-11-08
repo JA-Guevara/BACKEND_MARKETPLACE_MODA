@@ -92,12 +92,20 @@ class Settings(BaseSettings):
     redis_url: str = ""
     commerce_currency: str = "bob"
     ai_api_key: str = ""
-    ai_model: str = "gpt-4.1-mini"
+    ai_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    ai_model: str = "gemini-3.8-flash"
     # Modelo separado para convertir audios breves del asistente a texto.
     # Se puede reemplazar desde `AI_TRANSCRIPTION_MODEL` sin tocar el código.
-    ai_transcription_model: str = "gpt-4o-mini-transcribe"
+    ai_transcription_model: str = "gemini-3.8-flash"
     ai_timeout: int = 30
     ai_max_tokens: int = 600
+
+    @property
+    def ai_chat_completions_url(self) -> str:
+        base = (self.ai_base_url or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
+        if base.endswith("/chat/completions"):
+            return base
+        return f"{base}/chat/completions"
     report_export_max_rows: int = 10000
     low_stock_threshold: int = 5
     media_storage_dir: str = "uploads/images"

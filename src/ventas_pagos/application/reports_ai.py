@@ -26,7 +26,7 @@ from src.ventas_pagos.web.schemas import ReportFilters
 
 def _chat(system: str, content: str, max_tokens: int = 350) -> str:
     response = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
+        settings.ai_chat_completions_url,
         headers={"Authorization": "Bearer " + settings.ai_api_key},
         json={
             "model": settings.ai_model,

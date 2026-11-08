@@ -22,7 +22,7 @@ def test_openai_key_is_valid():
     modelo configurados responden. Es el mismo endpoint que usan /analytics/insights
     y /commerce/assistant."""
     response = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
+        settings.ai_chat_completions_url,
         headers={"Authorization": "Bearer " + settings.ai_api_key},
         json={
             "model": settings.ai_model,
@@ -32,8 +32,8 @@ def test_openai_key_is_valid():
         timeout=25,
     )
     assert response.status_code == 200, (
-        f"OpenAI respondio {response.status_code}: {response.text[:300]}. "
-        "Revisa AI_API_KEY y AI_MODEL en .env."
+        f"El proveedor de IA ({settings.ai_base_url}) respondio {response.status_code}: {response.text[:300]}. "
+        "Revisa AI_API_KEY, AI_BASE_URL y AI_MODEL en .env."
     )
     content = response.json()["choices"][0]["message"]["content"]
     assert content.strip() != ""
