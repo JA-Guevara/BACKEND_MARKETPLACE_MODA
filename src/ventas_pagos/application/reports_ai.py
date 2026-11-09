@@ -20,25 +20,18 @@ from datetime import datetime, timedelta
 import httpx
 
 from src.infrastructure.config.settings import settings
+from src.infrastructure.services.ai_client import AIService
 from src.ventas_pagos.application.reports_service import BUSINESS_TZ, ReportsService
 from src.ventas_pagos.web.schemas import ReportFilters
 
 
 def _chat(system: str, content: str, max_tokens: int = 350) -> str:
-    response = httpx.post(
-        settings.ai_chat_completions_url,
-        headers={"Authorization": "Bearer " + settings.ai_api_key},
-        json={
-            "model": settings.ai_model,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-            "max_tokens": max(settings.ai_max_tokens, 1500),
-            "reasoning_effort": "low",
-            "temperature": 0.2,
-        },
-        timeout=settings.ai_timeout,
+    return AIService.generate(
+        prompt=content,
+        system_instruction=system,
+        max_tokens=max_tokens,
+        temperature=0.2,
     )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
 
 
 class ReportsAI:

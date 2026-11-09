@@ -93,11 +93,11 @@ class Settings(BaseSettings):
     commerce_currency: str = "bob"
     ai_api_key: str = ""
     ai_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
-    ai_model: str = "gemini-3.5-flash"
+    ai_model: str = "gemini-3.5-flash-lite"
     # Modelo separado para convertir audios breves del asistente a texto.
     # Se puede reemplazar desde `AI_TRANSCRIPTION_MODEL` sin tocar el código.
-    ai_transcription_model: str = "gemini-3.5-flash"
-    ai_timeout: int = 30
+    ai_transcription_model: str = "gemini-3.5-flash-lite"
+    ai_timeout: int = 15
     ai_max_tokens: int = 600
 
     @property

@@ -173,12 +173,13 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
         reply = str(parsed.get("reply") or raw_output or "Estoy a tu disposición.")
         action = parsed.get("action")
         return response({"available": True, "reply": reply, "action": action})
-    except Exception:
+    except Exception as exc:
+        logger.warning("Fallo generacion estructurada del asistente: %s. Probando texto plano...", exc)
         try:
             fallback = AIService.generate(
                 prompt=user_content,
                 system_instruction=ASSISTANT_SYSTEM_PROMPT,
-                timeout=settings.ai_timeout,
+                timeout=min(settings.ai_timeout, 8),
             )
             return response({"available": True, "reply": fallback})
         except Exception:
@@ -654,12 +655,18 @@ def insights(user: Analyst, ctx: TenantCtx, data: InsightsRequest | None = None,
     filters = data.filters if data and data.filters else ReportFilters()
     snapshot = ReportsService(db, ctx.tenant_id).dashboard(filters.date_from, filters.date_to, filters.branch_id, filters.category_id, filters.status)
     try:
-        result = httpx.post(settings.ai_chat_completions_url, headers={"Authorization": "Bearer " + settings.ai_api_key},
-            json={"model": settings.ai_model, "messages": [{"role": "system", "content": "Eres analista de FashionStore. Da 3 recomendaciones breves en espanol basadas solo en metricas agregadas. No inventes tendencias ni causalidad. Senala cuando faltan datos."},
-            {"role": "user", "content": str(snapshot)}], "max_tokens": max(settings.ai_max_tokens, 1500), "reasoning_effort": "low"}, timeout=settings.ai_timeout)
-        result.raise_for_status()
-        return response({"available": True, "message": result.json()["choices"][0]["message"]["content"]})
-    except (httpx.HTTPError, KeyError, ValueError, IndexError):
+        content = AIService.generate(
+            prompt=str(snapshot),
+            system_instruction=(
+                "Eres analista de FashionStore. Da 3 recomendaciones breves en espanol "
+                "basadas solo en metricas agregadas. No inventes tendencias ni causalidad. "
+                "Senala cuando faltan datos."
+            ),
+            max_tokens=max(settings.ai_max_tokens, 1500),
+            timeout=settings.ai_timeout,
+        )
+        return response({"available": True, "message": content})
+    except Exception:
         return response({"available": False, "message": "El servicio de IA no respondio. Puede continuar usando las metricas reales."})
 
 

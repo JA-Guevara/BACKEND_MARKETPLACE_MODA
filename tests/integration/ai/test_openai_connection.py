@@ -47,3 +47,16 @@ def test_openai_key_is_valid():
     )
     content = response.json()["choices"][0]["message"]["content"]
     assert content.strip() != ""
+
+
+def test_ai_service_generate_works(monkeypatch):
+    """Valida que AIService.generate responde rápidamente y con éxito usando fallback."""
+    from src.infrastructure.config.settings import settings as global_settings
+    from src.infrastructure.services.ai_client import AIService
+
+    monkeypatch.setattr(global_settings, "ai_api_key", settings.ai_api_key)
+    monkeypatch.setattr(global_settings, "ai_model", settings.ai_model)
+    monkeypatch.setattr(global_settings, "ai_base_url", settings.ai_base_url)
+
+    res = AIService.generate(prompt="Di 'hola'", temperature=0.0, timeout=10)
+    assert res and len(res.strip()) > 0
