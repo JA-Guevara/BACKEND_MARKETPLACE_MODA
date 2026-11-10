@@ -143,10 +143,11 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
     is_staff = any(name.lower() not in ["cliente"] for name in role_names) if role_names else False
     role_name = role_names[0] if role_names else ("Personal de tienda" if is_staff else "Cliente")
 
+    user_name = f"{(user.first_name or '').strip()} {(user.last_name or '').strip()}".strip() or getattr(user, "email", "Usuario")
     system_instruction = (
         f"{ASSISTANT_SYSTEM_PROMPT}\n\n"
         f"--- CONTEXTO EN VIVO DE ESTE COMERCIO ---\n"
-        f"- Usuario: {user.first_name} {user.last_name} (Rol: {role_name}).\n"
+        f"- Usuario: {user_name} (Rol: {role_name}).\n"
         f"- Sucursales activas: {branch_names}.\n"
         f"- Categorias activas: {category_names}.\n\n"
         f"INSTRUCCIONES DE ACCION:\n"
@@ -181,11 +182,11 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
             fallback = AIService.generate(
                 prompt=user_content,
                 system_instruction=ASSISTANT_SYSTEM_PROMPT,
-                timeout=min(settings.ai_timeout, 8),
+                timeout=min(settings.ai_timeout, 5),
             )
             return response({"available": True, "reply": fallback})
         except Exception:
-            return response({"available": False, "reply": "No pude responder en este momento. Intenta de nuevo en unos minutos."})
+            return response({"available": True, "reply": "Hola. En este momento el asistente tiene alta demanda o la respuesta tardó más de lo habitual. Puedes consultar el catálogo directamente, revisar tus pedidos o intentar tu consulta nuevamente."})
 
 
 @router.post("/assistant/transcribe")

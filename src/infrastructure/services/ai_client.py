@@ -59,7 +59,7 @@ class AIService:
         if "generativelanguage.googleapis.com" in settings.ai_base_url:
             last_err = None
             for idx, model in enumerate(candidate_models):
-                attempt_timeout = min(timeout_sec, 8) if idx < len(candidate_models) - 1 else timeout_sec
+                attempt_timeout = min(timeout_sec, 5.0) if idx < len(candidate_models) - 1 else min(timeout_sec, 7.0)
                 url = (
                     f"https://generativelanguage.googleapis.com/v1beta/models/"
                     f"{model}:generateContent?key={settings.ai_api_key}"
@@ -102,7 +102,7 @@ class AIService:
 
         last_openai_err = None
         for idx, model in enumerate(candidate_models):
-            attempt_timeout = min(timeout_sec, 8) if idx < len(candidate_models) - 1 else timeout_sec
+            attempt_timeout = min(timeout_sec, 5.0) if idx < len(candidate_models) - 1 else min(timeout_sec, 7.0)
             payload = {
                 "model": model,
                 "messages": messages,
