@@ -1,6 +1,7 @@
 from functools import lru_cache
+import json
 import os
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -124,6 +125,21 @@ class Settings(BaseSettings):
     @classmethod
     def validate_prefix(cls, value: str) -> str:
         return "/" + value.strip("/")
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            v = value.strip()
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    return json.loads(v)
+                except Exception:
+                    pass
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(v).strip() for v in value if str(v).strip()]
+        return ["http://localhost:4200"]
 
     @model_validator(mode="after")
     def validate_runtime(self) -> "Settings":

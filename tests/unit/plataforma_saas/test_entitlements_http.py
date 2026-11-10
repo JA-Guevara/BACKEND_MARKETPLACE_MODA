@@ -29,6 +29,7 @@ def _seed_platform_modules(world):
             PlatformModuleModel(code="virtual_tryon", name="Probador virtual (RA)", kind="ADDON", lifecycle="GA", sort_order=10),
             PlatformModuleModel(code="exchanges", name="Cambios de prendas", kind="ADDON", lifecycle="BETA", sort_order=11),
             PlatformModuleModel(code="devices_audit", name="Dispositivos y auditoría", kind="ADDON", lifecycle="BETA", sort_order=12),
+            PlatformModuleModel(code="integrations", name="Integraciones API & Webhooks", kind="ADDON", lifecycle="GA", sort_order=13),
         ]
         db.add_all(modules)
         db.flush()

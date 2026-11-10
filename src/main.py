@@ -179,6 +179,21 @@ def create_app() -> FastAPI:
             "error": {"code": "database_unavailable", "message": "El servicio de datos no está disponible. Reintentá en unos momentos. Referencia: " + reference}
         })
 
+    @app.exception_handler(Exception)
+    async def handle_unexpected_exception(request: Request, exc: Exception) -> JSONResponse:
+        reference = getattr(request.state, "request_id", uuid4().hex)
+        logging.getLogger(__name__).exception("Unhandled exception ref=%s: %s", reference, exc)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "internal_error",
+                    "message": f"Ocurrió un error inesperado en el servidor (Ref: {reference[:8]}). Reintentá en unos momentos.",
+                },
+            },
+        )
+
     return app
 
 

@@ -53,20 +53,19 @@ def cuenta_de_empresa(db: Session, tenant_id: UUID) -> TenantPaymentAccountModel
     return db.get(TenantPaymentAccountModel, tenant_id)
 
 
-def cuenta_para_cobrar(db: Session, tenant_id: UUID) -> str | None:
-    """Cuenta conectada activa de la empresa; si no tiene cuenta propia, retorna None para usar la cuenta compartida de la plataforma."""
+def cuenta_para_cobrar(db: Session, tenant_id: UUID) -> str:
+    """Cuenta conectada activa de la empresa del pedido; si no hay, 409 (RN-ST2)."""
     account = cuenta_de_empresa(db, tenant_id)
-    if account and account.status == "active" and account.charges_enabled:
-        return account.stripe_account_id
-    # Sin segmentacion forzada: todas las empresas comparten la configuracion de Stripe de la plataforma
-    return None
+    if account is None or account.status != "active" or not account.charges_enabled:
+        raise CardPaymentsUnavailableError()
+    return account.stripe_account_id
 
 
 def tarjeta_disponible(db: Session, tenant_id: UUID | None) -> bool:
-    """Disponibilidad de cobro con tarjeta: todas las empresas comparten la configuracion global de Stripe."""
-    if not (settings.stripe_secret_key or "").startswith("sk_test_"):
+    if tenant_id is None or not settings.stripe_connect_enabled or not (settings.stripe_secret_key or "").startswith("sk_test_"):
         return False
-    return True
+    account = cuenta_de_empresa(db, tenant_id)
+    return bool(account and account.status == "active" and account.charges_enabled)
 
 
 class StripeConnectService:
