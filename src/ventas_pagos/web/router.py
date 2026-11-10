@@ -138,8 +138,10 @@ def assistant(data: AssistantMessage, user: User, db: Session = Depends(get_db))
     ).all()
     category_names = ", ".join(categories) if categories else "Sin categorias registradas"
 
-    is_staff = bool(user.role and user.role.name not in ["Cliente", "cliente"])
-    role_name = user.role.name if user.role else ("Personal de tienda" if is_staff else "Cliente")
+    roles = getattr(user, "roles", []) or []
+    role_names = [r.name for r in roles if hasattr(r, "name")]
+    is_staff = any(name.lower() not in ["cliente"] for name in role_names) if role_names else False
+    role_name = role_names[0] if role_names else ("Personal de tienda" if is_staff else "Cliente")
 
     system_instruction = (
         f"{ASSISTANT_SYSTEM_PROMPT}\n\n"

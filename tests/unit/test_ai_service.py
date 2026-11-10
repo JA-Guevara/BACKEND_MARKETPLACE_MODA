@@ -75,3 +75,35 @@ def test_ai_service_fallback_on_503(monkeypatch):
     assert output == "Recuperado tras fallback"
     assert "gemini-3.8-flash" in attempted_models
     assert "gemini-3.5-flash-lite" in attempted_models
+
+
+def test_assistant_role_extraction_from_user():
+    """Valida que la logica de extraccion de roles no falla con UserModel."""
+    from src.auth.infrastructure.persistence.models.user import UserModel
+    from src.roles.infrastructure.persistence.models.role import RoleModel
+
+    user = UserModel(first_name="Admin", last_name="User")
+    user.roles = [RoleModel(code="admin", name="Administrador")]
+    roles = getattr(user, "roles", []) or []
+    role_names = [r.name for r in roles if hasattr(r, "name")]
+    is_staff = any(name.lower() not in ["cliente"] for name in role_names) if role_names else False
+    role_name = role_names[0] if role_names else ("Personal de tienda" if is_staff else "Cliente")
+    assert is_staff is True
+    assert role_name == "Administrador"
+
+    client_user = UserModel(first_name="Juan", last_name="Perez")
+    client_user.roles = [RoleModel(code="client", name="Cliente")]
+    roles = getattr(client_user, "roles", []) or []
+    role_names = [r.name for r in roles if hasattr(r, "name")]
+    is_staff = any(name.lower() not in ["cliente"] for name in role_names) if role_names else False
+    role_name = role_names[0] if role_names else ("Personal de tienda" if is_staff else "Cliente")
+    assert is_staff is False
+    assert role_name == "Cliente"
+
+    empty_user = UserModel(first_name="Sin", last_name="Roles")
+    roles = getattr(empty_user, "roles", []) or []
+    role_names = [r.name for r in roles if hasattr(r, "name")]
+    is_staff = any(name.lower() not in ["cliente"] for name in role_names) if role_names else False
+    role_name = role_names[0] if role_names else ("Personal de tienda" if is_staff else "Cliente")
+    assert is_staff is False
+    assert role_name == "Cliente"

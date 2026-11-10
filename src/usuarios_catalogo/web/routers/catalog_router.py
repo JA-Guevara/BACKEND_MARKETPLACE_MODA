@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from decimal import Decimal
 from math import ceil
@@ -150,22 +151,19 @@ def draft_product(data: ProductDraftRequest, ctx: TenantScope, actor: CatalogWri
         "repeti el nombre a modo de descripcion minima."
     )
     try:
-        result = httpx.post(
-            settings.ai_chat_completions_url,
-            headers={"Authorization": "Bearer " + settings.ai_api_key},
-            json={
-                "model": settings.ai_model,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": data.message}],
-                "max_tokens": max(settings.ai_max_tokens, 1500),
-                "reasoning_effort": "low",
-                "response_format": {"type": "json_schema", "json_schema": {"name": "product_draft", "strict": True, "schema": PRODUCT_DRAFT_SCHEMA}},
-            },
+        from src.infrastructure.services.ai_client import AIService
+        raw_output = AIService.generate(
+            prompt=data.message,
+            system_instruction=system,
+            json_mode=True,
             timeout=25,
         )
-        result.raise_for_status()
-        parsed = json.loads(result.json()["choices"][0]["message"]["content"])
-    except (httpx.HTTPError, KeyError, ValueError, IndexError):
-        return _draft_unavailable("No pude interpretar el pedido en este momento. Intenta de nuevo.")
+        cleaned = raw_output.strip()
+        if cleaned.startswith('```'):
+            cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', cleaned, flags=re.MULTILINE).strip()
+        parsed = json.loads(cleaned)
+    except Exception:
+        return _draft_unavailable('No pude interpretar el pedido en este momento. Intenta de nuevo.')
 
     wanted = _normalize_name(str(parsed.get("category_name") or ""))
     matched = next((c for c in categories if _normalize_name(c["name"]) == wanted), None) if wanted else None

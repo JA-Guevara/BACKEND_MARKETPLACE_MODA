@@ -25,12 +25,13 @@ from src.ventas_pagos.application.reports_service import BUSINESS_TZ, ReportsSer
 from src.ventas_pagos.web.schemas import ReportFilters
 
 
-def _chat(system: str, content: str, max_tokens: int = 350) -> str:
+def _chat(system: str, content: str, max_tokens: int = 350, json_mode: bool = False) -> str:
     return AIService.generate(
         prompt=content,
         system_instruction=system,
         max_tokens=max_tokens,
         temperature=0.2,
+        json_mode=json_mode,
     )
 
 
@@ -282,17 +283,21 @@ class ReportsAI:
                 "No inventes datos ni causalidad; usa solo el contexto. Si faltan datos para la pregunta, "
                 "decilo en limitaciones.",
                 f"Contexto real del reporte:\n{context}\n\nPregunta del usuario: {question}",
-                max_tokens=450,
+                max_tokens=600,
+                json_mode=True,
             )
-            payload = json.loads(content)
-            if not isinstance(payload, dict) or not all(isinstance(value, str) for value in payload.values()):
+            cleaned = content.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.MULTILINE).strip()
+            payload = json.loads(cleaned)
+            if not isinstance(payload, dict):
                 raise ValueError('Respuesta de IA no estructurada.')
             sections = {
-                "hallazgo": payload.get("hallazgo", ""),
-                "cifras": payload.get("cifras", ""),
-                "interpretacion": payload.get("interpretacion", ""),
-                "accion": payload.get("accion", ""),
-                "limitaciones": payload.get("limitaciones", ""),
+                "hallazgo": str(payload.get("hallazgo") or ""),
+                "cifras": str(payload.get("cifras") or ""),
+                "interpretacion": str(payload.get("interpretacion") or ""),
+                "accion": str(payload.get("accion") or ""),
+                "limitaciones": str(payload.get("limitaciones") or ""),
             }
             return {"available": True, "sections": sections, "context_used": self._context_used(filters)}
         except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError):
