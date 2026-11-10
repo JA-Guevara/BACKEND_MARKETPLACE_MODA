@@ -102,3 +102,24 @@ def test_cross_tenant_reference_fails_without_partial_archive(backup_world):
 def test_archive_manifest_detects_modified_rows():
     with pytest.raises(ValidationError):
         validate({'manifest':{'format':'fashionstore-business-v1','sha256':'0'*64},'data':{},'files':{}})
+
+
+def test_platform_all_tenants_backups_overview(backup_world):
+    w = backup_world
+    res = w.client.get('/api/v1/platform/backups/tenants', headers=w.headers(w.platform))
+    assert res.status_code == 200, res.text
+    data = res.json()['data']
+    assert 'summary' in data
+    assert 'items' in data
+    assert data['summary']['total_tenants'] >= 2
+    assert data['summary']['configured'] is True
+
+    # Check non-platform cannot access
+    unauth = w.client.get('/api/v1/platform/backups/tenants', headers=w.headers(w.admin_a))
+    assert unauth.status_code == 403
+
+    # Process queue
+    proc = w.client.post('/api/v1/platform/backups/process-queue', headers=w.headers(w.platform))
+    assert proc.status_code == 200
+    assert 'processed' in proc.json()['data']
+

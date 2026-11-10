@@ -374,9 +374,9 @@ class AuthService:
             from src.plataforma_saas.application.plan_guard import PlanGuard
             from src.plataforma_saas.infrastructure.repositories.saas_repository import SaasRepository
             response_user.tenant = TenantSummary.model_validate(SaasRepository(self.db).get_tenant(actual_tenant_id))
-            if not is_client:
+            try:
                 response_user.subscription = PlanGuard(self.db).resumen(actual_tenant_id)
-            else:
+            except Exception:
                 response_user.subscription = None
         return TokenResponse(
             access_token=access_token,

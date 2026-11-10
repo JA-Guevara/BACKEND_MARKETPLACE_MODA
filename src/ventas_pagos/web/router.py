@@ -354,6 +354,20 @@ def cancel(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_p
     return response(order_data(service.cancel(service.order(order_id, user))))
 
 
+@router.post("/orders/{order_id}/confirm-delivery")
+def confirm_delivery(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
+    from src.shared.exceptions.domain_exception import ConflictError
+    service = CommerceService(db, tenant_id)
+    order = service.order(order_id, user)
+    if order.payment_status != "paid":
+        raise ConflictError("Solo se puede confirmar la entrega de un pedido pagado.")
+    order.status = "delivered"
+    service.track(order, "Entrega confirmada y recepcion conforme por el cliente.")
+    service.audit(order, "delivery_confirmed", "El cliente confirmo la recepcion de la prenda.")
+    db.commit()
+    return response(order_data(order))
+
+
 @router.get("/orders/{order_id}/returns")
 def order_returns(order_id: uuid.UUID, user: User, tenant_id: uuid.UUID = Depends(get_public_tenant_id), db: Session = Depends(get_db)):
     """CU19: que puede devolver el cliente de este pedido y que ya pidio."""

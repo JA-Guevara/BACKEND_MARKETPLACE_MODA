@@ -58,7 +58,6 @@ class StorefrontService:
                     BranchModel.is_active.is_(True),
                     BranchModel.deleted_at.is_(None),
                     BranchModel.opening_hours.is_not(None),
-                    BranchModel.opening_hours != '',
                 )
             )
         )

@@ -1,4 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
+import hashlib
+import hmac
+import json
+import uuid
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -13,7 +17,7 @@ from src.infrastructure.database.session import get_db
 from src.infrastructure.security.authorization import require_permissions
 from src.infrastructure.security.tenancy import TenantScope, get_tenant_context, require_feature
 from src.integraciones.application.api_keys_service import ApiKeysService
-from src.integraciones.application.webhooks_service import WebhooksService
+from src.integraciones.application.webhooks_service import WebhooksService, decrypt_secret
 from src.integraciones.infrastructure.models import (
     ApiKeyModel,
     WebhookDeliveryModel,
@@ -73,6 +77,24 @@ class WebhookEndpointOut(BaseModel):
 class WebhookEndpointCreatedOut(WebhookEndpointOut):
     secret: str
 
+
+
+class WebhookSimulateIn(BaseModel):
+    endpoint_id: UUID | None = None
+    event_type: str = Field(default="sale.confirmed", max_length=100)
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class WebhookSimulateOut(BaseModel):
+    event_id: str
+    event_type: str
+    timestamp: str
+    payload: dict[str, Any]
+    signature_preview: str
+    dispatched: bool = False
+    delivery_status: str | None = None
+    status_code: int | None = None
+    headers_example: dict[str, str]
 
 class WebhookDeliveryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -238,3 +260,84 @@ def redeliver_webhook(
 ) -> ApiResponse[WebhookDeliveryOut]:
     delivery = WebhooksService(db).redeliver(ctx.tenant_id, id)
     return ApiResponse(message="Entrega reenviada para reintento.", data=WebhookDeliveryOut.model_validate(delivery))
+
+
+@router.post("/webhooks/simulate", response_model=ApiResponse[WebhookSimulateOut])
+def simulate_webhook(
+    data: WebhookSimulateIn,
+    ctx: TenantCtx,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    _perm: UserModel = Depends(require_permissions("integrations.write")),
+) -> ApiResponse[WebhookSimulateOut]:
+    now = datetime.now(timezone.utc)
+    timestamp = str(int(now.timestamp()))
+    event_id = str(uuid.uuid4())
+    
+    sample_data = data.data or {
+        "sale.confirmed": {"order_id": "ORD-1001", "total": "280.00", "currency": "BOB", "channel": "pos", "items_count": 2},
+        "order.paid": {"order_id": "ORD-1001", "payment_method": "stripe", "status": "paid"},
+        "stock.low": {"sku": "PRENDA-01-M", "branch_code": "SC-01", "quantity": 3, "threshold": 5},
+        "stock.updated": {"sku": "PRENDA-01-M", "branch_code": "SC-01", "previous_quantity": 20, "new_quantity": 35},
+    }.get(data.event_type, {"sample_key": "sample_value", "tenant": str(ctx.tenant_id)})
+
+    payload = {
+        "id": event_id,
+        "type": data.event_type,
+        "created_at": now.isoformat(),
+        "tenant": {"slug": "mi-empresa"},
+        "data": sample_data,
+    }
+    body_str = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    
+    secret = "fs_whsec_simulacion_prueba_123456"
+    dispatched = False
+    delivery_status = None
+    status_code = None
+
+    if data.endpoint_id:
+        ep = db.scalar(
+            select(WebhookEndpointModel).where(
+                WebhookEndpointModel.id == data.endpoint_id,
+                WebhookEndpointModel.tenant_id == ctx.tenant_id,
+            )
+        )
+        if ep:
+            secret = decrypt_secret(ep.secret_enc)
+            # Enviar evento real
+            svc = WebhooksService(db)
+            event_model = svc.publicar(ctx.tenant_id, data.event_type, sample_data)
+            deliveries = svc.entregar_pendientes(batch_size=1)
+            dispatched = True
+            for d in deliveries:
+                if d.event_id == event_model.id:
+                    delivery_status = d.status
+                    status_code = d.status_code
+                    break
+
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp}.{body_str}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-FS-Event": data.event_type,
+        "X-FS-Delivery": str(uuid.uuid4()),
+        "X-FS-Timestamp": timestamp,
+        "X-FS-Signature": signature,
+    }
+
+    result = WebhookSimulateOut(
+        event_id=event_id,
+        event_type=data.event_type,
+        timestamp=timestamp,
+        payload=payload,
+        signature_preview=signature,
+        dispatched=dispatched,
+        delivery_status=delivery_status,
+        status_code=status_code,
+        headers_example=headers,
+    )
+    return ApiResponse(message="Simulación generada exitosamente.", data=result)

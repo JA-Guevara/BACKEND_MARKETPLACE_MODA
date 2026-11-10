@@ -11,6 +11,7 @@ from src.infrastructure.config.settings import settings
 from src.infrastructure.database.session import set_rls_context
 from src.plataforma_saas.infrastructure.models.tenant import TenantModel
 from src.plataforma_saas.infrastructure.models.tenant_backup import TenantBackupPolicy, TenantBackupRun
+from src.plataforma_saas.infrastructure.models.subscription import SubscriptionModel
 from src.plataforma_saas.application import tenant_backup_archive as archive
 from src.bitacora.application.use_cases.registrar_evento import RecordAuditEvent
 from src.shared.exceptions.domain_exception import ConflictError, NotFoundError, ValidationError
@@ -49,6 +50,108 @@ class TenantBackupService:
 
     def policy(self):
         return self.db.scalar(select(TenantBackupPolicy).where(TenantBackupPolicy.tenant_id==self.tenant_id))
+
+    @classmethod
+    def all_tenants_overview(cls, db, actor=None, search=None, policy_filter="all", page=1, page_size=20):
+        configured = True
+        try:
+            cipher()
+        except ConflictError:
+            configured = False
+
+        total_tenants = db.scalar(select(func.count(TenantModel.id)).where(TenantModel.is_sandbox.is_(False))) or 0
+        tenants_with_policy = db.scalar(
+            select(func.count(TenantBackupPolicy.id))
+            .join(TenantModel, TenantModel.id == TenantBackupPolicy.tenant_id)
+            .where(TenantModel.is_sandbox.is_(False), TenantBackupPolicy.enabled.is_(True))
+        ) or 0
+        total_backups = db.scalar(
+            select(func.count(TenantBackupRun.id))
+            .join(TenantModel, TenantModel.id == TenantBackupRun.tenant_id)
+            .where(TenantModel.is_sandbox.is_(False))
+        ) or 0
+        verified_backups = db.scalar(
+            select(func.count(TenantBackupRun.id))
+            .join(TenantModel, TenantModel.id == TenantBackupRun.tenant_id)
+            .where(TenantModel.is_sandbox.is_(False), TenantBackupRun.status == "verified")
+        ) or 0
+        total_storage_bytes = db.scalar(
+            select(func.coalesce(func.sum(TenantBackupRun.size_bytes), 0))
+            .join(TenantModel, TenantModel.id == TenantBackupRun.tenant_id)
+            .where(TenantModel.is_sandbox.is_(False))
+        ) or 0
+
+        query = select(TenantModel).where(TenantModel.is_sandbox.is_(False))
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            query = query.where(or_(TenantModel.trade_name.ilike(term), TenantModel.slug.ilike(term), TenantModel.legal_name.ilike(term)))
+
+        if policy_filter == "enabled":
+            query = query.join(TenantBackupPolicy, TenantBackupPolicy.tenant_id == TenantModel.id).where(TenantBackupPolicy.enabled.is_(True))
+        elif policy_filter == "disabled":
+            query = query.outerjoin(TenantBackupPolicy, TenantBackupPolicy.tenant_id == TenantModel.id).where(
+                or_(TenantBackupPolicy.id.is_(None), TenantBackupPolicy.enabled.is_(False))
+            )
+
+        total_filtered = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        tenants = db.scalars(query.order_by(TenantModel.trade_name.asc()).offset((page - 1) * page_size).limit(page_size)).all()
+
+        items = []
+        for t in tenants:
+            pol = db.scalar(select(TenantBackupPolicy).where(TenantBackupPolicy.tenant_id == t.id))
+            last_run = db.scalar(
+                select(TenantBackupRun)
+                .where(TenantBackupRun.tenant_id == t.id)
+                .order_by(TenantBackupRun.created_at.desc(), TenantBackupRun.id.desc())
+                .limit(1)
+            )
+            runs_count = db.scalar(select(func.count()).select_from(TenantBackupRun).where(TenantBackupRun.tenant_id == t.id)) or 0
+            runs_size = db.scalar(select(func.coalesce(func.sum(TenantBackupRun.size_bytes), 0)).where(TenantBackupRun.tenant_id == t.id)) or 0
+
+            plan_code = "SIN_PLAN"
+            sub = db.scalar(
+                select(SubscriptionModel)
+                .where(SubscriptionModel.tenant_id == t.id, SubscriptionModel.closed_at.is_(None))
+                .order_by(SubscriptionModel.created_at.desc())
+                .limit(1)
+            )
+            if sub and sub.plan:
+                plan_code = sub.plan.code
+
+            items.append({
+                "tenant_id": str(t.id),
+                "trade_name": t.trade_name,
+                "legal_name": t.legal_name,
+                "slug": t.slug,
+                "status": t.status,
+                "plan_code": plan_code,
+                "policy": {
+                    "enabled": pol.enabled if pol else False,
+                    "frequency": pol.frequency if pol else "daily",
+                    "hour": pol.hour if pol else 3,
+                    "timezone": pol.timezone if pol else "America/La_Paz",
+                    "retention": pol.retention if pol else 7,
+                    "next_run_at": pol.next_run_at.isoformat() if (pol and pol.next_run_at) else None,
+                },
+                "last_backup": public_run(last_run) if last_run else None,
+                "total_backups": runs_count,
+                "total_size_bytes": runs_size,
+            })
+
+        return {
+            "summary": {
+                "total_tenants": total_tenants,
+                "tenants_with_policy": tenants_with_policy,
+                "total_backups": total_backups,
+                "verified_backups": verified_backups,
+                "total_storage_bytes": total_storage_bytes,
+                "configured": configured,
+            },
+            "items": items,
+            "page": page,
+            "page_size": page_size,
+            "total": total_filtered,
+        }
 
     def status(self, page=1):
         tenant=self.db.get(TenantModel,self.tenant_id)

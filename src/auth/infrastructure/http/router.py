@@ -176,10 +176,9 @@ def me(ctx: AccessContext = Depends(get_access_context), db: Session = Depends(g
         db.commit()
     elif user.tenant_id:
         response.tenant = TenantSummary.model_validate(SaasRepository(db).get_tenant(user.tenant_id))
-        is_client = AuthService.is_client_user(user)
-        if not is_client:
+        try:
             response.subscription = PlanGuard(db).resumen(user.tenant_id)
-        else:
+        except Exception:
             response.subscription = None
         db.commit()
     response.authorized_branches = _authorized_branches(db, ctx)

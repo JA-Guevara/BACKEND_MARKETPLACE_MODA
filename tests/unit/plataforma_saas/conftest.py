@@ -43,6 +43,7 @@ def create_world(engine=None):
         "promotions.read", "promotions.write", "devices.read", "devices.write",
         "modules.read", "modules.write", "platform_roles.read", "platform_roles.write", "tenant_users.write", "sandbox.manage",
         "storefront.write", "payment_methods.write", "catalog_templates.write", "upgrade_requests.manage",
+        "integrations.read", "integrations.write",
     ]
     platform_codes = {
         "tenants.read", "tenants.write", "plans.read", "plans.write", "subscriptions.read", "subscriptions.write",
@@ -66,10 +67,10 @@ def create_world(engine=None):
     client_role = RoleModel(code="client", name="Cliente", is_system=True, audience="TENANT")
     platform = UserModel(email="plataforma@example.com", first_name="Admin", last_name="Plataforma", password_hash=PasswordHasher().hash(TEST_PASSWORD), is_verified=True, roles=[platform_role])
     plans = []
-    initial_features = tuple(dict.fromkeys((*FUNCIONES, "inventory", "promotions", "virtual_tryon", "devices_audit", "exchanges")))
+    initial_features = tuple(dict.fromkeys((*FUNCIONES, "inventory", "promotions", "virtual_tryon", "devices_audit", "exchanges", "integrations")))
     for code, limit in [("BASICO", 2), ("PROFESIONAL", 10)]:
         plan = PlanModel(code=code, name=code.title(), reference_price=350 if code == "BASICO" else 890, duration_days=30,
-            features=[PlanFeatureModel(feature_code=feature, enabled=code == "PROFESIONAL" or feature not in ("ai_reports", "ml_analytics")) for feature in initial_features]+[PlanFeatureModel(feature_code="max_active_branches", enabled=True, limit_value=limit)])
+            features=[PlanFeatureModel(feature_code=feature, enabled=code == "PROFESIONAL" or feature not in ("ai_reports", "ml_analytics", "integrations")) for feature in initial_features]+[PlanFeatureModel(feature_code="max_active_branches", enabled=True, limit_value=limit)])
         plans.append(plan)
     db.add_all([platform, admin_role, store_manager_role, cashier_role, client_role, *plans])
     db.flush()

@@ -32,6 +32,7 @@ ALLOWED_INTEGRATION_SCOPES = {
     "sales.read",
     "orders.read",
     "stock.read",
+    "stock.write",
     "catalog.read",
     "customers.read",
     "reservations.read",

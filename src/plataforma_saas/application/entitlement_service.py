@@ -46,6 +46,8 @@ DEFAULT_MODULE_PERMISSION_MAPPING = {
     "exchanges.write": "exchanges",
     "devices.read": "devices_audit",
     "devices.write": "devices_audit",
+    "integrations.read": "integrations",
+    "integrations.write": "integrations",
 }
 
 DEFAULT_CATALOG = {
@@ -61,6 +63,7 @@ DEFAULT_CATALOG = {
     "virtual_tryon": {"kind": "ADDON", "lifecycle": "GA", "name": "Probador virtual (RA)"},
     "exchanges": {"kind": "ADDON", "lifecycle": "GA", "name": "Cambios de prendas"},
     "devices_audit": {"kind": "ADDON", "lifecycle": "GA", "name": "Dispositivos y auditoría"},
+    "integrations": {"kind": "ADDON", "lifecycle": "GA", "name": "Integraciones API & Webhooks"},
 }
 
 
