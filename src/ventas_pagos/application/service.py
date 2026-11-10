@@ -462,7 +462,7 @@ class CommerceService:
         if event.get("type") not in supported:
             return {"received": True}
         session = event["data"]["object"]
-        order = self.db.scalar(select(OrderModel).where(OrderModel.stripe_session_id == session["id"], OrderModel.stripe_account_id.is_(None)).with_for_update())
+        order = self.db.scalar(select(OrderModel).where(OrderModel.stripe_session_id == session["id"]).with_for_update())
         if not order:
             raise ConflictError("Sesion pendiente de asociacion; Stripe debe reintentar.")
         if self.db.scalar(select(WebhookEventModel.id).where(WebhookEventModel.event_id == event["id"])):
