@@ -79,7 +79,7 @@ class SnapshotService:
                 CashPointModel.tenant_id == self.ctx.tenant_id,
                 CashPointModel.branch_id.in_(branch_ids),
                 CashPointModel.is_active.is_(True), CashPointModel.deleted_at.is_(None),
-            ))) if "commerce.write" in permissions else [],
+            ))),
             price_valid_until=generated + timedelta(hours=settings.offline_price_validity_hours),
             products=product_dtos,
             variants=[SnapshotVariant(id=v.id, product_id=v.product_id, sku=v.sku, size=v.size.name, color=v.color.name,

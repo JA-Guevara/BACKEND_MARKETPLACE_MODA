@@ -499,7 +499,7 @@ class SyncService:
         # 2. Validar tipo y permisos
         user_perms = get_permission_codes(self.ctx.user) if getattr(self.ctx, "user", None) else set()
         if op.type == "SALE":
-            if "commerce.write" not in user_perms:
+            if "commerce.write" not in user_perms and "sync.write" not in user_perms and not getattr(self.ctx.user, "is_platform_admin", False):
                 return self._record_rejection(op, batch, "forbidden_operation_type", "No tiene permisos para sincronizar ventas.")
             if op.payload.get("user_id") and str(op.payload["user_id"]) != str(self.ctx.user.id):
                 return self._record_rejection(op, batch, "invalid_payload", "El responsable no coincide con quien envía la operación.")
