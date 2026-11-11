@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 
-OperationType = Literal["SALE", "RESERVATION"]
+OperationType = Literal["SALE", "RESERVATION", "PURCHASE"]
 OperationStatus = Literal["CONFIRMED", "CONFLICT", "REJECTED", "UNKNOWN", "RETRY"]
 ConflictType = Literal["STOCK", "PRICE", "SUBSCRIPTION", "PRODUCT_INACTIVE"]
 ConflictAction = Literal["ADJUST", "AUTHORIZE_PRICE", "CANCEL", "RETRY"]
@@ -28,6 +28,14 @@ class OfflineSalePayload(BaseModel):
     discount_total: Decimal = Field(default=Decimal("0"), ge=0, allow_inf_nan=False)
     cash_received: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     payment_method: Literal["cash"] = "cash"
+
+
+class OfflinePurchasePayload(BaseModel):
+    items: list[OfflineSaleLine] = Field(min_length=1, max_length=100)
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    payment_method: Literal["cash", "stripe", "manual"] = "cash"
+    notes: str | None = None
 
 
 class SyncOperationIn(BaseModel):
@@ -83,6 +91,7 @@ class ConflictLineOut(BaseModel):
     available_quantity: int
     unit_price: str
     current_price: str
+    competing_operation: dict | None = None
 
 
 class ConflictOut(BaseModel):
@@ -100,6 +109,7 @@ class ConflictOut(BaseModel):
     local_folio: str | None = None
     created_at: datetime
     lines: list[ConflictLineOut] = []
+    competing_operation: dict | None = None
     resolution: str | None = None
     resolution_note: str | None = None
     resolved_by_name: str | None = None

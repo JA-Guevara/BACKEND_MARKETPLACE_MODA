@@ -63,8 +63,8 @@ def create_world(engine=None):
     platform_role = RoleModel(code="platform_admin", name="Plataforma", is_system=True, audience="PLATFORM", permissions=[p for p in permissions if p.code in platform_codes])
     admin_role = RoleModel(code="admin", name="Administrador", is_system=True, audience="TENANT", permissions=[p for p in permissions if p.code not in platform_codes or p.code == "ml_models.manage"])
     store_manager_role = RoleModel(code="store_manager", name="Encargado de tienda", is_system=True, audience="TENANT")
-    cashier_role = RoleModel(code="cashier", name="Cajero", is_system=True, audience="TENANT")
-    client_role = RoleModel(code="client", name="Cliente", is_system=True, audience="TENANT")
+    cashier_role = RoleModel(code="cashier", name="Cajero", is_system=True, audience="TENANT", permissions=[p for p in permissions if p.code in ("sync.write", "commerce.write")])
+    client_role = RoleModel(code="client", name="Cliente", is_system=True, audience="TENANT", permissions=[p for p in permissions if p.code == "sync.write"])
     platform = UserModel(email="plataforma@example.com", first_name="Admin", last_name="Plataforma", password_hash=PasswordHasher().hash(TEST_PASSWORD), is_verified=True, roles=[platform_role])
     plans = []
     initial_features = tuple(dict.fromkeys((*FUNCIONES, "inventory", "promotions", "virtual_tryon", "devices_audit", "exchanges", "integrations")))

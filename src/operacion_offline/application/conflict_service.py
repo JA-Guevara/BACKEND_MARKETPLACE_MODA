@@ -167,6 +167,8 @@ class ConflictService:
         elif data.action == "ADJUST":
             if conflict.type != "STOCK":
                 raise ValidationError("ADJUST solo aplica a conflictos de stock (STOCK).")
+            if op.type == "PURCHASE":
+                raise ValidationError("Las compras de clientes en conflicto de stock solo admiten cancelación.")
             if not data.quantities:
                 raise ValidationError("ADJUST requiere el diccionario de cantidades ajustadas.")
 
@@ -314,8 +316,13 @@ class ConflictService:
                         available_quantity=avail,
                         unit_price=str(line.get("unit_price", curr_price)),
                         current_price=str(curr_price),
+                        competing_operation=line.get("competing_operation"),
                     )
                 )
+
+        competing_op = next((line.competing_operation for line in lines_out if line.competing_operation), None)
+        if not competing_op and isinstance(c.detail, dict):
+            competing_op = c.detail.get("competing_operation")
 
         return ConflictOut(
             refund=(c.detail or {}).get('refund'),
@@ -332,6 +339,7 @@ class ConflictService:
             local_folio=op.payload.get("local_folio") if op and isinstance(op.payload, dict) else None,
             created_at=c.created_at,
             lines=lines_out,
+            competing_operation=competing_op,
             resolution=c.resolution,
             resolution_note=c.resolution_note,
             resolved_by_name=f"{resolver.first_name} {resolver.last_name}".strip() if resolver else None,

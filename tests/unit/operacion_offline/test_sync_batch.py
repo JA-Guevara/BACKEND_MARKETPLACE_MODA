@@ -197,3 +197,122 @@ def test_sync_status_y_detalle_lotes(saas_world):
     detail_res = w.client.get(f"/api/v1/sync/batches/{batch_id}", headers=headers)
     assert detail_res.status_code == 200
     assert len(detail_res.json()["data"]["operations"]) >= 1
+
+
+def test_sync_batch_compra_cliente_offline_exitosa_y_conflicto_stock(saas_world):
+    w = saas_world
+    headers_client = w.headers(w.customers[0])  # Usuario cliente normal sin commerce.write
+    crid_purchase_1 = uuid4()
+
+    purchase_payload_1 = {
+        "items": [
+            {
+                "variant_id": str(w.variants[0].id),
+                "quantity": 2,
+                "unit_price": str(w.products[0].base_price),
+            }
+        ],
+        "customer_name": "Juan Perez",
+        "customer_phone": "70012345",
+        "payment_method": "cash",
+    }
+
+    batch_body_1 = {
+        "device_id": "client-device-01",
+        "client_version": "mobile-2026.11",
+        "operations": [
+            {
+                "client_request_id": str(crid_purchase_1),
+                "type": "PURCHASE",
+                "branch_id": str(w.branches[0].id),
+                "device_id": "client-device-01",
+                "client_created_at": datetime.now(timezone.utc).isoformat(),
+                "payload": purchase_payload_1,
+            }
+        ],
+    }
+
+    # 1. Cliente 1 compra offline y sincroniza exitosamente
+    res1 = w.client.post("/api/v1/sync/batch", headers=headers_client, json=batch_body_1)
+    assert res1.status_code == 200, res1.text
+    data1 = res1.json()["data"]
+    assert len(data1["results"]) == 1
+    assert data1["results"][0]["status"] == "CONFIRMED"
+    assert data1["results"][0]["server_number"].startswith("FS-CMP-")
+
+    # Verificar pedido en BD
+    from uuid import UUID
+    order = w.db.scalar(select(OrderModel).where(OrderModel.id == UUID(data1["results"][0]["server_ref"])))
+    assert order is not None
+    assert order.origin == "OFFLINE"
+    assert order.status == "pending_payment"
+    assert order.payment_method == "manual"
+
+    # 2. Cliente 2 intenta comprar más de lo que queda o cuando se agota el stock
+    # Ajustamos el stock a 0 para simular que era la última unidad tomada
+    stock_row = w.db.scalar(select(StockModel).where(StockModel.variant_id == w.variants[0].id, StockModel.branch_id == w.branches[0].id))
+    stock_row.quantity = 0
+    w.db.commit()
+
+    crid_purchase_2 = uuid4()
+    batch_body_2 = {
+        "device_id": "client-device-02",
+        "client_version": "mobile-2026.11",
+        "operations": [
+            {
+                "client_request_id": str(crid_purchase_2),
+                "type": "PURCHASE",
+                "branch_id": str(w.branches[0].id),
+                "device_id": "client-device-02",
+                "client_created_at": datetime.now(timezone.utc).isoformat(),
+                "payload": purchase_payload_1,
+            }
+        ],
+    }
+
+    res2 = w.client.post("/api/v1/sync/batch", headers=headers_client, json=batch_body_2)
+    assert res2.status_code == 200, res2.text
+    data2 = res2.json()["data"]
+    assert len(data2["results"]) == 1
+    assert data2["results"][0]["status"] == "CONFLICT"
+    assert data2["results"][0]["conflict_type"] == "STOCK"
+    assert "no se realizó ningún cobro" in data2["results"][0]["message"]
+
+    # 3. Cliente 3 intenta enviar un precio alterado/manipulado (unit_price menor)
+    stock_row.quantity = 10
+    w.db.commit()
+
+    crid_purchase_3 = uuid4()
+    tampered_payload = {
+        "items": [
+            {
+                "variant_id": str(w.variants[0].id),
+                "quantity": 1,
+                "unit_price": "10.00",  # Precio real es 150.00
+            }
+        ],
+        "payment_method": "stripe",
+    }
+    batch_body_3 = {
+        "device_id": "client-device-03",
+        "client_version": "mobile-2026.11",
+        "operations": [
+            {
+                "client_request_id": str(crid_purchase_3),
+                "type": "PURCHASE",
+                "branch_id": str(w.branches[0].id),
+                "device_id": "client-device-03",
+                "client_created_at": datetime.now(timezone.utc).isoformat(),
+                "payload": tampered_payload,
+            }
+        ],
+    }
+
+    res3 = w.client.post("/api/v1/sync/batch", headers=headers_client, json=batch_body_3)
+    assert res3.status_code == 200, res3.text
+    data3 = res3.json()["data"]
+    assert len(data3["results"]) == 1
+    assert data3["results"][0]["status"] == "CONFLICT"
+    assert data3["results"][0]["conflict_type"] == "PRICE"
+    assert "precio" in data3["results"][0]["message"].lower()
+

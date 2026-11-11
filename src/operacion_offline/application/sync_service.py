@@ -20,6 +20,8 @@ from src.operacion_offline.infrastructure.models.sync import (
 )
 from src.operacion_offline.web.sync_schemas import (
     ConflictType,
+    OfflinePurchasePayload,
+    OfflineSalePayload,
     OperationStatus,
     SyncBatchDetailOut,
     SyncBatchIn,
@@ -28,7 +30,6 @@ from src.operacion_offline.web.sync_schemas import (
     SyncOperationIn,
     SyncOperationSummaryOut,
     SyncResultOut,
-    OfflineSalePayload,
 )
 from src.inventario_sucursales.application.services.user_branch_service import UserBranchService
 from src.reservas.application.use_cases.create_reserva import CrearReserva, ReservationStockError
@@ -50,7 +51,7 @@ from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, Pr
 from src.ventas_pagos.application.stock_service import StockService
 from src.ventas_pagos.domain.promociones import precio_final, vigente_en
 from src.ventas_pagos.infrastructure.engagement_models import PromotionModel, PromotionUseModel
-from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
+from src.ventas_pagos.infrastructure.models import OrderModel, StockModel, StockMovementModel
 
 
 class SyncConflictException(ConflictError):
@@ -70,6 +71,68 @@ def _canonical_hash(op: SyncOperationIn) -> str:
     }
     encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _buscar_operacion_competidora(
+    db: Session,
+    tenant_id: uuid.UUID,
+    variant_id: uuid.UUID,
+    branch_id: uuid.UUID,
+) -> dict[str, Any] | None:
+    # 1. Buscar último movimiento de stock de salida para esta variante en esta sucursal
+    latest_mov = db.scalar(
+        select(StockMovementModel).where(
+            StockMovementModel.variant_id == variant_id,
+            StockMovementModel.branch_id == branch_id,
+            StockMovementModel.delta < 0,
+        ).order_by(StockMovementModel.created_at.desc()).limit(1)
+    )
+    if latest_mov and latest_mov.reference:
+        # Buscar en SyncOperationModel
+        comp_op = db.scalar(
+            select(SyncOperationModel).where(
+                SyncOperationModel.tenant_id == tenant_id,
+                SyncOperationModel.server_number == latest_mov.reference,
+            ).limit(1)
+        )
+        if comp_op:
+            return {
+                "server_number": comp_op.server_number,
+                "device_id": comp_op.device_id,
+                "synchronized_at": comp_op.first_received_at.isoformat() if comp_op.first_received_at else None,
+            }
+        # Buscar en OrderModel
+        comp_ord = db.scalar(
+            select(OrderModel).where(
+                OrderModel.tenant_id == tenant_id,
+                OrderModel.number == latest_mov.reference,
+            ).limit(1)
+        )
+        if comp_ord:
+            sync_time = comp_ord.paid_at or comp_ord.created_at
+            return {
+                "server_number": comp_ord.number,
+                "device_id": comp_ord.device_id or "ONLINE",
+                "synchronized_at": sync_time.isoformat() if sync_time else None,
+            }
+
+    # 2. Si no hay movimiento o no se asoció a una orden, buscar la última operación confirmada en la sucursal que incluya esta prenda
+    last_ops = db.scalars(
+        select(SyncOperationModel).where(
+            SyncOperationModel.tenant_id == tenant_id,
+            SyncOperationModel.branch_id == branch_id,
+            SyncOperationModel.status == "CONFIRMED",
+        ).order_by(SyncOperationModel.first_received_at.desc()).limit(10)
+    ).all()
+    for op_candidate in last_ops:
+        items = op_candidate.payload.get("items", []) if isinstance(op_candidate.payload, dict) else []
+        if any(str(it_c.get("variant_id")) == str(variant_id) for it_c in items):
+            return {
+                "server_number": op_candidate.server_number,
+                "device_id": op_candidate.device_id,
+                "synchronized_at": op_candidate.first_received_at.isoformat() if op_candidate.first_received_at else None,
+            }
+    return None
 
 
 class OfflineSaleService:
@@ -179,6 +242,7 @@ class OfflineSaleService:
 
             if avail < req_qty:
                 stock_conflict = True
+                competing_info = _buscar_operacion_competidora(self.db, self.tenant_id, vid, branch_id)
                 conflict_lines.append({
                     "variant_id": str(vid),
                     "product_name": product.name,
@@ -186,6 +250,7 @@ class OfflineSaleService:
                     "available_quantity": avail,
                     "unit_price": str(client_unit),
                     "current_price": str(server_reg),
+                    "competing_operation": competing_info,
                 })
             elif offer_id_val:
                 try:
@@ -251,10 +316,14 @@ class OfflineSaleService:
             stock_changes.append((vid, req_qty))
 
         if stock_conflict:
+            comp_info = next((line.get("competing_operation") for line in conflict_lines if line.get("competing_operation")), None)
+            detail = {"lines": conflict_lines}
+            if comp_info:
+                detail["competing_operation"] = comp_info
             raise SyncConflictException(
                 "STOCK",
                 f"Stock insuficiente en {len(conflict_lines)} prenda(s).",
-                {"lines": conflict_lines},
+                detail,
             )
 
         if price_conflict:
@@ -338,6 +407,186 @@ class OfflineSaleService:
                 pass
         from src.ventas_pagos.application.service import CommerceService
         CommerceService(self.db, self.tenant_id)._publicar(order, "sale.confirmed")
+        return order
+
+
+class OfflinePurchaseService:
+    def __init__(self, db: Session, tenant_id: uuid.UUID):
+        self.db = db
+        self.tenant_id = tenant_id
+
+    def confirmar(
+        self,
+        op: SyncOperationIn,
+        actor: UserModel | None,
+    ) -> OrderModel:
+        payload = op.payload
+        branch_id = op.branch_id
+        try:
+            validated = OfflinePurchasePayload.model_validate(payload)
+        except PayloadValidationError:
+            raise ValidationError("La compra contiene cantidades o datos inválidos.") from None
+
+        if len({line.variant_id for line in validated.items}) != len(validated.items):
+            raise ValidationError("La compra contiene prendas repetidas.")
+
+        # 1. Validar sucursal
+        branch = self.db.scalar(
+            select(BranchModel).where(BranchModel.id == branch_id, BranchModel.tenant_id == self.tenant_id)
+        )
+        if not branch or not branch.is_active or branch.deleted_at:
+            raise NotFoundError(f"Sucursal {branch_id} no encontrada en la empresa.")
+
+        # 2. Validar prendas, variantes y stock con bloqueo pesimista
+        order_items = []
+        stock_changes = []
+        subtotal = Decimal("0.00")
+        conflict_lines = []
+        stock_conflict = False
+        price_conflict = False
+
+        for it in validated.items:
+            vid = it.variant_id
+            variant = self.db.get(ProductVariantModel, vid)
+            if not variant:
+                raise NotFoundError(f"Variante {vid} no encontrada.")
+
+            product = self.db.get(ProductModel, variant.product_id)
+            if not product or product.tenant_id != self.tenant_id:
+                raise NotFoundError("La prenda no pertenece a esta empresa.")
+            if not product.is_active or product.deleted_at or not variant.is_active:
+                raise SyncConflictException(
+                    "PRODUCT_INACTIVE",
+                    f"La prenda {variant.sku} está inactiva o ya no pertenece al catálogo.",
+                    {"variant_id": str(vid), "sku": variant.sku},
+                )
+
+            req_qty = it.quantity
+            if req_qty <= 0:
+                continue
+
+            stock_row = self.db.scalar(
+                select(StockModel).where(
+                    StockModel.variant_id == vid,
+                    StockModel.branch_id == branch_id,
+                ).with_for_update().execution_options(populate_existing=True)
+            )
+            avail = stock_row.quantity if stock_row else 0
+
+            server_reg = Decimal(str(variant.price_override if variant.price_override is not None else product.base_price))
+            client_unit = Decimal(str(it.unit_price if it.unit_price is not None else server_reg))
+
+            # Validación de precio: el cliente no puede alterar precios ni usar precios desactualizados
+            if abs(server_reg - client_unit) > Decimal("0.01"):
+                price_conflict = True
+                conflict_lines.append({
+                    "variant_id": str(vid),
+                    "product_name": product.name,
+                    "requested_quantity": req_qty,
+                    "available_quantity": avail,
+                    "unit_price": str(client_unit),
+                    "current_price": str(server_reg),
+                })
+            elif avail < req_qty:
+                stock_conflict = True
+                competing_info = _buscar_operacion_competidora(self.db, self.tenant_id, vid, branch_id)
+                conflict_lines.append({
+                    "variant_id": str(vid),
+                    "product_name": product.name,
+                    "requested_quantity": req_qty,
+                    "available_quantity": avail,
+                    "unit_price": str(client_unit),
+                    "current_price": str(server_reg),
+                    "competing_operation": competing_info,
+                })
+            else:
+                stock_changes.append((vid, req_qty))
+                line_tot = (client_unit * Decimal(req_qty)).quantize(Decimal("0.01"))
+                subtotal += line_tot
+                order_items.append({
+                    "variant_id": str(vid),
+                    "sku": variant.sku,
+                    "product_name": product.name,
+                    "quantity": req_qty,
+                    "unit_price": str(client_unit),
+                    "regular_price": str(server_reg),
+                    "total": str(line_tot),
+                })
+
+        if price_conflict:
+            raise SyncConflictException(
+                "PRICE",
+                f"El precio de una o más prendas ha cambiado desde la descarga del catálogo.",
+                {"lines": conflict_lines},
+            )
+
+        if stock_conflict:
+            comp_info = next((line.get("competing_operation") for line in conflict_lines if line.get("competing_operation")), None)
+            detail = {"lines": conflict_lines}
+            if comp_info:
+                detail["competing_operation"] = comp_info
+            raise SyncConflictException(
+                "STOCK",
+                f"Stock insuficiente en {len(conflict_lines)} prenda(s). Compra cancelada, no se realizó ningún cobro.",
+                detail,
+            )
+
+        if not order_items:
+            raise ValidationError("La compra debe conservar al menos una unidad.")
+
+        # 3. Descontar stock
+        stock_svc = StockService(self.db)
+        order_number = f"FS-CMP-{uuid.uuid4().hex[:6].upper()}"
+        for vid, qty in stock_changes:
+            stock_svc.change(
+                variant_id=vid,
+                branch_id=branch_id,
+                delta=-qty,
+                kind="client_offline_purchase",
+                reason=f"Compra offline confirmada {order_number}",
+                actor_id=actor.id if actor else None,
+                reference=order_number,
+            )
+
+        # 4. Crear orden con estado estándar pending_payment
+        pay_method = "stripe" if validated.payment_method == "stripe" else "manual"
+        note = (
+            "Compra offline sincronizada. Existencias apartadas para retiro y pago en sucursal."
+            if pay_method == "manual"
+            else "Compra offline sincronizada. Pendiente de pago con tarjeta."
+        )
+        order = OrderModel(
+            id=uuid.uuid4(),
+            tenant_id=self.tenant_id,
+            number=order_number,
+            user_id=actor.id if actor else None,
+            sales_channel="mobile",
+            branch_id=branch_id,
+            status="pending_payment",
+            payment_status="pending",
+            payment_method=pay_method,
+            total=subtotal,
+            subtotal=subtotal,
+            discount_total=Decimal("0.00"),
+            currency="BOB",
+            address={"city": "Santa Cruz", "address": branch.address or ""},
+            customer_email=getattr(actor, "email", None) or "cliente-offline@fashionstore.local",
+            items=order_items,
+            origin="OFFLINE",
+            device_id=op.device_id,
+            client_request_id=op.client_request_id,
+            client_created_at=op.client_created_at,
+            paid_at=None,
+            tracking=[{
+                "status": "pending_payment",
+                "note": note,
+                "date": datetime.now(timezone.utc).isoformat(),
+            }],
+        )
+        self.db.add(order)
+        self.db.flush()
+        from src.ventas_pagos.application.service import CommerceService
+        CommerceService(self.db, self.tenant_id)._publicar(order, "purchase.confirmed")
         return order
 
 
@@ -499,13 +748,15 @@ class SyncService:
         # 2. Validar tipo y permisos
         user_perms = get_permission_codes(self.ctx.user) if getattr(self.ctx, "user", None) else set()
         if op.type == "SALE":
-            if "commerce.write" not in user_perms and "sync.write" not in user_perms and not getattr(self.ctx.user, "is_platform_admin", False):
+            if "commerce.write" not in user_perms and not getattr(self.ctx.user, "is_platform_admin", False):
                 return self._record_rejection(op, batch, "forbidden_operation_type", "No tiene permisos para sincronizar ventas.")
             if op.payload.get("user_id") and str(op.payload["user_id"]) != str(self.ctx.user.id):
                 return self._record_rejection(op, batch, "invalid_payload", "El responsable no coincide con quien envía la operación.")
         elif op.type == "RESERVATION":
-            if "reservations.write" not in user_perms and "sync.write" not in user_perms:
+            if "reservations.write" not in user_perms and not getattr(self.ctx.user, "is_platform_admin", False):
                 return self._record_rejection(op, batch, "forbidden_operation_type", "No tiene permisos para sincronizar reservas.")
+        elif op.type == "PURCHASE":
+            pass
 
         try:
             PlanGuard(self.db).exigir_funcion(self.ctx.tenant_id, "offline")
@@ -601,13 +852,49 @@ class SyncService:
             except (ValidationError, NotFoundError, AuthorizationError) as ve:
                 return self._record_rejection(op, batch, "validation_error", str(ve), phash)
 
+        elif op.type == "PURCHASE":
+            svc = OfflinePurchaseService(self.db, self.ctx.tenant_id)
+            try:
+                order = svc.confirmar(op, getattr(self.ctx, "user", None))
+                rec = SyncOperationModel(
+                    id=uuid.uuid4(),
+                    tenant_id=self.ctx.tenant_id,
+                    client_request_id=op.client_request_id,
+                    type="PURCHASE",
+                    status="CONFIRMED",
+                    branch_id=op.branch_id,
+                    device_id=op.device_id,
+                    user_id=getattr(self.ctx.user, "id", None),
+                    batch_id=batch.id,
+                    payload={**op.payload, "_client_created_at": op.client_created_at.isoformat()},
+                    payload_hash=phash,
+                    server_ref=order.id,
+                    server_number=order.number,
+                    message="Compra offline sincronizada y confirmada exitosamente.",
+                    submitted_by_user_id=getattr(self.ctx.user, "id", None),
+                )
+                self.db.add(rec)
+                self.db.flush()
+                return SyncResultOut(
+                    client_request_id=op.client_request_id,
+                    status="CONFIRMED",
+                    server_ref=order.id,
+                    server_number=order.number,
+                    message=rec.message,
+                )
+            except SyncConflictException as ce:
+                return self._record_conflict(op, batch, ce.conflict_type, str(ce), ce.detail, phash)
+            except (ValidationError, NotFoundError, AuthorizationError) as ve:
+                return self._record_rejection(op, batch, "validation_error", str(ve), phash)
+
         return self._record_rejection(op, batch, "unsupported_type", f"Tipo de operación {op.type} no soportado.", phash)
 
     def _record_conflict(self, op, batch, conflict_type, message, detail, payload_hash):
+        user_id = getattr(self.ctx.user, "id", None) if getattr(self.ctx, "user", None) else None
         record = SyncOperationModel(
             id=uuid.uuid4(), tenant_id=self.ctx.tenant_id, client_request_id=op.client_request_id,
             type=op.type, status="CONFLICT", branch_id=op.branch_id, device_id=op.device_id,
-            user_id=self.ctx.user.id, submitted_by_user_id=self.ctx.user.id, batch_id=batch.id,
+            user_id=user_id, submitted_by_user_id=user_id, batch_id=batch.id,
             payload={**op.payload, "_client_created_at": op.client_created_at.isoformat()},
             payload_hash=payload_hash, message=message,
         )

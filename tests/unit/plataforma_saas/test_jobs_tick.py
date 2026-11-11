@@ -71,3 +71,111 @@ def test_tick_produce_job_runs_sin_datos_personales(world):
                     assert k.lower() not in forbidden_keys
                     if isinstance(v, str):
                         assert "@" not in v
+
+
+def test_orders_expire_holds_libera_existencias_y_cancela(world):
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+    from decimal import Decimal
+    from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
+
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(hours=3)
+
+    # Crear una orden con apartado web (stripe) de hace 3 horas
+    order = OrderModel(
+        id=uuid4(),
+        tenant_id=world.tenants[0].id,
+        number="FS-TEST-HOLD",
+        user_id=world.customers[0].id,
+        branch_id=world.branches[0].id,
+        customer_email=world.customers[0].email,
+        payment_method="stripe",
+        status="pending_payment",
+        payment_status="pending",
+        total=Decimal("150.00"),
+        subtotal=Decimal("150.00"),
+        discount_total=Decimal("0.00"),
+        currency="BOB",
+        address={"city": "Santa Cruz"},
+        items=[{
+            "variant_id": str(world.variants[0].id),
+            "quantity": 2,
+            "unit_price": "75.00",
+            "total": "150.00",
+        }],
+        created_at=past,
+    )
+    world.db.add(order)
+
+    # Stock actual
+    stock_row = world.db.scalar(select(StockModel).where(StockModel.variant_id == world.variants[0].id, StockModel.branch_id == world.branches[0].id))
+    initial_stock = stock_row.quantity
+    world.db.commit()
+
+    runner = TareasProgramadas(world.db)
+    runs = runner.tick(ahora=now)
+    expire_run = next(r for r in runs if r.job == "orders.expire_holds")
+    assert expire_run.status == "ok"
+    assert expire_run.changes["released_orders"] >= 1
+
+    # Verificar que la orden pasó a cancelled
+    world.db.refresh(order)
+    assert order.status == "cancelled"
+    assert order.payment_status == "cancelled"
+
+    # Verificar que el stock fue repuesto (+2)
+    world.db.refresh(stock_row)
+    assert stock_row.quantity == initial_stock + 2
+
+
+def test_orders_expire_holds_salta_si_reconcile_falla(world):
+    """Si Stripe falla durante la conciliación (timeout o corte), NO cancela el pedido en este tick."""
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+    from decimal import Decimal
+    from unittest.mock import patch
+    from src.ventas_pagos.infrastructure.models import OrderModel
+    from src.ventas_pagos.application.service import CommerceService
+
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(hours=3)
+
+    order = OrderModel(
+        id=uuid4(),
+        tenant_id=world.tenants[0].id,
+        number="FS-TEST-STRIPE-FAIL",
+        user_id=world.customers[0].id,
+        branch_id=world.branches[0].id,
+        customer_email=world.customers[0].email,
+        payment_method="stripe",
+        stripe_session_id="cs_test_failure_sim",
+        status="pending_payment",
+        payment_status="pending",
+        total=Decimal("100.00"),
+        subtotal=Decimal("100.00"),
+        discount_total=Decimal("0.00"),
+        currency="BOB",
+        address={"city": "Santa Cruz"},
+        items=[{
+            "variant_id": str(world.variants[0].id),
+            "quantity": 1,
+            "unit_price": "100.00",
+            "total": "100.00",
+        }],
+        created_at=past,
+    )
+    world.db.add(order)
+    world.db.commit()
+
+    with patch.object(CommerceService, "reconcile_payment", side_effect=RuntimeError("Stripe network timeout")):
+        runner = TareasProgramadas(world.db)
+        runs = runner.tick(ahora=now)
+        expire_run = next(r for r in runs if r.job == "orders.expire_holds")
+        assert expire_run.status == "ok"
+
+    world.db.refresh(order)
+    # No debe haberse cancelado porque la conciliación falló por red/Stripe
+    assert order.status == "pending_payment"
+
+

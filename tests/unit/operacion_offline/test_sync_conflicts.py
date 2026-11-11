@@ -177,3 +177,133 @@ def test_sync_conflict_cancel(saas_world):
     op = w.db.scalar(select(SyncOperationModel).where(SyncOperationModel.client_request_id == crid))
     assert op.status == "REJECTED"
     assert op.reason_code == "cancelled_by_manager"
+
+
+def test_stock_conflict_identifica_operacion_competidora(saas_world):
+    """Pregunta 4 y 5 del examen: dos cajeros venden sin conexión la última prenda.
+    El primero confirma y el segundo entra en conflicto mostrando la operación que ganó.
+    """
+    w = saas_world
+    headers = w.headers(w.admins[0])
+    vid = w.variants[0].id
+    branch_id = w.branches[0].id
+    price_str = str(w.products[0].base_price)
+
+    # Ajustar stock inicial a exactamente 1 unidad
+    stock_row = w.db.scalar(select(StockModel).where(StockModel.variant_id == vid, StockModel.branch_id == branch_id))
+    stock_row.quantity = 1
+    w.db.commit()
+
+    # Venta 1 del Cajero A (dispositivo Alpha): vende 1 unidad
+    crid_1 = uuid4()
+    body_1 = {
+        "device_id": "pos-device-alpha",
+        "client_version": "1.0",
+        "operations": [{
+            "client_request_id": str(crid_1),
+            "type": "SALE",
+            "branch_id": str(branch_id),
+            "device_id": "pos-device-alpha",
+            "client_created_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "user_id": str(w.admins[0].id),
+                "items": [{"variant_id": str(vid), "quantity": 1, "unit_price": price_str, "regular_price": price_str}],
+                "subtotal": price_str,
+                "total": price_str,
+                "local_folio": "FOLIO-ALPHA-01",
+            },
+        }],
+    }
+    res_1 = w.client.post("/api/v1/sync/batch", headers=headers, json=body_1)
+    assert res_1.status_code == 200
+    r1 = res_1.json()["data"]["results"][0]
+    assert r1["status"] == "CONFIRMED"
+    server_number_1 = r1["server_number"]
+    assert server_number_1 is not None
+
+    # Venta 2 del Cajero B (dispositivo Beta): también vendió esa 1 unidad sin conexión
+    crid_2 = uuid4()
+    body_2 = {
+        "device_id": "pos-device-beta",
+        "client_version": "1.0",
+        "operations": [{
+            "client_request_id": str(crid_2),
+            "type": "SALE",
+            "branch_id": str(branch_id),
+            "device_id": "pos-device-beta",
+            "client_created_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "user_id": str(w.admins[0].id),
+                "items": [{"variant_id": str(vid), "quantity": 1, "unit_price": price_str, "regular_price": price_str}],
+                "subtotal": price_str,
+                "total": price_str,
+                "local_folio": "FOLIO-BETA-01",
+            },
+        }],
+    }
+    res_2 = w.client.post("/api/v1/sync/batch", headers=headers, json=body_2)
+    assert res_2.status_code == 200
+    r2 = res_2.json()["data"]["results"][0]
+    assert r2["status"] == "CONFLICT"
+    assert r2["conflict_type"] == "STOCK"
+    conflict_id = r2["conflict_id"]
+
+    # Consultar detalle del conflicto en la API
+    c_det = w.client.get(f"/api/v1/sync/conflicts/{conflict_id}", headers=headers)
+    assert c_det.status_code == 200
+    data = c_det.json()["data"]
+    assert data["competing_operation"] is not None
+    assert data["competing_operation"]["server_number"] == server_number_1
+    assert data["competing_operation"]["device_id"] == "pos-device-alpha"
+    assert data["lines"][0]["competing_operation"]["server_number"] == server_number_1
+
+
+def test_conflict_purchase_rechaza_adjust(saas_world):
+    """Una compra offline de cliente en conflicto de stock no admite ADJUST de mostrador."""
+    w = saas_world
+    headers_cli = w.headers(w.customers[0])
+    headers_adm = w.headers(w.admins[0])
+    vid = w.variants[0].id
+    branch_id = w.branches[0].id
+
+    # Agotar stock a 0
+    stock_row = w.db.scalar(select(StockModel).where(StockModel.variant_id == vid, StockModel.branch_id == branch_id))
+    stock_row.quantity = 0
+    w.db.commit()
+
+    crid = uuid4()
+    body = {
+        "device_id": "client-app-mobile",
+        "client_version": "1.0",
+        "operations": [{
+            "client_request_id": str(crid),
+            "type": "PURCHASE",
+            "branch_id": str(branch_id),
+            "device_id": "client-app-mobile",
+            "client_created_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "items": [{"variant_id": str(vid), "quantity": 1, "unit_price": str(w.products[0].base_price)}],
+                "payment_method": "manual",
+            },
+        }],
+    }
+    res = w.client.post("/api/v1/sync/batch", headers=headers_cli, json=body)
+    assert res.status_code == 200
+    r0 = res.json()["data"]["results"][0]
+    assert r0["status"] == "CONFLICT"
+    conflict_id = r0["conflict_id"]
+    assert conflict_id is not None
+
+    # Intentar resolver con ADJUST debe fallar
+    res_adjust = w.client.post(
+        f"/api/v1/sync/conflicts/{conflict_id}/resolve",
+        headers=headers_adm,
+        json={
+            "action": "ADJUST",
+            "quantities": {str(vid): 1},
+            "note": "Ajuste no permitido",
+        },
+    )
+    assert res_adjust.status_code == 422
+    assert "solo admiten cancelación" in res_adjust.json()["error"]["message"]
+

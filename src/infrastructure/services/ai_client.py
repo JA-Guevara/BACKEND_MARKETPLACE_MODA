@@ -59,11 +59,10 @@ class AIService:
         if "generativelanguage.googleapis.com" in settings.ai_base_url:
             last_err = None
             for idx, model in enumerate(candidate_models):
-                attempt_timeout = min(timeout_sec, 5.0) if idx < len(candidate_models) - 1 else min(timeout_sec, 7.0)
-                url = (
-                    f"https://generativelanguage.googleapis.com/v1beta/models/"
-                    f"{model}:generateContent?key={settings.ai_api_key}"
-                )
+                attempt_timeout = min(timeout_sec, 3.5) if idx < len(candidate_models) - 1 else min(timeout_sec, 5.0)
+                # Pasar la clave por cabecera x-goog-api-key para no exponerla en URL ni en logs de error
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                headers = {"x-goog-api-key": settings.ai_api_key}
                 payload = {
                     "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -77,7 +76,7 @@ class AIService:
                     payload["generationConfig"]["responseMimeType"] = "application/json"
 
                 try:
-                    response = httpx.post(url, json=payload, timeout=attempt_timeout)
+                    response = httpx.post(url, headers=headers, json=payload, timeout=attempt_timeout)
                     response.raise_for_status()
                     data = response.json()
                     candidates = data.get("candidates", [])
@@ -88,7 +87,7 @@ class AIService:
                     if text:
                         return text
                 except (httpx.HTTPError, httpx.TimeoutException, KeyError, IndexError) as exc:
-                    logger.warning("AIService Gemini nativo fallo con modelo %s: %s. Probando siguiente...", model, exc)
+                    logger.warning("AIService Gemini nativo fallo con modelo %s. Probando siguiente...", model)
                     last_err = exc
                     continue
 

@@ -144,3 +144,184 @@ def test_ejecutor_aislamiento_multitenant_y_reportes(saas_world):
     res_sem = ejecutor.ejecutar(SpecValidada(spec=spec_sem, tenant_id=tenant_a))
     assert len(res_sem.rows) >= 1
     assert res_sem.totals["revenue"] == 350.0
+
+
+def test_ingresos_por_categoria_resuelve_desde_bd_sin_category_name(saas_world):
+    w = saas_world
+    tenant_a = w.tenants[0].id
+    branch_a = w.branches[0].id
+    variant_a = w.variants[0]  # Pertenece a categoría "Vestidos" en conftest
+
+    order_real = OrderModel(
+        tenant_id=tenant_a,
+        branch_id=branch_a,
+        number="ORD-REAL-CAT",
+        customer_email="cat@test.com",
+        status="paid",
+        payment_method="cash",
+        total=Decimal("300.00"),
+        subtotal=Decimal("300.00"),
+        currency="BOB",
+        address={},
+        # Ítem como lo genera create_order real: sin category_name
+        items=[
+            {
+                "variant_id": str(variant_a.id),
+                "product_id": str(variant_a.product_id),
+                "name": "Vestido Real",
+                "quantity": 2,
+                "unit_price": "150.00",
+                "line_total": "300.00",
+                "sku": variant_a.sku,
+            }
+        ],
+        created_at=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+    )
+    w.db.add(order_real)
+    w.db.commit()
+
+    ejecutor = Ejecutor(w.db)
+    periodo_sep = Period(date_from=date(2026, 9, 1), date_to=date(2026, 9, 30), label="Septiembre")
+    spec_cat = ReportSpec(
+        definition_code="ingresos_por_categoria",
+        metrics=[Metric.REVENUE],
+        dimensions=[Dimension.CATEGORY],
+        filters=Filters(period=periodo_sep),
+    )
+    res_cat = ejecutor.ejecutar(SpecValidada(spec=spec_cat, tenant_id=tenant_a))
+    # Debe resolver la categoría "Vestidos" mediante variant_id, NO caer en "General"
+    assert any(r["category"] == "Vestidos" and r["revenue"] >= 300.0 for r in res_cat.rows)
+
+
+def test_top_productos_por_sucursal_limita_por_sucursal(saas_world):
+    """Verifica que al agrupar por sucursal, el top_n se aplica por cada sucursal."""
+    w = saas_world
+    tenant_a = w.tenants[0].id
+    branch_1 = w.branches[0].id
+    # Crear una segunda sucursal para tenant_a
+    from src.inventario_sucursales.infrastructure.models.organization import BranchModel
+    branch_2 = BranchModel(
+        id=uuid.uuid4(),
+        tenant_id=tenant_a,
+        city_id=w.branches[0].city_id,
+        name="Sucursal Norte",
+        code="SUC-NORTE",
+        address="Av. Norte 123",
+        is_active=True,
+    )
+    w.db.add(branch_2)
+
+    # En branch_1: 3 productos distintos (10, 8, 5 unidades)
+    # En branch_2: 3 productos distintos (20, 15, 12 unidades)
+    orders = [
+        OrderModel(
+            tenant_id=tenant_a,
+            branch_id=branch_1,
+            number="ORD-B1-P1",
+            customer_email="c@test.com",
+            status="paid",
+            payment_method="cash",
+            total=Decimal("100"),
+            subtotal=Decimal("100"),
+            currency="BOB",
+            address={},
+            items=[{"product_name": "Prod B1-A", "quantity": 10, "unit_price": "10"}],
+            created_at=datetime(2026, 9, 5, tzinfo=timezone.utc),
+        ),
+        OrderModel(
+            tenant_id=tenant_a,
+            branch_id=branch_1,
+            number="ORD-B1-P2",
+            customer_email="c@test.com",
+            status="paid",
+            payment_method="cash",
+            total=Decimal("80"),
+            subtotal=Decimal("80"),
+            currency="BOB",
+            address={},
+            items=[{"product_name": "Prod B1-B", "quantity": 8, "unit_price": "10"}],
+            created_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+        ),
+        OrderModel(
+            tenant_id=tenant_a,
+            branch_id=branch_1,
+            number="ORD-B1-P3",
+            customer_email="c@test.com",
+            status="paid",
+            payment_method="cash",
+            total=Decimal("50"),
+            subtotal=Decimal("50"),
+            currency="BOB",
+            address={},
+            items=[{"product_name": "Prod B1-C", "quantity": 5, "unit_price": "10"}],
+            created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        ),
+        OrderModel(
+            tenant_id=tenant_a,
+            branch_id=branch_2.id,
+            number="ORD-B2-P1",
+            customer_email="c@test.com",
+            status="paid",
+            payment_method="cash",
+            total=Decimal("200"),
+            subtotal=Decimal("200"),
+            currency="BOB",
+            address={},
+            items=[{"product_name": "Prod B2-A", "quantity": 20, "unit_price": "10"}],
+            created_at=datetime(2026, 9, 5, tzinfo=timezone.utc),
+        ),
+        OrderModel(
+            tenant_id=tenant_a,
+            branch_id=branch_2.id,
+            number="ORD-B2-P2",
+            customer_email="c@test.com",
+            status="paid",
+            payment_method="cash",
+            total=Decimal("150"),
+            subtotal=Decimal("150"),
+            currency="BOB",
+            address={},
+            items=[{"product_name": "Prod B2-B", "quantity": 15, "unit_price": "10"}],
+            created_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+        ),
+        OrderModel(
+            tenant_id=tenant_a,
+            branch_id=branch_2.id,
+            number="ORD-B2-P3",
+            customer_email="c@test.com",
+            status="paid",
+            payment_method="cash",
+            total=Decimal("120"),
+            subtotal=Decimal("120"),
+            currency="BOB",
+            address={},
+            items=[{"product_name": "Prod B2-C", "quantity": 12, "unit_price": "10"}],
+            created_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        ),
+    ]
+    w.db.add_all(orders)
+    w.db.commit()
+
+    ejecutor = Ejecutor(w.db)
+    spec_top = ReportSpec(
+        definition_code="top_productos",
+        metrics=[Metric.UNITS, Metric.REVENUE],
+        dimensions=[Dimension.BRANCH, Dimension.PRODUCT],
+        filters=Filters(period=Period(date_from=date(2026, 9, 1), date_to=date(2026, 9, 30), label="Septiembre")),
+        top_n=2,
+    )
+    res_top = ejecutor.ejecutar(SpecValidada(spec=spec_top, tenant_id=tenant_a))
+
+    # Cada sucursal debe tener exactamente top 2 (total 4 filas), no que branch_2 se coma las 2 posiciones
+    b1_rows = [r for r in res_top.rows if r["branch"] == w.branches[0].name]
+    b2_rows = [r for r in res_top.rows if r["branch"] == "Sucursal Norte"]
+
+    assert len(b1_rows) == 2
+    assert b1_rows[0]["product"] == "Prod B1-A"
+    assert b1_rows[1]["product"] == "Prod B1-B"
+
+    assert len(b2_rows) == 2
+    assert b2_rows[0]["product"] == "Prod B2-A"
+    assert b2_rows[1]["product"] == "Prod B2-B"
+
+

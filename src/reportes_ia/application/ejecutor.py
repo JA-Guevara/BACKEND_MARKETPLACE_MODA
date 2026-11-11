@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from src.inventario_sucursales.infrastructure.models.organization import BranchModel
 from src.reportes_ia.application.validador import SpecValidada
-from src.reportes_ia.domain.especificacion import ChartKind
+from src.reportes_ia.domain.especificacion import ChartKind, Dimension
 from src.reportes_ia.domain.grafico import elegir_grafico
+from src.reportes_ia.domain.texto import normalizar
 from src.usuarios_catalogo.infrastructure.models.catalog import CategoryModel, ProductModel, ProductVariantModel
 from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
 
@@ -61,6 +62,14 @@ class Ejecutor:
             return self._menor_existencia(sv, limite_filas)
         elif code in ("pagos", "formas_pago"):
             return self._pagos(sv, limite_filas)
+        elif code in ("ventas", "ventas_diarias"):
+            return self._ventas_por_semana(sv, limite_filas)
+        elif code == "sucursales":
+            return self._ventas_por_sucursal(sv, limite_filas)
+        elif code == "prendas_vendidas":
+            return self._top_productos(sv, limite_filas)
+        elif code == "pedidos":
+            return self._pedidos(sv, limite_filas)
         else:
             return self._ventas_por_sucursal(sv, limite_filas)
 
@@ -85,6 +94,42 @@ class Ejecutor:
                 if o.created_at and d_from <= _to_date(o.created_at) <= d_to
             ]
         return orders
+
+    def _obtener_mapa_categorias(self, tenant_id: uuid.UUID) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        categories_map = {
+            str(cat.id): cat.name
+            for cat in self.db.scalars(
+                select(CategoryModel).where(CategoryModel.tenant_id == tenant_id)
+            ).all()
+        }
+        variant_categories = {
+            str(row[0]): row[1]
+            for row in self.db.execute(
+                select(ProductVariantModel.id, CategoryModel.name)
+                .join(ProductModel, ProductModel.id == ProductVariantModel.product_id)
+                .join(CategoryModel, CategoryModel.id == ProductModel.category_id)
+                .where(ProductModel.tenant_id == tenant_id)
+            ).all()
+        }
+        product_categories = {
+            str(row[0]): row[1]
+            for row in self.db.execute(
+                select(ProductModel.id, CategoryModel.name)
+                .join(CategoryModel, CategoryModel.id == ProductModel.category_id)
+                .where(ProductModel.tenant_id == tenant_id)
+            ).all()
+        }
+        return categories_map, variant_categories, product_categories
+
+    def _resolver_categoria(self, item: dict, cat_map: dict, var_map: dict, prod_map: dict) -> str:
+        return (
+            item.get("category_name")
+            or cat_map.get(str(item.get("category_id")))
+            or var_map.get(str(item.get("variant_id")))
+            or prod_map.get(str(item.get("product_id")))
+            or item.get("category")
+            or "General"
+        )
 
     def _ventas_por_sucursal(self, sv: SpecValidada, limite: int) -> ReportResult:
         orders = self.obtener_ordenes = self._obtener_ordenes_filtradas(sv)
@@ -148,58 +193,160 @@ class Ejecutor:
     def _top_productos(self, sv: SpecValidada, limite: int) -> ReportResult:
         orders = self._obtener_ordenes_filtradas(sv)
         limit_n = sv.spec.top_n or 10
+        has_branch = Dimension.BRANCH in sv.spec.dimensions
 
-        prod_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"units": 0, "revenue": Decimal(0), "sku": ""})
+        branches = {}
+        if has_branch:
+            branches = {
+                b.id: b.name
+                for b in self.db.scalars(
+                    select(BranchModel).where(BranchModel.tenant_id == sv.tenant_id)
+                ).all()
+            }
+
+        cat_map, var_map, prod_map = self._obtener_mapa_categorias(sv.tenant_id)
+        norm_cats = {normalizar(c) for c in sv.spec.filters.category_names} if sv.spec.filters.category_names else None
+        norm_prods = {normalizar(p) for p in sv.spec.filters.product_names} if sv.spec.filters.product_names else None
+
+        prod_stats: dict[Any, dict[str, Any]] = defaultdict(
+            lambda: {"units": 0, "revenue": Decimal(0), "sku": "", "branch": "", "product": ""}
+        )
 
         for o in orders:
+            b_name = branches.get(o.branch_id, f"Sucursal {str(o.branch_id)[:8]}") if has_branch else ""
             items = o.items or []
             for item in items:
                 p_name = item.get("product_name") or item.get("name") or "Prenda sin nombre"
+                cat_name = self._resolver_categoria(item, cat_map, var_map, prod_map)
+
+                if norm_cats and normalizar(cat_name) not in norm_cats:
+                    continue
+                if norm_prods and normalizar(p_name) not in norm_prods:
+                    continue
+
                 qty = int(item.get("quantity") or 0)
                 price = Decimal(str(item.get("unit_price") or item.get("price") or 0))
                 line_total = Decimal(str(item.get("line_total") or (price * qty)))
                 sku = item.get("sku") or ""
 
-                prod_stats[p_name]["units"] += qty
-                prod_stats[p_name]["revenue"] += line_total
-                if sku and not prod_stats[p_name]["sku"]:
-                    prod_stats[p_name]["sku"] = sku
+                key = (b_name, p_name) if has_branch else p_name
+                stat = prod_stats[key]
+                stat["units"] += qty
+                stat["revenue"] += line_total
+                stat["product"] = p_name
+                if has_branch:
+                    stat["branch"] = b_name
+                if sku and not stat["sku"]:
+                    stat["sku"] = sku
 
         rows: list[dict[str, Any]] = []
-        for name, stats in prod_stats.items():
-            rows.append({
-                "product": name,
+        for key, stats in prod_stats.items():
+            row_data = {
+                "product": stats["product"],
                 "sku": stats["sku"] or "SKU-N/A",
                 "units": stats["units"],
                 "revenue": round(float(stats["revenue"]), 2),
-            })
+            }
+            if has_branch:
+                row_data["branch"] = stats["branch"]
+            rows.append(row_data)
 
-        rows.sort(key=lambda r: r["units"], reverse=True)
-        rows = rows[:limit_n]
+        reverse_order = (sv.spec.order != "asc")
+        if has_branch:
+            by_branch: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for r in rows:
+                by_branch[r["branch"]].append(r)
+
+            top_rows: list[dict[str, Any]] = []
+            for b_name in sorted(by_branch.keys()):
+                b_rows = by_branch[b_name]
+                b_rows.sort(key=lambda r: r["units"], reverse=reverse_order)
+                top_rows.extend(b_rows[:limit_n])
+            rows = top_rows
+        else:
+            rows.sort(key=lambda r: r["units"], reverse=reverse_order)
+            rows = rows[:limit_n]
 
         tot_units = sum(r["units"] for r in rows)
         tot_rev = sum(r["revenue"] for r in rows)
 
-        columns = [
-            {"key": "product", "label": "Producto", "type": "text"},
-            {"key": "sku", "label": "SKU", "type": "text"},
-            {"key": "units", "label": "Unidades vendidas", "type": "int"},
-            {"key": "revenue", "label": "Total recaudado (Bs)", "type": "money"},
-        ]
-        totals = {"product": "TOTAL", "sku": "-", "units": tot_units, "revenue": round(tot_rev, 2)}
+        if has_branch:
+            columns = [
+                {"key": "branch", "label": "Sucursal", "type": "text"},
+                {"key": "product", "label": "Producto", "type": "text"},
+                {"key": "sku", "label": "SKU", "type": "text"},
+                {"key": "units", "label": "Unidades vendidas", "type": "int"},
+                {"key": "revenue", "label": "Total recaudado (Bs)", "type": "money"},
+            ]
+            totals = {"branch": "TOTAL", "product": "-", "sku": "-", "units": tot_units, "revenue": round(tot_rev, 2)}
+            chart = {
+                "kind": ChartKind.GROUPED_BAR.value,
+                "x": "product",
+                "group": "branch",
+                "y": "units",
+                "label": "Top productos más vendidos por sucursal",
+            }
+        else:
+            columns = [
+                {"key": "product", "label": "Producto", "type": "text"},
+                {"key": "sku", "label": "SKU", "type": "text"},
+                {"key": "units", "label": "Unidades vendidas", "type": "int"},
+                {"key": "revenue", "label": "Total recaudado (Bs)", "type": "money"},
+            ]
+            totals = {"product": "TOTAL", "sku": "-", "units": tot_units, "revenue": round(tot_rev, 2)}
+            chart_kind = elegir_grafico(sv.spec, len(rows))
+            chart = {
+                "kind": chart_kind.value,
+                "x": "product",
+                "y": "units",
+                "label": "Top productos más vendidos",
+            }
 
-        chart_kind = elegir_grafico(sv.spec, len(rows))
-        chart = {
-            "kind": chart_kind.value,
-            "x": "product",
-            "y": "units",
-            "label": "Top productos más vendidos",
-        }
         series = [{"name": "Unidades", "data": [r["units"] for r in rows]}]
 
         return ReportResult(
             definition_code="top_productos",
-            title="Top productos más vendidos",
+            title="Top productos más vendidos" + (" por sucursal" if has_branch else ""),
+            columns=columns,
+            rows=rows,
+            totals=totals,
+            truncated=False,
+            chart=chart,
+            series=series,
+        )
+
+    def _pedidos(self, sv: SpecValidada, limite: int) -> ReportResult:
+        orders = self._obtener_ordenes_filtradas(sv)
+        status_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"orders": 0, "revenue": Decimal(0)})
+        for o in orders:
+            st = o.status or "sin_estado"
+            status_stats[st]["orders"] += 1
+            status_stats[st]["revenue"] += Decimal(str(o.total or 0))
+
+        rows: list[dict[str, Any]] = []
+        for st, data in status_stats.items():
+            rows.append({
+                "status": st.upper(),
+                "orders": data["orders"],
+                "revenue": round(float(data["revenue"]), 2),
+            })
+
+        rows.sort(key=lambda r: r["orders"], reverse=True)
+        tot_orders = sum(r["orders"] for r in rows)
+        tot_rev = sum(r["revenue"] for r in rows)
+
+        columns = [
+            {"key": "status", "label": "Estado del Pedido", "type": "text"},
+            {"key": "orders", "label": "Cantidad de Pedidos", "type": "int"},
+            {"key": "revenue", "label": "Monto Total (Bs)", "type": "money"},
+        ]
+        totals = {"status": "TOTAL", "orders": tot_orders, "revenue": round(tot_rev, 2)}
+        chart = {"kind": ChartKind.BAR.value, "x": "status", "y": "orders", "label": "Pedidos por estado"}
+        series = [{"name": "Pedidos", "data": [r["orders"] for r in rows]}]
+
+        return ReportResult(
+            definition_code="pedidos",
+            title="Reporte de pedidos",
             columns=columns,
             rows=rows,
             totals=totals,
@@ -386,12 +533,13 @@ class Ejecutor:
 
     def _ingresos_por_categoria(self, sv: SpecValidada, limite: int) -> ReportResult:
         orders = self._obtener_ordenes_filtradas(sv)
+        cat_map, var_map, prod_map = self._obtener_mapa_categorias(sv.tenant_id)
         cat_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"revenue": Decimal(0), "units": 0})
 
         for o in orders:
             items = o.items or []
             for item in items:
-                cat_name = item.get("category_name") or item.get("category") or "General"
+                cat_name = self._resolver_categoria(item, cat_map, var_map, prod_map)
                 qty = int(item.get("quantity") or 0)
                 price = Decimal(str(item.get("unit_price") or item.get("price") or 0))
                 line_total = Decimal(str(item.get("line_total") or (price * qty)))

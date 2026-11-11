@@ -39,7 +39,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         title="Top productos más vendidos",
         description="Prendas con mayor cantidad vendida o recaudación.",
         metrics=frozenset({Metric.UNITS, Metric.REVENUE}),
-        dimensions=frozenset({Dimension.PRODUCT}),
+        dimensions=frozenset({Dimension.PRODUCT, Dimension.BRANCH}),
         filters=frozenset({"period", "branch_names", "category_names", "product_names"}),
         default_chart=ChartKind.BAR,
         max_rows=50,
@@ -47,6 +47,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
             "¿Cuáles fueron los diez productos más vendidos este mes?",
             "Top 10 productos más vendidos",
             "Prendas más vendidas del periodo",
+            "mostrar los 10 productos mas vendidos durante los ultimos 3 meses agrupados por sucursal",
         ),
     ),
     "ventas_por_semana": ReportDefinition(

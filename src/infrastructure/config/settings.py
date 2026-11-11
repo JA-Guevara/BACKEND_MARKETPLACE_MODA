@@ -110,6 +110,7 @@ class Settings(BaseSettings):
             base = base[:-3]
         return f"{base}/chat/completions"
     report_export_max_rows: int = 10000
+    order_hold_minutes: int = Field(default=120, ge=1, le=10080)
     low_stock_threshold: int = 5
     media_storage_dir: str = "uploads/images"
     media_public_base_url: str = "http://localhost:8000/api/v1/media/files"

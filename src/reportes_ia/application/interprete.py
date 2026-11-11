@@ -1,8 +1,11 @@
 from datetime import date, datetime
+import json
+import logging
 import re
 from typing import Any, Optional
 
 from src.infrastructure.config.settings import settings
+from src.infrastructure.services.ai_client import AIService
 from src.reportes_ia.domain.catalogo import REPORT_DEFINITIONS, sugerencias
 from src.reportes_ia.domain.especificacion import (
     ChartKind,
@@ -15,6 +18,8 @@ from src.reportes_ia.domain.especificacion import (
 )
 from src.reportes_ia.domain.grafico import periodo_por_defecto
 from src.reportes_ia.domain.texto import extraer_periodo, nombrado, normalizar
+
+logger = logging.getLogger(__name__)
 
 
 RE_WRITING = re.compile(
@@ -60,9 +65,100 @@ class Interprete:
                 interpreter="FALLBACK",
             )
 
-        # 2. Intentar LLM si está disponible (opcional)
+        # 2. Intentar LLM si está disponible (AIService con Gemini o compatible)
+        if AIService.is_configured():
+            try:
+                ai_res = self._interpretar_llm(texto, today)
+                if ai_res and ai_res.status == "READY":
+                    return ai_res
+            except Exception as exc:
+                logger.warning("Fallo en interprete LLM, recurriendo al determinista: %s", exc)
+
         # En caso de no tener API key o fallar, pasamos al motor determinista garantizado
         return self._interpretar_determinista(texto, today)
+
+    def _interpretar_llm(self, texto: str, today: date) -> Optional[InterpretResult]:
+        branches = [b["name"] for b in self.catalogo_empresa.get("branches", [])]
+        categories = [c["name"] for c in self.catalogo_empresa.get("categories", [])]
+        products = [p["name"] for p in self.catalogo_empresa.get("products", [])[:40]]
+
+        prompt = f"""Eres el motor de interpretación de reportes empresariales de FashionStore SaaS.
+Fecha de referencia (hoy): {today.isoformat()}
+Catálogo disponible en la empresa:
+- Sucursales: {branches}
+- Categorías: {categories}
+- Productos ejemplo: {products}
+
+Reportes disponibles (definition_code):
+- top_productos: Prendas más vendidas o con mayor recaudación. Dimensions: ["product"] o ["product", "branch"] si se pide por sucursal. Metrics: ["units", "revenue"].
+- ventas_por_sucursal: Ventas por sucursal. Dimensions: ["branch"]. Metrics: ["revenue", "orders", "avg_ticket"].
+- ventas_por_semana: Evolución semanal. Dimensions: ["week"]. Metrics: ["revenue", "orders"].
+- comparativa_sucursales: Comparativa de tiendas mes a mes. Dimensions: ["branch", "month"]. Metrics: ["revenue", "orders"].
+- menor_existencia: Stock bajo o crítico. Dimensions: ["product", "branch"]. Metrics: ["stock"].
+- ingresos_por_categoria: Ingresos por categoría. Dimensions: ["category"]. Metrics: ["revenue", "units"].
+- pagos: Métodos de pago. Dimensions: ["payment_method"]. Metrics: ["revenue"].
+- pedidos: Volumen de pedidos. Dimensions: ["status"]. Metrics: ["orders"].
+- existencias: Inventario actual. Dimensions: ["product", "branch"]. Metrics: ["stock"].
+
+Solicitud en lenguaje natural del usuario: "{texto}"
+
+REGLA CLAVE: Si el usuario pide "productos mas vendidos", "prendas mas vendidas", o "top productos", definition_code DEBE ser "top_productos". Si además pide "agrupados por sucursal" o "por sucursal", dimensions DEBE ser ["product", "branch"] y chart "grouped_bar".
+REGLA DE FECHAS: "ultimos 3 meses" equivale a fecha_desde = (hoy - 90 días) y fecha_hasta = hoy.
+
+Genera ÚNICAMENTE un JSON con esta estructura exacta (sin markdown extra):
+{{
+  "definition_code": "top_productos",
+  "metrics": ["units", "revenue"],
+  "dimensions": ["product", "branch"],
+  "top_n": 10,
+  "order": "desc",
+  "compare_previous": false,
+  "chart": "grouped_bar",
+  "filters": {{
+    "period": {{
+      "date_from": "YYYY-MM-DD",
+      "date_to": "YYYY-MM-DD",
+      "label": "last_period"
+    }},
+    "branch_names": [],
+    "category_names": [],
+    "product_names": [],
+    "low_stock_lt": null
+  }}
+}}
+"""
+        raw_json = AIService.generate(
+            prompt=prompt,
+            system_instruction="Eres un extractor semántico estricto. Genera solo JSON válido.",
+            json_mode=True,
+            temperature=0.1,
+            timeout=8,
+        )
+        if not raw_json:
+            return None
+        clean_json = raw_json.strip()
+        if clean_json.startswith("```"):
+            clean_json = clean_json.split("\n", 1)[1]
+            if clean_json.endswith("```"):
+                clean_json = clean_json.rsplit("```", 1)[0].strip()
+        data = json.loads(clean_json)
+        # Normalizar enums a mayúsculas para compatibilidad con Pydantic
+        if "metrics" in data and isinstance(data["metrics"], list):
+            data["metrics"] = [m.upper() if isinstance(m, str) else m for m in data["metrics"]]
+        if "dimensions" in data and isinstance(data["dimensions"], list):
+            data["dimensions"] = [d.upper() if isinstance(d, str) else d for d in data["dimensions"]]
+        if "chart" in data and isinstance(data["chart"], str):
+            data["chart"] = data["chart"].upper()
+
+        spec = ReportSpec.model_validate(data)
+        return InterpretResult(
+            status="READY",
+            spec=spec,
+            questions=[],
+            assumptions=["Interpretado mediante Gemini AI."],
+            suggestions=[],
+            interpreter="LLM",
+        )
 
     def _interpretar_determinista(self, texto: str, today: date) -> InterpretResult:
         norm = normalizar(texto)
@@ -155,15 +251,25 @@ class Interprete:
             low_stock_lt=low_stock_lt,
         )
 
+        # Dimensiones y gráfico
+        dimensions = list(defn.dimensions)
+        chart_kind = defn.default_chart
+        if code == "top_productos":
+            if re.search(r"\b(?:por|agrupados?\s+por)\s+(?:sucursal|tienda|sucursales|tiendas)\b", norm) or "sucursal" in norm:
+                dimensions = [Dimension.PRODUCT, Dimension.BRANCH]
+                chart_kind = ChartKind.GROUPED_BAR
+            else:
+                dimensions = [Dimension.PRODUCT]
+
         spec = ReportSpec(
             definition_code=code,
             metrics=list(defn.metrics)[:2] or [Metric.REVENUE],
-            dimensions=list(defn.dimensions),
+            dimensions=dimensions,
             filters=filters,
             top_n=top_n,
             order="desc" if code != "menor_existencia" else "asc",
             compare_previous=compare_previous,
-            chart=defn.default_chart,
+            chart=chart_kind,
         )
 
         return InterpretResult(
@@ -176,20 +282,22 @@ class Interprete:
         )
 
     def _identificar_definicion(self, norm: str) -> Optional[str]:
-        # 1. comparativa_sucursales
-        if re.search(r"compar.*(?:sucursal|tienda)", norm) or (
-            "sucursal" in norm and ("tres meses" in norm or "3 meses" in norm or "meses" in norm)
-        ):
-            return "comparativa_sucursales"
-
-        # 2. top_productos
+        # 1. top_productos (prioridad máxima si menciona top o productos/prendas más vendidas)
         if (
             re.search(r"top.*(?:producto|prenda)", norm)
             or re.search(r"(?:diez|cinco|\d+)\s+productos\s+mas\s+vendidos", norm)
             or re.search(r"productos\s+mas\s+vendidos", norm)
             or re.search(r"prendas\s+mas\s+vendidas", norm)
+            or re.search(r"\bproductos?\b.*\bvendidos?\b", norm)
+            or re.search(r"\bprendas?\b.*\bvendidas?\b", norm)
         ):
             return "top_productos"
+
+        # 2. comparativa_sucursales
+        if re.search(r"compar.*(?:sucursal|tienda)", norm) or (
+            "sucursal" in norm and ("tres meses" in norm or "3 meses" in norm or "meses" in norm)
+        ):
+            return "comparativa_sucursales"
 
         # 3. ventas_por_semana
         if re.search(r"ventas?.*(?:por\s+semana|semanal)", norm) or "semana" in norm:

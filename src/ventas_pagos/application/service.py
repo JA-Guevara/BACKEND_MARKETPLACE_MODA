@@ -190,6 +190,15 @@ class CommerceService:
     def create_order(self, user, data):
         branch = self.branch(data.branch_id)
         order_tenant_id = self.tenant_id or branch.tenant_id
+        if getattr(data, "client_request_id", None):
+            existing = self.db.scalar(
+                select(OrderModel).where(
+                    OrderModel.client_request_id == data.client_request_id,
+                    OrderModel.tenant_id == order_tenant_id,
+                )
+            )
+            if existing:
+                return existing
         self.db.execute(select(UserModel.id).where(UserModel.id == user.id).with_for_update())
         # Se calcula nuevamente con bloqueo: no se confía ni en el total ni en
         # un cupón que pudo caducar entre la pantalla de carrito y el pago.
@@ -211,6 +220,7 @@ class CommerceService:
                     reference="nuevo-pedido", actor_id=user.id)
             order = OrderModel(
                 tenant_id=order_tenant_id,
+                client_request_id=getattr(data, "client_request_id", None),
                 number="FS-" + uuid.uuid4().hex[:12].upper(), user_id=user.id,
                 branch_id=data.branch_id, customer_email=user.email, payment_method=data.payment_method,
                 sales_channel=data.channel,

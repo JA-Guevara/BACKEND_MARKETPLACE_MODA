@@ -178,4 +178,88 @@ class TareasProgramadas:
             return {"attempted": len(WebhooksService(self.db).entregar_pendientes())}
 
         runs.append(self._run_job("webhooks.deliver", _job_webhooks, ahora))
+
+        # 6. orders.expire_holds
+        def _job_orders_expire_holds(now: datetime) -> dict:
+            from datetime import timedelta
+            from src.infrastructure.config.settings import settings
+            from src.ventas_pagos.infrastructure.models import OrderModel
+            from src.ventas_pagos.application.stock_service import StockService
+            from src.ventas_pagos.application.service import CommerceService
+            from src.ventas_pagos.infrastructure import gateways
+            import uuid
+            import logging
+
+            logger = logging.getLogger("jobs.orders")
+            hold_minutes = getattr(settings, "order_hold_minutes", 120)
+            cutoff = now - timedelta(minutes=hold_minutes)
+
+            # Solo apartados en línea no manuales (ej. stripe) vencen tras el plazo configurable
+            expired_orders = self.db.scalars(
+                select(OrderModel).where(
+                    OrderModel.status == "pending_payment",
+                    OrderModel.payment_method == "stripe",
+                    OrderModel.created_at < cutoff,
+                )
+            ).all()
+
+            released = 0
+            for o in expired_orders:
+                commerce_svc = CommerceService(self.db, o.tenant_id)
+
+                # Si tiene sesión de Stripe, conciliar primero antes de cancelar para evitar cancelar pedidos pagados
+                if o.stripe_session_id:
+                    try:
+                        commerce_svc.reconcile_payment(o)
+                    except Exception as exc:
+                        logger.warning(f"Error al conciliar pedido {o.number} con Stripe: {exc}")
+                        continue
+
+                    if o.payment_status == "paid" or o.status == "paid":
+                        continue
+
+                    # Cerrar la sesión en Stripe para que el cliente no pueda pagar tras la cancelación
+                    try:
+                        gateways.stripe_request(
+                            "POST",
+                            f"checkout/sessions/{o.stripe_session_id}/expire",
+                            **gateways.en_cuenta(o.stripe_account_id),
+                        )
+                    except Exception as exc:
+                        logger.warning(f"Error al expirar sesión Stripe de {o.number}: {exc}")
+
+                o.status = "cancelled"
+                o.payment_status = "cancelled"
+                stock_svc = StockService(self.db, o.tenant_id)
+
+                for item in (o.items or []):
+                    try:
+                        vid = uuid.UUID(str(item["variant_id"]))
+                        qty = int(item.get("quantity", 1))
+                        stock_svc.change(
+                            variant_id=vid,
+                            branch_id=o.branch_id,
+                            delta=qty,
+                            kind="web_order_hold_release",
+                            reason=f"Liberación de existencias por pedido web vencido {o.number}",
+                            actor_id=o.user_id,
+                            reference=o.number,
+                        )
+                    except Exception as exc:
+                        logger.error(f"Error al reponer stock para item {item} en {o.number}: {exc}")
+                        raise
+
+                o.tracking = [
+                    *(o.tracking or []),
+                    {
+                        "status": "cancelled",
+                        "note": f"Apartado vencido ({hold_minutes} min); existencias liberadas.",
+                        "date": now.isoformat(),
+                    },
+                ]
+                released += 1
+
+            return {"released_orders": released}
+
+        runs.append(self._run_job("orders.expire_holds", _job_orders_expire_holds, ahora))
         return runs
