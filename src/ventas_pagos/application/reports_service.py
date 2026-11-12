@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from src.auth.infrastructure.persistence.models.user import UserModel
 from src.infrastructure.config.settings import settings
@@ -108,6 +109,7 @@ class ReportsService:
         threshold = low_stock_lt if low_stock_lt is not None else settings.low_stock_threshold
 
         all_orders = list(self.db.scalars(select(OrderModel).where(OrderModel.tenant_id == self.tenant_id)))
+        self._normalize_order_items(all_orders)
         if status:
             all_orders = [o for o in all_orders if self._matches_status(o, status)]
         if branch_id:
@@ -259,13 +261,74 @@ class ReportsService:
         out = []
         for order in orders:
             for item in order.items:
-                try:
-                    product_id = uuid.UUID(item["product_id"])
-                except (KeyError, TypeError, ValueError):
+                product_id = ReportsService._item_product_id(item)
+                if product_id is None:
                     continue
                 if product_id in kept:
                     out.append((order, item, True))
         return out
+
+    def _normalize_order_items(self, orders: list[OrderModel]) -> None:
+        """Adapta snapshots antiguos de venta al contrato actual del reporte.
+
+        POS guardó históricamente ``product_name``/``total`` y ``variant_id``;
+        los reportes usan ``name``/``line_total`` y ``product_id``. Se completa
+        el snapshot solo en memoria, resolviendo variantes dentro del tenant.
+        """
+        variant_ids: set[uuid.UUID] = set()
+        for order in orders:
+            for item in order.items or []:
+                if not isinstance(item, dict) or item.get("product_id") or not item.get("variant_id"):
+                    continue
+                try:
+                    variant_ids.add(uuid.UUID(str(item["variant_id"])))
+                except (TypeError, ValueError):
+                    continue
+
+        variant_info: dict[str, tuple[str, str]] = {}
+        if variant_ids:
+            rows = self.db.execute(
+                select(ProductVariantModel.id, ProductVariantModel.product_id, ProductModel.name)
+                .join(ProductModel, ProductModel.id == ProductVariantModel.product_id)
+                .where(
+                    ProductVariantModel.id.in_(variant_ids),
+                    ProductModel.tenant_id == self.tenant_id,
+                )
+            )
+            variant_info = {
+                str(variant_id): (str(product_id), name)
+                for variant_id, product_id, name in rows
+            }
+
+        for order in orders:
+            original = order.items or []
+            normalized: list[dict] = []
+            changed = False
+            for item in original:
+                if not isinstance(item, dict):
+                    continue
+                line = dict(item)
+                info = variant_info.get(str(line.get("variant_id")))
+                if not line.get("product_id") and info:
+                    line["product_id"] = info[0]
+                if not line.get("name"):
+                    line["name"] = line.get("product_name") or (info[1] if info else None) or line.get("sku") or "Prenda sin nombre"
+                if not line.get("line_total"):
+                    line["line_total"] = line.get("total")
+                changed = changed or line != item
+                normalized.append(line)
+            if changed or len(normalized) != len(original):
+                # El reporte es de solo lectura: no marcar el JSON original
+                # como modificado ni persistir la normalización al cerrar.
+                set_committed_value(order, "items", normalized)
+
+    @staticmethod
+    def _item_product_id(item: dict) -> uuid.UUID | None:
+        try:
+            value = item.get("product_id")
+            return uuid.UUID(str(value)) if value else None
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     @staticmethod
     def _amount(order: OrderModel, item: dict | None, scoped: bool) -> Decimal:
@@ -278,7 +341,7 @@ class ReportsService:
         total = 0
         for order, item, scoped in lines:
             if item is None:
-                total += sum(_line_qty(i) for i in order.items)
+                total += sum(_line_qty(i) for i in order.items if isinstance(i, dict))
             elif scoped:
                 total += _line_qty(item)
         return total
@@ -350,13 +413,17 @@ class ReportsService:
 
     @staticmethod
     def _product_in(item: dict, kept: set[uuid.UUID]) -> bool:
-        try:
-            return uuid.UUID(item["product_id"]) in kept
-        except (KeyError, TypeError, ValueError):
-            return False
+        product_id = ReportsService._item_product_id(item)
+        return product_id in kept if product_id else False
 
     def _product_ids_by_category(self, paid: list[OrderModel], category_id: uuid.UUID) -> set[uuid.UUID]:
-        ids = {uuid.UUID(item["product_id"]) for o in paid for item in o.items}
+        ids = {
+            product_id
+            for order in paid
+            for item in order.items
+            if isinstance(item, dict)
+            if (product_id := ReportsService._item_product_id(item)) is not None
+        }
         if not ids:
             return set()
         return set(
@@ -434,11 +501,18 @@ class ReportsService:
         for order in paid:
             items = order.items if kept is None else [item for item in order.items if self._product_in(item, kept)]
             for item in items:
-                top[item["name"]] = top.get(item["name"], 0) + _line_qty(item)
+                name = item.get("name") or item.get("product_name") or item.get("sku") or "Prenda sin nombre"
+                top[name] = top.get(name, 0) + _line_qty(item)
         return [{"name": name, "quantity": qty} for name, qty in sorted(top.items(), key=lambda x: -x[1])[:limit]]
 
     def _category_breakdown(self, paid: list[OrderModel], kept: set[uuid.UUID] | None) -> list[dict]:
-        product_ids = {uuid.UUID(item["product_id"]) for order in paid for item in order.items}
+        product_ids = {
+            product_id
+            for order in paid
+            for item in order.items
+            if isinstance(item, dict)
+            if (product_id := ReportsService._item_product_id(item)) is not None
+        }
         if not product_ids:
             return []
         products = self.db.scalars(select(ProductModel).where(
@@ -451,7 +525,8 @@ class ReportsService:
         for order in paid:
             items = order.items if kept is None else [item for item in order.items if self._product_in(item, kept)]
             for item in items:
-                category = category_by_product.get(item["product_id"], "Sin categoria")
+                product_id = self._item_product_id(item)
+                category = category_by_product.get(str(product_id), "Sin categoria") if product_id else "Sin categoria"
                 totals[category] = totals.get(category, Decimal(0)) + _line_amount(item)
                 quantities[category] = quantities.get(category, 0) + _line_qty(item)
         return [{"category": c, "total": str(totals[c]), "quantity": quantities[c]} for c in sorted(totals, key=lambda c: -totals[c])]
@@ -573,6 +648,7 @@ class ReportsService:
         lineas, los ingresos son cobros del periodo y ``sucursales`` usa pedidos
         pagados, igual que las tarjetas del centro de reportes."""
         all_orders = list(self.db.scalars(select(OrderModel).where(OrderModel.tenant_id == self.tenant_id)))
+        self._normalize_order_items(all_orders)
         if status:
             all_orders = [o for o in all_orders if self._matches_status(o, status)]
         if branch_id:
@@ -625,18 +701,29 @@ class ReportsService:
             return ("Pagos confirmados", ["numero", "fecha", "correo", "sucursal", "metodo", "referencia", "total", "moneda"], rows)
 
         if report == "prendas_vendidas":
-            product_ids = {uuid.UUID(item["product_id"]) for o in windowed_paid for item in o.items}
+            product_ids = {
+                product_id
+                for order in windowed_paid
+                for item in order.items
+                if isinstance(item, dict)
+                if (product_id := self._item_product_id(item)) is not None
+            }
             products = {str(p.id): p for p in self.db.scalars(select(ProductModel).where(ProductModel.id.in_(product_ids), ProductModel.tenant_id == self.tenant_id))} if product_ids else {}
             variants = {v.id: v for v in self.db.scalars(select(ProductVariantModel).join(ProductModel, ProductModel.id == ProductVariantModel.product_id).where(ProductModel.tenant_id == self.tenant_id))}
             agg: dict[str, dict] = {}
             for o in windowed_paid:
                 items = o.items if kept is None else [item for item in o.items if self._product_in(item, kept)]
                 for item in items:
-                    variant = variants.get(uuid.UUID(item["variant_id"]))
-                    product = products.get(item["product_id"])
-                    key = item["variant_id"]
+                    variant_id = item.get("variant_id")
+                    try:
+                        variant = variants.get(uuid.UUID(str(variant_id))) if variant_id else None
+                    except (TypeError, ValueError):
+                        variant = None
+                    product_id = self._item_product_id(item)
+                    product = products.get(str(product_id)) if product_id else None
+                    key = str(variant_id or product_id or item.get("sku") or item.get("name") or "unknown")
                     entry = agg.setdefault(key, {"sku": variant.sku if variant else item.get("sku", "-"),
-                        "nombre": product.name if product else item["name"], "talla": variant.size.name if variant else "-",
+                        "nombre": product.name if product else item.get("name") or item.get("product_name") or "Prenda sin nombre", "talla": variant.size.name if variant else item.get("size", "-"),
                         "color": variant.color.name if variant else "-", "cantidad": 0,
                         "unit_price": Decimal(item["unit_price"]), "total": Decimal(0)})
                     entry["cantidad"] += _line_qty(item)
