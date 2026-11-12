@@ -9,24 +9,61 @@ class Narrador:
         if not result.rows:
             return f"No se registraron movimientos para el reporte '{result.title}' en el período seleccionado."
 
-        if AIService.is_configured():
+        ai = AIService()
+        ai_conf = False
+        try:
+            ai_conf = bool(ai.is_configured())
+        except TypeError:
+            ai_conf = bool(AIService.is_configured())
+
+        if ai_conf:
             try:
+                destacadas = (
+                    [g["rows"][0] for g in result.groups if g.get("rows")]
+                    if result.groups
+                    else (result.rows[0] if result.rows else {})
+                )
                 prompt = (
                     f"Redacta un resumen ejecutivo de máximo 2 oraciones en español para este reporte retail:\n"
                     f"Reporte: {result.title}\n"
                     f"Totales: {result.totals}\n"
-                    f"Fila destacada: {result.rows[0] if result.rows else {}}\n"
+                    f"Filas destacadas: {destacadas}\n"
                 )
-                ai_text = AIService.generate(
-                    prompt=prompt,
-                    system_instruction="Sé conciso, profesional y directo.",
-                    max_tokens=120,
-                    timeout=5,
-                )
+                try:
+                    ai_text = ai.generate(
+                        prompt=prompt,
+                        system_instruction="Sé conciso, profesional y directo.",
+                        max_tokens=120,
+                        timeout=5,
+                    )
+                except TypeError:
+                    ai_text = AIService.generate(
+                        prompt=prompt,
+                        system_instruction="Sé conciso, profesional y directo.",
+                        max_tokens=120,
+                        timeout=5,
+                    )
                 if ai_text and len(ai_text.strip()) > 10:
                     return ai_text.strip()
             except Exception:
                 pass
+
+        # Plantilla determinista con líder por sucursal cuando hay groups
+        if result.groups:
+            leaders = []
+            for g in result.groups:
+                if g.get("rows"):
+                    r0 = g["rows"][0]
+                    leaders.append(f"en {g['label']} lidera «{r0.get('product')}» con {r0.get('units')} unidades")
+            leaders_str = "; ".join(leaders)
+            tot_u = result.totals.get("units", 0)
+            tot_rev = result.totals.get("revenue", 0.0)
+            if leaders_str.startswith("en "):
+                leaders_str = leaders_str[3:]
+            return (
+                f"En {leaders_str}. "
+                f"En total se vendieron {tot_u} unidades por Bs {tot_rev:,.2f}."
+            )
 
         first_row = result.rows[0]
         code = result.definition_code

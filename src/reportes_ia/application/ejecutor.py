@@ -38,6 +38,7 @@ class ReportResult:
     truncated: bool = False
     chart: dict[str, Any] = field(default_factory=dict)
     series: list[dict[str, Any]] = field(default_factory=list)
+    groups: list[dict[str, Any]] | None = None
 
 
 class Ejecutor:
@@ -68,16 +69,16 @@ class Ejecutor:
             return self._ventas_por_sucursal(sv, limite_filas)
         elif code == "prendas_vendidas":
             return self._top_productos(sv, limite_filas)
-        elif code == "pedidos":
+        elif code in ("pedidos", "pedidos_por_estado"):
             return self._pedidos(sv, limite_filas)
         else:
             return self._ventas_por_sucursal(sv, limite_filas)
 
-    def _obtener_ordenes_filtradas(self, sv: SpecValidada) -> list[OrderModel]:
+    def _obtener_ordenes_filtradas(self, sv: SpecValidada, incluir_todos_los_estados: bool = False) -> list[OrderModel]:
         stmt = select(OrderModel).where(OrderModel.tenant_id == sv.tenant_id)
         if sv.spec.filters.status:
             stmt = stmt.where(OrderModel.status == sv.spec.filters.status)
-        else:
+        elif not incluir_todos_los_estados:
             stmt = stmt.where(OrderModel.status.in_(["paid", "delivered", "shipped", "processing", "completed"]))
 
         if sv.branch_ids:
@@ -252,16 +253,38 @@ class Ejecutor:
             rows.append(row_data)
 
         reverse_order = (sv.spec.order != "asc")
+        groups: list[dict[str, Any]] | None = None
         if has_branch:
             by_branch: dict[str, list[dict[str, Any]]] = defaultdict(list)
             for r in rows:
                 by_branch[r["branch"]].append(r)
 
             top_rows: list[dict[str, Any]] = []
+            groups = []
             for b_name in sorted(by_branch.keys()):
                 b_rows = by_branch[b_name]
                 b_rows.sort(key=lambda r: r["units"], reverse=reverse_order)
-                top_rows.extend(b_rows[:limit_n])
+                selected_b_rows = b_rows[:limit_n]
+                subtotal_units = sum(r["units"] for r in selected_b_rows)
+                subtotal_rev = round(sum(r["revenue"] for r in selected_b_rows), 2)
+                groups.append({
+                    "key": b_name,
+                    "label": b_name,
+                    "subtotal": {
+                        "units": subtotal_units,
+                        "revenue": subtotal_rev,
+                    },
+                    "rows": [
+                        {
+                            "product": r["product"],
+                            "sku": r["sku"],
+                            "units": r["units"],
+                            "revenue": r["revenue"],
+                        }
+                        for r in selected_b_rows
+                    ],
+                })
+                top_rows.extend(selected_b_rows)
             rows = top_rows
         else:
             rows.sort(key=lambda r: r["units"], reverse=reverse_order)
@@ -282,8 +305,9 @@ class Ejecutor:
             chart = {
                 "kind": ChartKind.GROUPED_BAR.value,
                 "x": "product",
-                "group": "branch",
                 "y": "units",
+                "group": "branch",
+                "item": "product",
                 "label": "Top productos más vendidos por sucursal",
             }
         else:
@@ -313,10 +337,11 @@ class Ejecutor:
             truncated=False,
             chart=chart,
             series=series,
+            groups=groups,
         )
 
     def _pedidos(self, sv: SpecValidada, limite: int) -> ReportResult:
-        orders = self._obtener_ordenes_filtradas(sv)
+        orders = self._obtener_ordenes_filtradas(sv, incluir_todos_los_estados=True)
         status_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"orders": 0, "revenue": Decimal(0)})
         for o in orders:
             st = o.status or "sin_estado"
@@ -326,7 +351,7 @@ class Ejecutor:
         rows: list[dict[str, Any]] = []
         for st, data in status_stats.items():
             rows.append({
-                "status": st.upper(),
+                "status": st.lower(),
                 "orders": data["orders"],
                 "revenue": round(float(data["revenue"]), 2),
             })
@@ -534,12 +559,15 @@ class Ejecutor:
     def _ingresos_por_categoria(self, sv: SpecValidada, limite: int) -> ReportResult:
         orders = self._obtener_ordenes_filtradas(sv)
         cat_map, var_map, prod_map = self._obtener_mapa_categorias(sv.tenant_id)
+        norm_cats = {normalizar(c) for c in sv.spec.filters.category_names} if sv.spec.filters.category_names else None
         cat_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"revenue": Decimal(0), "units": 0})
 
         for o in orders:
             items = o.items or []
             for item in items:
                 cat_name = self._resolver_categoria(item, cat_map, var_map, prod_map)
+                if norm_cats and normalizar(cat_name) not in norm_cats:
+                    continue
                 qty = int(item.get("quantity") or 0)
                 price = Decimal(str(item.get("unit_price") or item.get("price") or 0))
                 line_total = Decimal(str(item.get("line_total") or (price * qty)))

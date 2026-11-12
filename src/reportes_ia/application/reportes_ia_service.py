@@ -136,6 +136,7 @@ class ReportesIAService:
             "title": result.title,
             "columns": result.columns,
             "rows": result.rows,
+            "groups": result.groups,
             "totals": result.totals,
             "chart": result.chart,
             "series": result.series,
