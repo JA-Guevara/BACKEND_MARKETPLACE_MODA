@@ -13,6 +13,11 @@ from src.shared.responses.api_response import ApiResponse
 router = APIRouter(prefix="/offline", tags=["PAQ-07 · Operación sin conexión"])
 
 
+@router.get("/ping")
+def ping() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @router.get("/snapshot", response_model=ApiResponse[OfflineSnapshot])
 def snapshot(
     branch_id: UUID | None = None,

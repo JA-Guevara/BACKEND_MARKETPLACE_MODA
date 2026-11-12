@@ -15,7 +15,7 @@ from src.usuarios_catalogo.infrastructure.models.catalog import ProductModel, Pr
 from src.roles.infrastructure.persistence.models.role import RoleModel
 from src.ventas_pagos.infrastructure.models import StockModel
 from src.ventas_pagos.application.pricing_service import PricingService
-from src.shared.exceptions.domain_exception import NotFoundError, ValidationError
+from src.shared.exceptions.domain_exception import ConflictError, NotFoundError, ValidationError
 
 
 class SnapshotService:
@@ -31,8 +31,15 @@ class SnapshotService:
         branches = list(self.db.scalars(select(BranchModel).where(BranchModel.tenant_id == self.ctx.tenant_id,
             BranchModel.is_active.is_(True), BranchModel.deleted_at.is_(None)).order_by(BranchModel.name, BranchModel.id)))
         permissions = get_permission_codes(self.ctx.user)
-        if {"commerce.write", "reservations.write"} & permissions and not getattr(self.ctx, "support_session_id", None):
+        role_codes = {r.code for r in getattr(self.ctx.user, "roles", [])}
+        is_personal = bool(role_codes - {"client"}) or "commerce.write" in permissions
+        if is_personal and not getattr(self.ctx, "support_session_id", None):
             branches = UserBranchService(self.db, self.ctx.tenant_id).autorizadas(self.ctx.user)
+            if not branches:
+                raise ConflictError(
+                    "Tu usuario no tiene sucursales asignadas. Pedile al administrador que te asigne una.",
+                    code="no_authorized_branches",
+                )
         branch_ids = [branch.id for branch in branches]
         if branch_id and not any(branch.id == branch_id for branch in branches):
             raise NotFoundError("Sucursal no encontrada.")
