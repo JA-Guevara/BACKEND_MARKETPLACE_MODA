@@ -33,12 +33,20 @@ class ColumnMeta(BaseModel):
     type: str = "text"
 
 
+class ReportGroupOut(BaseModel):
+    key: str
+    label: str
+    rows: list[dict[str, Any]]
+    subtotal: dict[str, Any]
+
+
 class ReportResponse(BaseModel):
     request_id: Optional[str] = None
     definition_code: str
     title: str
     columns: list[ColumnMeta]
     rows: list[dict[str, Any]]
+    groups: Optional[list[ReportGroupOut]] = None
     totals: dict[str, Any]
     chart: dict[str, Any]
     series: list[dict[str, Any]]

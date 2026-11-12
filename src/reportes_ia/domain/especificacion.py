@@ -77,8 +77,9 @@ class InterpretResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["READY", "NEEDS_CLARIFICATION", "UNSUPPORTED"]
+    request_id: Optional[str] = None
     spec: Optional[ReportSpec] = None
     questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
-    interpreter: Literal["LLM", "FALLBACK"] = "FALLBACK"
+    interpreter: Literal["LLM", "FALLBACK", "CACHE"] = "FALLBACK"

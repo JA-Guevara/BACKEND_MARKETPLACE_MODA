@@ -84,6 +84,15 @@ class SyncStatusIn(BaseModel):
     client_request_ids: list[UUID] = Field(min_length=1, max_length=200)
 
 
+class CompetingOperationOut(BaseModel):
+    server_number: str
+    device_id: str
+    synchronized_at: str | datetime
+    client_created_at: str | datetime | None = None
+    cashier_name: str | None = None
+    origin: str | None = None
+
+
 class ConflictLineOut(BaseModel):
     variant_id: UUID
     product_name: str
@@ -91,7 +100,7 @@ class ConflictLineOut(BaseModel):
     available_quantity: int
     unit_price: str
     current_price: str
-    competing_operation: dict | None = None
+    competing_operation: CompetingOperationOut | None = None
 
 
 class ConflictOut(BaseModel):
@@ -109,7 +118,7 @@ class ConflictOut(BaseModel):
     local_folio: str | None = None
     created_at: datetime
     lines: list[ConflictLineOut] = []
-    competing_operation: dict | None = None
+    competing_operation: CompetingOperationOut | None = None
     resolution: str | None = None
     resolution_note: str | None = None
     resolved_by_name: str | None = None
