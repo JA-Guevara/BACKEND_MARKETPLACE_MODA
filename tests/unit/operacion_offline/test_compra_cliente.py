@@ -92,6 +92,13 @@ def test_compra_tarjeta_existencia_suficiente_confirmed(saas_world):
                     "payment_method": "stripe",
                     "customer_name": "Ana Rojas",
                     "customer_phone": "70000001",
+                    "address": {
+                        "recipient": "Ana Rojas",
+                        "phone": "70000001",
+                        "line1": "Calle Falsa 123",
+                        "city": "Santa Cruz",
+                        "country": "BO",
+                    },
                     "notes": "Entrega en portería",
                     "channel": "web",
                 },
@@ -116,6 +123,8 @@ def test_compra_tarjeta_existencia_suficiente_confirmed(saas_world):
     assert order.payment_method == "stripe"
     assert order.origin == "OFFLINE"
     assert order.total == Decimal("300.00")
+    assert order.address["line1"] == "Calle Falsa 123"
+    assert order.address.get("pickup") is not True
 
 
 def test_compra_pago_al_retirar_confirmed(saas_world):

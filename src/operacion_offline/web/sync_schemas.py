@@ -35,6 +35,7 @@ class OfflinePurchasePayload(BaseModel):
     items: list[OfflineSaleLine] = Field(min_length=1, max_length=100)
     customer_name: str | None = None
     customer_phone: str | None = None
+    address: dict[str, Any] | None = None
     payment_method: Literal["cash", "stripe", "manual"] = "cash"
     notes: str | None = None
     channel: Literal["web", "mobile"] | None = None

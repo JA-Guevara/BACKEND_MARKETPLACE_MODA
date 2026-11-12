@@ -600,6 +600,18 @@ class OfflinePurchaseService:
             note = f"{note} Nota del cliente: {validated.notes.strip()}"
         customer_name = (validated.customer_name or "").strip()
         customer_phone = (validated.customer_phone or "").strip()
+        address = dict(validated.address or {})
+        if not str(address.get("recipient") or "").strip():
+            address["recipient"] = customer_name or getattr(actor, "first_name", "Cliente")
+        if not str(address.get("phone") or "").strip():
+            address["phone"] = customer_phone or getattr(actor, "phone", None)
+        if address.get("pickup") is True:
+            address.setdefault("city", getattr(branch.city, "name", "Santa Cruz"))
+            address.setdefault("address", branch.address or "")
+            address.setdefault("branch_id", str(branch.id))
+        elif validated.address is not None:
+            if not all(str(address.get(field) or "").strip() for field in ("recipient", "phone", "line1", "city")):
+                raise ValidationError("Completá destinatario, teléfono, dirección y ciudad para el envío.")
         order = OrderModel(
             id=uuid.uuid4(),
             tenant_id=self.tenant_id,
@@ -614,10 +626,10 @@ class OfflinePurchaseService:
             subtotal=subtotal,
             discount_total=Decimal("0.00"),
             currency="BOB",
-            address={
+            address=address or {
                 "recipient": customer_name or getattr(actor, "first_name", "Cliente"),
                 "phone": customer_phone or getattr(actor, "phone", None),
-                "city": "Santa Cruz",
+                "city": getattr(branch.city, "name", "Santa Cruz"),
                 "address": branch.address or "",
                 "pickup": True,
                 "branch_id": str(branch.id),
