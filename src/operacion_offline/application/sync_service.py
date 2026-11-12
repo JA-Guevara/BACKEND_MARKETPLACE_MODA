@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from decimal import Decimal
 import hashlib
@@ -32,6 +32,7 @@ from src.operacion_offline.web.sync_schemas import (
     SyncResultOut,
 )
 from src.inventario_sucursales.application.services.user_branch_service import UserBranchService
+from src.infrastructure.config.settings import settings
 from src.reservas.application.use_cases.create_reserva import CrearReserva, ReservationStockError
 from src.reservas.infrastructure.http.schemas import CrearReservaRequest
 from src.infrastructure.security.authorization import get_permission_codes
@@ -71,6 +72,28 @@ def _canonical_hash(op: SyncOperationIn) -> str:
     }
     encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _compra_confirmada_detalles(db: Session, record: SyncOperationModel) -> dict[str, Any]:
+    """Datos para decidir en el móvil si debe completar el pago al reconectar."""
+    if record.type != "PURCHASE" or not record.server_ref:
+        return {}
+    order = db.get(OrderModel, record.server_ref)
+    if not order:
+        return {}
+    created = order.created_at or datetime.now(timezone.utc)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return {
+        "payment_required": order.payment_method == "stripe" and order.payment_status != "paid",
+        "payment_method": order.payment_method,
+        "total": f"{order.total:.2f}",
+        "payment_expires_at": (
+            created + timedelta(minutes=settings.order_hold_minutes)
+            if order.payment_method == "stripe"
+            else None
+        ),
+    }
 
 
 def _buscar_operacion_competidora(
@@ -573,6 +596,10 @@ class OfflinePurchaseService:
             if pay_method == "manual"
             else "Compra offline sincronizada. Pendiente de pago con tarjeta."
         )
+        if validated.notes:
+            note = f"{note} Nota del cliente: {validated.notes.strip()}"
+        customer_name = (validated.customer_name or "").strip()
+        customer_phone = (validated.customer_phone or "").strip()
         order = OrderModel(
             id=uuid.uuid4(),
             tenant_id=self.tenant_id,
@@ -587,7 +614,14 @@ class OfflinePurchaseService:
             subtotal=subtotal,
             discount_total=Decimal("0.00"),
             currency="BOB",
-            address={"city": "Santa Cruz", "address": branch.address or ""},
+            address={
+                "recipient": customer_name or getattr(actor, "first_name", "Cliente"),
+                "phone": customer_phone or getattr(actor, "phone", None),
+                "city": "Santa Cruz",
+                "address": branch.address or "",
+                "pickup": True,
+                "branch_id": str(branch.id),
+            },
             customer_email=getattr(actor, "email", None) or "cliente-offline@fashionstore.local",
             items=order_items,
             origin="OFFLINE",
@@ -678,6 +712,7 @@ class SyncService:
                             reason_code=existing.reason_code,
                             message=existing.message,
                             replay=True,
+                            **_compra_confirmada_detalles(self.db, existing),
                         )
                     )
                 else:
@@ -899,6 +934,15 @@ class SyncService:
                     server_ref=order.id,
                     server_number=order.number,
                     message=rec.message,
+                    payment_required=order.payment_method == "stripe",
+                    payment_method=order.payment_method,
+                    total=f"{order.total:.2f}",
+                    payment_expires_at=(
+                        (order.created_at or datetime.now(timezone.utc))
+                        + timedelta(minutes=settings.order_hold_minutes)
+                        if order.payment_method == "stripe"
+                        else None
+                    ),
                 )
             except SyncConflictException as ce:
                 return self._record_conflict(op, batch, ce.conflict_type, str(ce), ce.detail, phash)
@@ -931,6 +975,7 @@ class SyncService:
         return SyncResultOut(
             client_request_id=op.client_request_id, status="CONFLICT", conflict_id=conflict.id,
             conflict_type=conflict_type, message=message,
+            conflict_lines=detail.get("lines") if isinstance(detail, dict) else None,
         )
 
     def _record_rejection(
@@ -1001,6 +1046,7 @@ class SyncService:
                         reason_code=op.reason_code,
                         message=op.message,
                         replay=False,
+                        **_compra_confirmada_detalles(self.db, op),
                     )
                 )
         return results
