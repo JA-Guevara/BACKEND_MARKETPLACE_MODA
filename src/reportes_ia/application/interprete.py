@@ -66,10 +66,17 @@ class Interprete:
             )
 
         # 2. Intentar LLM si está disponible (AIService con Gemini o compatible)
-        if AIService.is_configured():
+        ai = self.llm or AIService()
+        ai_configured = False
+        try:
+            ai_configured = bool(ai.is_configured())
+        except TypeError:
+            ai_configured = bool(AIService.is_configured())
+
+        if ai_configured:
             try:
-                ai_res = self._interpretar_llm(texto, today)
-                if ai_res and ai_res.status == "READY":
+                ai_res = self._interpretar_llm(texto, today, ai)
+                if ai_res is not None:
                     return ai_res
             except Exception as exc:
                 logger.warning("Fallo en interprete LLM, recurriendo al determinista: %s", exc)
@@ -77,63 +84,78 @@ class Interprete:
         # En caso de no tener API key o fallar, pasamos al motor determinista garantizado
         return self._interpretar_determinista(texto, today)
 
-    def _interpretar_llm(self, texto: str, today: date) -> Optional[InterpretResult]:
+    def _interpretar_llm(self, texto: str, today: date, ai: Any = None) -> Optional[InterpretResult]:
+        ai_client = ai or self.llm or AIService()
         branches = [b["name"] for b in self.catalogo_empresa.get("branches", [])]
         categories = [c["name"] for c in self.catalogo_empresa.get("categories", [])]
         products = [p["name"] for p in self.catalogo_empresa.get("products", [])[:40]]
 
-        prompt = f"""Eres el motor de interpretación de reportes empresariales de FashionStore SaaS.
+        prompt = f"""Eres el motor de interpretación semántica de reportes de FashionStore SaaS.
 Fecha de referencia (hoy): {today.isoformat()}
 Catálogo disponible en la empresa:
 - Sucursales: {branches}
 - Categorías: {categories}
 - Productos ejemplo: {products}
 
-Reportes disponibles (definition_code):
-- top_productos: Prendas más vendidas o con mayor recaudación. Dimensions: ["product"] o ["product", "branch"] si se pide por sucursal. Metrics: ["units", "revenue"].
-- ventas_por_sucursal: Ventas por sucursal. Dimensions: ["branch"]. Metrics: ["revenue", "orders", "avg_ticket"].
-- ventas_por_semana: Evolución semanal. Dimensions: ["week"]. Metrics: ["revenue", "orders"].
-- comparativa_sucursales: Comparativa de tiendas mes a mes. Dimensions: ["branch", "month"]. Metrics: ["revenue", "orders"].
-- menor_existencia: Stock bajo o crítico. Dimensions: ["product", "branch"]. Metrics: ["stock"].
-- ingresos_por_categoria: Ingresos por categoría. Dimensions: ["category"]. Metrics: ["revenue", "units"].
-- pagos: Métodos de pago. Dimensions: ["payment_method"]. Metrics: ["revenue"].
-- pedidos: Volumen de pedidos. Dimensions: ["status"]. Metrics: ["orders"].
-- existencias: Inventario actual. Dimensions: ["product", "branch"]. Metrics: ["stock"].
+Definiciones de reportes disponibles (definition_code):
+- top_productos: Prendas más vendidas o con mayor recaudación. Dimensions: ["PRODUCT"] o ["PRODUCT", "BRANCH"] si se pide por sucursal. Metrics: ["UNITS", "REVENUE"].
+- ventas_por_sucursal: Ventas por sucursal. Dimensions: ["BRANCH"]. Metrics: ["REVENUE", "ORDERS", "AVG_TICKET"].
+- ventas_por_semana: Evolución cronológica semanal. Dimensions: ["WEEK"]. Metrics: ["REVENUE", "ORDERS"].
+- comparativa_sucursales: Comparativa de tiendas. Dimensions: ["BRANCH", "MONTH"]. Metrics: ["REVENUE", "ORDERS"].
+- menor_existencia: Stock bajo o crítico. Dimensions: ["PRODUCT", "BRANCH"]. Metrics: ["STOCK"].
+- ingresos_por_categoria: Ingresos por categoría de prenda. Dimensions: ["CATEGORY"]. Metrics: ["REVENUE", "UNITS"].
+- pagos: Métodos de pago. Dimensions: ["PAYMENT_METHOD"]. Metrics: ["REVENUE"].
+- pedidos: Volumen de pedidos. Dimensions: ["STATUS"]. Metrics: ["ORDERS"].
+- existencias: Inventario actual. Dimensions: ["PRODUCT", "BRANCH"]. Metrics: ["STOCK"].
 
-Solicitud en lenguaje natural del usuario: "{texto}"
-
-REGLA CLAVE: Si el usuario pide "productos mas vendidos", "prendas mas vendidas", o "top productos", definition_code DEBE ser "top_productos". Si además pide "agrupados por sucursal" o "por sucursal", dimensions DEBE ser ["product", "branch"] y chart "grouped_bar".
-REGLA DE FECHAS: "ultimos 3 meses" equivale a fecha_desde = (hoy - 90 días) y fecha_hasta = hoy.
-
-Genera ÚNICAMENTE un JSON con esta estructura exacta (sin markdown extra):
+Estructura de respuesta JSON:
+1. Si la consulta es clara:
 {{
-  "definition_code": "top_productos",
-  "metrics": ["units", "revenue"],
-  "dimensions": ["product", "branch"],
-  "top_n": 10,
+  "status": "READY",
+  "definition_code": "<codigo_valido>",
+  "metrics": ["<METRICA>"],
+  "dimensions": ["<DIMENSION>"],
+  "top_n": null,
   "order": "desc",
   "compare_previous": false,
-  "chart": "grouped_bar",
+  "chart": "BAR" | "GROUPED_BAR" | "LINE" | "PIE" | "TABLE",
   "filters": {{
-    "period": {{
-      "date_from": "YYYY-MM-DD",
-      "date_to": "YYYY-MM-DD",
-      "label": "last_period"
-    }},
+    "period": {{"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "label": "..."}},
     "branch_names": [],
     "category_names": [],
     "product_names": [],
     "low_stock_lt": null
   }}
 }}
+2. Si la consulta es ambigua o incompleta:
+{{"status": "NEEDS_CLARIFICATION", "questions": ["¿Qué querés ver: ventas o existencias?"], "suggestions": ["Ventas por sucursal", "Top productos"]}}
+3. Si la consulta pide algo no soportado o ajeno:
+{{"status": "UNSUPPORTED", "suggestions": ["Ventas por sucursal", "Top productos"]}}
+
+Ejemplos:
+- "mostrar los 10 productos mas vendidos durante los ultimos 3 meses agrupados por sucursal" -> status: READY, definition_code: "top_productos", dimensions: ["PRODUCT", "BRANCH"], metrics: ["UNITS", "REVENUE"], top_n: 10, chart: "GROUPED_BAR", filters.period con últimos 90 días.
+- "ventas por semana" -> status: READY, definition_code: "ventas_por_semana", dimensions: ["WEEK"], metrics: ["REVENUE", "ORDERS"], chart: "LINE".
+- "ingresos por categoría este mes" -> status: READY, definition_code: "ingresos_por_categoria", dimensions: ["CATEGORY"], metrics: ["REVENUE", "UNITS"], chart: "PIE".
+
+Solicitud en lenguaje natural del usuario: "{texto}"
 """
-        raw_json = AIService.generate(
-            prompt=prompt,
-            system_instruction="Eres un extractor semántico estricto. Genera solo JSON válido.",
-            json_mode=True,
-            temperature=0.1,
-            timeout=8,
-        )
+        try:
+            raw_json = ai_client.generate(
+                prompt=prompt,
+                system_instruction="Eres un extractor semántico estricto. Genera solo JSON válido.",
+                json_mode=True,
+                temperature=0.1,
+                timeout=8,
+            )
+        except TypeError:
+            raw_json = AIService.generate(
+                prompt=prompt,
+                system_instruction="Eres un extractor semántico estricto. Genera solo JSON válido.",
+                json_mode=True,
+                temperature=0.1,
+                timeout=8,
+            )
+
         if not raw_json:
             return None
         clean_json = raw_json.strip()
@@ -142,20 +164,76 @@ Genera ÚNICAMENTE un JSON con esta estructura exacta (sin markdown extra):
             if clean_json.endswith("```"):
                 clean_json = clean_json.rsplit("```", 1)[0].strip()
         data = json.loads(clean_json)
+
+        status = data.get("status", "READY")
+        if status == "NEEDS_CLARIFICATION":
+            questions = data.get("questions") or ["¿Podrías especificar qué información deseas consultar?"]
+            suggestions_list = data.get("suggestions") or [d.title for d in sugerencias(texto, 3)]
+            return InterpretResult(
+                status="NEEDS_CLARIFICATION",
+                spec=None,
+                questions=questions,
+                assumptions=data.get("assumptions") or [],
+                suggestions=suggestions_list,
+                interpreter="LLM",
+            )
+        if status == "UNSUPPORTED":
+            suggestions_list = data.get("suggestions") or [d.title for d in sugerencias(texto, 3)]
+            return InterpretResult(
+                status="UNSUPPORTED",
+                spec=None,
+                questions=[],
+                assumptions=data.get("assumptions") or ["La consulta solicitada no está soportada."],
+                suggestions=suggestions_list,
+                interpreter="LLM",
+            )
+
+        # Validar definition_code contra REPORT_DEFINITIONS
+        code = data.get("definition_code")
+        if not code or code not in REPORT_DEFINITIONS:
+            return None
+        defn = REPORT_DEFINITIONS[code]
+
         # Normalizar enums a mayúsculas para compatibilidad con Pydantic
         if "metrics" in data and isinstance(data["metrics"], list):
             data["metrics"] = [m.upper() if isinstance(m, str) else m for m in data["metrics"]]
+        else:
+            data["metrics"] = list(defn.metrics)[:2]
         if "dimensions" in data and isinstance(data["dimensions"], list):
             data["dimensions"] = [d.upper() if isinstance(d, str) else d for d in data["dimensions"]]
+        else:
+            data["dimensions"] = list(defn.dimensions)
         if "chart" in data and isinstance(data["chart"], str):
             data["chart"] = data["chart"].upper()
 
-        spec = ReportSpec.model_validate(data)
+        # Limpiar campos que no pertenecen a ReportSpec
+        data.pop("status", None)
+        data.pop("questions", None)
+        data.pop("assumptions", None)
+        data.pop("suggestions", None)
+        data.pop("request_id", None)
+        data.pop("interpreter", None)
+
+        try:
+            spec = ReportSpec.model_validate(data)
+        except Exception as exc:
+            logger.warning("Fallo al validar ReportSpec generado por LLM: %s", exc)
+            return None
+
+        # Validar compatibilidad contra la definición del reporte
+        from src.reportes_ia.domain.catalogo import compatible
+        errores = compatible(defn, spec)
+        if errores:
+            logger.warning("ReportSpec generado por LLM incompatible con %s: %s", code, errores)
+            return None
+
+        assumptions = ["«Últimos 3 meses» se tomó como los últimos 90 días."] if ("3 meses" in texto.lower() or "tres meses" in texto.lower()) else ["Interpretado mediante IA."]
+
         return InterpretResult(
             status="READY",
             spec=spec,
             questions=[],
-            assumptions=["Interpretado mediante Gemini AI."],
+            assumptions=assumptions,
             suggestions=[],
             interpreter="LLM",
         )
@@ -255,15 +333,34 @@ Genera ÚNICAMENTE un JSON con esta estructura exacta (sin markdown extra):
         dimensions = list(defn.dimensions)
         chart_kind = defn.default_chart
         if code == "top_productos":
-            if re.search(r"\b(?:por|agrupados?\s+por)\s+(?:sucursal|tienda|sucursales|tiendas)\b", norm) or "sucursal" in norm:
+            if re.search(r"\b(?:por|agrupados?\s+por)\s+(?:sucursal|tienda|sucursales|tiendas)\b", norm):
                 dimensions = [Dimension.PRODUCT, Dimension.BRANCH]
                 chart_kind = ChartKind.GROUPED_BAR
             else:
                 dimensions = [Dimension.PRODUCT]
 
+        if code == "top_productos":
+            metrics_list = [Metric.UNITS, Metric.REVENUE]
+        elif code in ("ventas_por_sucursal", "ventas"):
+            metrics_list = [Metric.REVENUE, Metric.ORDERS]
+        elif code == "ventas_por_semana":
+            metrics_list = [Metric.REVENUE, Metric.ORDERS]
+        elif code == "comparativa_sucursales":
+            metrics_list = [Metric.REVENUE, Metric.ORDERS]
+        elif code == "ingresos_por_categoria":
+            metrics_list = [Metric.REVENUE, Metric.UNITS]
+        elif code in ("menor_existencia", "existencias"):
+            metrics_list = [Metric.STOCK]
+        elif code == "pagos":
+            metrics_list = [Metric.REVENUE]
+        elif code == "pedidos":
+            metrics_list = [Metric.ORDERS]
+        else:
+            metrics_list = [m for m in (Metric.REVENUE, Metric.UNITS, Metric.ORDERS, Metric.STOCK) if m in defn.metrics][:2] or [Metric.REVENUE]
+
         spec = ReportSpec(
             definition_code=code,
-            metrics=list(defn.metrics)[:2] or [Metric.REVENUE],
+            metrics=metrics_list,
             dimensions=dimensions,
             filters=filters,
             top_n=top_n,
@@ -282,7 +379,15 @@ Genera ÚNICAMENTE un JSON con esta estructura exacta (sin markdown extra):
         )
 
     def _identificar_definicion(self, norm: str) -> Optional[str]:
-        # 1. top_productos (prioridad máxima si menciona top o productos/prendas más vendidas)
+        # 1. Prioridad: por categoría (antes que vendidos general)
+        if re.search(r"\bpor\s+categor[ií]a\b", norm) or "categoria" in norm or re.search(r"(?:ingreso|venta|recaudacion).*categoria", norm):
+            return "ingresos_por_categoria"
+
+        # 2. Prioridad: por semana (antes que vendidos general)
+        if re.search(r"ventas?.*(?:por\s+semana|semanal)", norm) or re.search(r"\bpor\s+semana\b", norm) or "semanal" in norm or "semana" in norm:
+            return "ventas_por_semana"
+
+        # 3. top_productos (si menciona top o productos/prendas más vendidas)
         if (
             re.search(r"top.*(?:producto|prenda)", norm)
             or re.search(r"(?:diez|cinco|\d+)\s+productos\s+mas\s+vendidos", norm)
@@ -293,19 +398,11 @@ Genera ÚNICAMENTE un JSON con esta estructura exacta (sin markdown extra):
         ):
             return "top_productos"
 
-        # 2. comparativa_sucursales
+        # 4. comparativa_sucursales
         if re.search(r"compar.*(?:sucursal|tienda)", norm) or (
             "sucursal" in norm and ("tres meses" in norm or "3 meses" in norm or "meses" in norm)
         ):
             return "comparativa_sucursales"
-
-        # 3. ventas_por_semana
-        if re.search(r"ventas?.*(?:por\s+semana|semanal)", norm) or "semana" in norm:
-            return "ventas_por_semana"
-
-        # 4. ingresos_por_categoria
-        if re.search(r"(?:ingreso|venta|recaudacion).*categoria", norm) or "categoria" in norm:
-            return "ingresos_por_categoria"
 
         # 5. menor_existencia
         if (

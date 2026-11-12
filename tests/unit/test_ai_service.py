@@ -33,7 +33,10 @@ def test_ai_service_generate_native_gemini_success(monkeypatch):
     monkeypatch.setattr(settings, "ai_base_url", "https://generativelanguage.googleapis.com/v1beta/openai")
     monkeypatch.setattr(settings, "ai_model", "gemini-3.5-flash-lite")
 
-    def mock_post(url, json=None, timeout=None):
+    def mock_post(url, headers=None, json=None, timeout=None):
+        # La clave viaja por cabecera, nunca en la URL (no debe quedar en registros).
+        assert "key=" not in url
+        assert (headers or {}).get("x-goog-api-key") == "fake-key"
         assert "gemini-3.5-flash-lite:generateContent" in url
         req = httpx.Request("POST", url)
         return httpx.Response(
@@ -54,7 +57,10 @@ def test_ai_service_fallback_on_503(monkeypatch):
 
     attempted_models = []
 
-    def mock_post(url, json=None, timeout=None):
+    def mock_post(url, headers=None, json=None, timeout=None):
+        # La clave viaja por cabecera, nunca en la URL (no debe quedar en registros).
+        assert "key=" not in url
+        assert (headers or {}).get("x-goog-api-key") == "fake-key"
         for m in ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]:
             if f"{m}:generateContent" in url:
                 attempted_models.append(m)
