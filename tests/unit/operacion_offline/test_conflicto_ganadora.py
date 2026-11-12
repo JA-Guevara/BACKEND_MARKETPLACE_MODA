@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
@@ -92,8 +92,17 @@ def test_venta_otra_prenda_no_desvia_competing_operation(saas_world):
     price_1_str = str(w.products[0].base_price)
 
     # Crear una segunda variante para esa sucursal
-    from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel
-    var_2 = ProductVariantModel(product_id=w.products[0].id, sku="SKU-OTRA", is_active=True)
+    from src.usuarios_catalogo.infrastructure.models.catalog import ProductVariantModel, SizeModel
+    size_extra = SizeModel(tenant_id=w.tenants[0].id, code="L", name="Grande")
+    w.db.add(size_extra)
+    w.db.flush()
+    var_2 = ProductVariantModel(
+        product_id=w.products[0].id,
+        size_id=size_extra.id,
+        color_id=w.variants[0].color_id,
+        sku="SKU-OTRA",
+        is_active=True,
+    )
     w.db.add(var_2)
     w.db.flush()
     w.db.add(StockModel(branch_id=branch_id, variant_id=var_2.id, quantity=10))
@@ -209,7 +218,7 @@ def test_retry_en_stock_sin_reponer_409_sigue_open(saas_world):
     assert res_retry.json()["error"]["code"] == "stock_still_insufficient"
 
     # Conflicto debe seguir OPEN
-    c_db = w.db.get(SyncConflictModel, uuid4().hex[:0] or c_id)
+    c_db = w.db.get(SyncConflictModel, UUID(str(c_id)))
     w.db.refresh(c_db)
     assert c_db.status == "OPEN"
 
@@ -312,10 +321,10 @@ def test_encargado_empresa_b_consulta_conflicto_empresa_a_retorna_404(saas_world
 
     crid = uuid4()
     res = w.client.post("/api/v1/sync/batch", headers=headers_a, json={
-        "device_id": "pos-a",
+        "device_id": "pos-device-a",
         "client_version": "1.0",
         "operations": [{
-            "client_request_id": str(crid), "type": "SALE", "branch_id": str(branch_id), "device_id": "pos-a",
+            "client_request_id": str(crid), "type": "SALE", "branch_id": str(branch_id), "device_id": "pos-device-a",
             "client_created_at": datetime.now(timezone.utc).isoformat(),
             "payload": {"user_id": str(w.admins[0].id), "items": [{"variant_id": str(vid), "quantity": 1, "unit_price": price_str}], "subtotal": price_str, "total": price_str},
         }],

@@ -91,6 +91,9 @@ class ConflictService:
         if not op:
             raise NotFoundError("Operación asociada no encontrada.")
 
+        if op.type == "PURCHASE" and data.action != "CANCEL":
+            raise ValidationError("Las compras de clientes en conflicto solo admiten cancelación.")
+
         from src.operacion_offline.application.sync_service import OfflineSaleService
 
         now = datetime.now(timezone.utc)
@@ -203,8 +206,25 @@ class ConflictService:
             conflict.resolved_at = now
 
         elif data.action == "RETRY":
-            if conflict.type not in ("SUBSCRIPTION", "PRODUCT_INACTIVE"):
-                raise ValidationError("RETRY solo aplica a conflictos de suscripción o producto inactivo.")
+            if conflict.type not in ("SUBSCRIPTION", "PRODUCT_INACTIVE", "STOCK"):
+                raise ValidationError("RETRY solo aplica a conflictos de suscripción, producto inactivo o existencias (STOCK).")
+            if conflict.type == "STOCK":
+                # Validar existencias antes de reintentar
+                for item in op.payload.get("items", []):
+                    vid = uuid.UUID(str(item["variant_id"]))
+                    req_qty = int(item.get("quantity", 1))
+                    stock_row = self.db.scalar(
+                        select(StockModel).where(
+                            StockModel.variant_id == vid,
+                            StockModel.branch_id == op.branch_id,
+                        ).with_for_update().execution_options(populate_existing=True)
+                    )
+                    avail = stock_row.quantity if stock_row else 0
+                    if avail < req_qty:
+                        raise ConflictError(
+                            "Todavía no hay existencia suficiente. Registrá el ingreso de mercadería o ajustá las cantidades.",
+                            code="stock_still_insufficient",
+                        )
             # Reevaluar
             sale_svc = OfflineSaleService(self.db, self.tenant_id)
             op_in = SyncOperationIn(
@@ -215,7 +235,16 @@ class ConflictService:
                 client_created_at=datetime.fromisoformat(op.payload["_client_created_at"]) if op.payload.get("_client_created_at") else op.first_received_at,
                 payload=op.payload,
             )
-            order = sale_svc.confirmar(op_in, self.actor)
+            try:
+                order = sale_svc.confirmar(op_in, self.actor)
+            except Exception as e:
+                from src.operacion_offline.application.sync_service import SyncConflictException
+                if isinstance(e, SyncConflictException) and e.conflict_type == "STOCK":
+                    raise ConflictError(
+                        "Todavía no hay existencia suficiente. Registrá el ingreso de mercadería o ajustá las cantidades.",
+                        code="stock_still_insufficient",
+                    )
+                raise
             op.status = "CONFIRMED"
             op.server_ref = order.id
             op.server_number = order.number

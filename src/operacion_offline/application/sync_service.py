@@ -87,51 +87,69 @@ def _buscar_operacion_competidora(
             StockMovementModel.delta < 0,
         ).order_by(StockMovementModel.created_at.desc()).limit(1)
     )
-    if latest_mov and latest_mov.reference:
-        # Buscar en SyncOperationModel
-        comp_op = db.scalar(
-            select(SyncOperationModel).where(
-                SyncOperationModel.tenant_id == tenant_id,
-                SyncOperationModel.server_number == latest_mov.reference,
-            ).limit(1)
-        )
-        if comp_op:
-            return {
-                "server_number": comp_op.server_number,
-                "device_id": comp_op.device_id,
-                "synchronized_at": comp_op.first_received_at.isoformat() if comp_op.first_received_at else None,
-            }
-        # Buscar en OrderModel
-        comp_ord = db.scalar(
-            select(OrderModel).where(
-                OrderModel.tenant_id == tenant_id,
-                OrderModel.number == latest_mov.reference,
-            ).limit(1)
-        )
-        if comp_ord:
-            sync_time = comp_ord.paid_at or comp_ord.created_at
-            return {
-                "server_number": comp_ord.number,
-                "device_id": comp_ord.device_id or "ONLINE",
-                "synchronized_at": sync_time.isoformat() if sync_time else None,
-            }
+    if not latest_mov or not latest_mov.reference:
+        return None
 
-    # 2. Si no hay movimiento o no se asoció a una orden, buscar la última operación confirmada en la sucursal que incluya esta prenda
-    last_ops = db.scalars(
+    # Devuelve null si el último movimiento de salida no corresponde a una venta o reserva (por ejemplo, un ajuste)
+    valid_kinds = {"pos_sale", "sale", "offline_sale", "client_offline_purchase", "reservation", "order", "purchase"}
+    if latest_mov.kind not in valid_kinds or latest_mov.kind in ("adjustment", "inventory_adjustment", "waste", "merma", "transfer", "transfer_out"):
+        return None
+
+    # Buscar en SyncOperationModel
+    comp_op = db.scalar(
         select(SyncOperationModel).where(
             SyncOperationModel.tenant_id == tenant_id,
-            SyncOperationModel.branch_id == branch_id,
-            SyncOperationModel.status == "CONFIRMED",
-        ).order_by(SyncOperationModel.first_received_at.desc()).limit(10)
-    ).all()
-    for op_candidate in last_ops:
-        items = op_candidate.payload.get("items", []) if isinstance(op_candidate.payload, dict) else []
-        if any(str(it_c.get("variant_id")) == str(variant_id) for it_c in items):
-            return {
-                "server_number": op_candidate.server_number,
-                "device_id": op_candidate.device_id,
-                "synchronized_at": op_candidate.first_received_at.isoformat() if op_candidate.first_received_at else None,
-            }
+            SyncOperationModel.server_number == latest_mov.reference,
+        ).limit(1)
+    )
+    if comp_op:
+        user_id = comp_op.user_id or comp_op.submitted_by_user_id
+        user = db.get(UserModel, user_id) if user_id else None
+        cashier_name = f"{user.first_name} {user.last_name}".strip() if user else None
+        client_created = None
+        if isinstance(comp_op.payload, dict):
+            client_created = comp_op.payload.get("_client_created_at")
+        if not client_created and hasattr(comp_op, "client_created_at") and comp_op.client_created_at:
+            client_created = comp_op.client_created_at.isoformat()
+        if not client_created and comp_op.first_received_at:
+            client_created = comp_op.first_received_at.isoformat()
+
+        origin = "OFFLINE" if comp_op.device_id and comp_op.device_id != "ONLINE" else "ONLINE"
+        sync_time = comp_op.first_received_at.isoformat() if comp_op.first_received_at else None
+
+        return {
+            "server_number": comp_op.server_number,
+            "device_id": comp_op.device_id,
+            "synchronized_at": sync_time,
+            "client_created_at": client_created,
+            "cashier_name": cashier_name,
+            "origin": origin,
+        }
+
+    # Buscar en OrderModel
+    comp_ord = db.scalar(
+        select(OrderModel).where(
+            OrderModel.tenant_id == tenant_id,
+            OrderModel.number == latest_mov.reference,
+        ).limit(1)
+    )
+    if comp_ord:
+        user_id = comp_ord.cashier_user_id or comp_ord.user_id
+        user = db.get(UserModel, user_id) if user_id else None
+        cashier_name = f"{user.first_name} {user.last_name}".strip() if user else None
+        sync_time = comp_ord.paid_at or comp_ord.created_at
+        client_created = comp_ord.client_created_at.isoformat() if comp_ord.client_created_at else (sync_time.isoformat() if sync_time else None)
+        origin = comp_ord.origin or ("OFFLINE" if comp_ord.device_id and comp_ord.device_id != "ONLINE" else "ONLINE")
+
+        return {
+            "server_number": comp_ord.number,
+            "device_id": comp_ord.device_id or "ONLINE",
+            "synchronized_at": sync_time.isoformat() if sync_time else None,
+            "client_created_at": client_created,
+            "cashier_name": cashier_name,
+            "origin": origin,
+        }
+
     return None
 
 
