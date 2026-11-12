@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from src.operacion_offline.infrastructure.models.sync import SyncBatchModel
 from src.operacion_offline.web.sync_schemas import (
     ConflictOut,
     ConflictResolveIn,
+    PurchaseResolveIn,
     RefundConfirmIn,
     SyncBatchDetailOut,
     SyncBatchIn,
@@ -88,6 +89,22 @@ def sync_status(
     svc = SyncService(db, ctx)
     res = svc.estado(data.client_request_ids)
     return ApiResponse(message="Estado de operaciones obtenido.", data=res)
+
+
+@router.post(
+    "/purchases/{client_request_id}/resolve",
+    response_model=ApiResponse[SyncResultOut],
+    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+)
+def resolve_purchase(
+    client_request_id: UUID,
+    data: PurchaseResolveIn,
+    ctx: TenantCtx,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+    _perm: UserModel = Depends(require_permissions("sync.write")),
+):
+    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Resolución de compra pendiente de implementación (Ola 1)")
 
 
 @router.get("/conflicts", response_model=ApiResponse[dict], status_code=status.HTTP_200_OK)

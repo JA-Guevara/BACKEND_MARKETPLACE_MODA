@@ -16,6 +16,7 @@ class OfflineSaleLine(BaseModel):
     variant_id: UUID
     quantity: StrictInt = Field(gt=0, le=10000)
     unit_price: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    offer_id: UUID | None = None
 
 
 class OfflineSalePayload(BaseModel):
@@ -36,6 +37,13 @@ class OfflinePurchasePayload(BaseModel):
     customer_phone: str | None = None
     payment_method: Literal["cash", "stripe", "manual"] = "cash"
     notes: str | None = None
+    channel: Literal["web", "mobile"] | None = None
+
+
+class PurchaseResolveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["ACCEPT", "CANCEL"]
 
 
 class SyncOperationIn(BaseModel):
@@ -57,33 +65,6 @@ class SyncBatchIn(BaseModel):
     operations: list[SyncOperationIn] = Field(min_length=1)
 
 
-class SyncResultOut(BaseModel):
-    client_request_id: UUID
-    status: OperationStatus
-    server_ref: UUID | None = None
-    server_number: str | None = None
-    conflict_id: UUID | None = None
-    conflict_type: str | None = None
-    reason_code: str | None = None
-    message: str
-    replay: bool = False
-    refund_amount: str | None = None
-    refund_status: Literal['pending','confirmed'] | None = None
-
-
-class SyncBatchOut(BaseModel):
-    batch_id: UUID
-    received_at: datetime
-    request_id: str | None = None
-    results: list[SyncResultOut]
-
-
-class SyncStatusIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    client_request_ids: list[UUID] = Field(min_length=1, max_length=200)
-
-
 class CompetingOperationOut(BaseModel):
     server_number: str
     device_id: str
@@ -101,6 +82,38 @@ class ConflictLineOut(BaseModel):
     unit_price: str
     current_price: str
     competing_operation: CompetingOperationOut | None = None
+
+
+class SyncResultOut(BaseModel):
+    client_request_id: UUID
+    status: OperationStatus
+    server_ref: UUID | None = None
+    server_number: str | None = None
+    conflict_id: UUID | None = None
+    conflict_type: str | None = None
+    reason_code: str | None = None
+    message: str
+    replay: bool = False
+    refund_amount: str | None = None
+    refund_status: Literal['pending','confirmed'] | None = None
+    payment_required: bool | None = None
+    payment_method: str | None = None
+    total: str | None = None
+    payment_expires_at: str | datetime | None = None
+    conflict_lines: list[ConflictLineOut] | None = None
+
+
+class SyncBatchOut(BaseModel):
+    batch_id: UUID
+    received_at: datetime
+    request_id: str | None = None
+    results: list[SyncResultOut]
+
+
+class SyncStatusIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_ids: list[UUID] = Field(min_length=1, max_length=200)
 
 
 class ConflictOut(BaseModel):

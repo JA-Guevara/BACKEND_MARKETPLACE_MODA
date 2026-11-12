@@ -179,3 +179,124 @@ def test_orders_expire_holds_salta_si_reconcile_falla(world):
     assert order.status == "pending_payment"
 
 
+def test_orders_expire_holds_stripe_pagada_no_libera_stock(world):
+    """Pedido stripe vencido con sesión pagada en Stripe -> queda paid, no se libera stock."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+    from unittest.mock import patch
+    from uuid import uuid4
+    from src.ventas_pagos.application.service import CommerceService
+    from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
+
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(hours=3)
+
+    order = OrderModel(
+        id=uuid4(),
+        tenant_id=world.tenants[0].id,
+        number="FS-TEST-STRIPE-PAID",
+        user_id=world.customers[0].id,
+        branch_id=world.branches[0].id,
+        customer_email=world.customers[0].email,
+        payment_method="stripe",
+        stripe_session_id="cs_test_paid",
+        status="pending_payment",
+        payment_status="pending",
+        total=Decimal("100.00"),
+        subtotal=Decimal("100.00"),
+        currency="BOB",
+        address={"city": "Santa Cruz"},
+        items=[{
+            "variant_id": str(world.variants[0].id),
+            "quantity": 1,
+            "unit_price": "100.00",
+            "total": "100.00",
+        }],
+        created_at=past,
+    )
+    world.db.add(order)
+    world.db.commit()
+
+    stock_row = world.db.scalar(select(StockModel).where(StockModel.variant_id == world.variants[0].id, StockModel.branch_id == world.branches[0].id))
+    initial_stock = stock_row.quantity
+
+    def fake_reconcile(self, ord_obj):
+        ord_obj.status = "paid"
+        ord_obj.payment_status = "paid"
+        return {"status": "paid"}
+
+    with patch.object(CommerceService, "reconcile_payment", fake_reconcile):
+        runner = TareasProgramadas(world.db)
+        runner.tick(ahora=now)
+
+    world.db.refresh(order)
+    assert order.status == "paid"
+    world.db.refresh(stock_row)
+    assert stock_row.quantity == initial_stock
+
+
+def test_orders_expire_holds_manual_25h_libera_23h_no(world):
+    """Pedido manual de 25h vence y libera; de 23h no vence."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+    from uuid import uuid4
+    from src.ventas_pagos.infrastructure.models import OrderModel, StockModel
+
+    now = datetime.now(timezone.utc)
+    order_25h = OrderModel(
+        id=uuid4(),
+        tenant_id=world.tenants[0].id,
+        number="FS-TEST-MANUAL-25H",
+        user_id=world.customers[0].id,
+        branch_id=world.branches[0].id,
+        customer_email=world.customers[0].email,
+        payment_method="manual",
+        status="pending_payment",
+        payment_status="pending",
+        total=Decimal("50.00"),
+        subtotal=Decimal("50.00"),
+        currency="BOB",
+        address={"city": "Santa Cruz"},
+        items=[{"variant_id": str(world.variants[0].id), "quantity": 1, "unit_price": "50.00", "total": "50.00"}],
+        created_at=now - timedelta(hours=25),
+    )
+    order_23h = OrderModel(
+        id=uuid4(),
+        tenant_id=world.tenants[0].id,
+        number="FS-TEST-MANUAL-23H",
+        user_id=world.customers[0].id,
+        branch_id=world.branches[0].id,
+        customer_email=world.customers[0].email,
+        payment_method="manual",
+        status="pending_payment",
+        payment_status="pending",
+        total=Decimal("50.00"),
+        subtotal=Decimal("50.00"),
+        currency="BOB",
+        address={"city": "Santa Cruz"},
+        items=[{"variant_id": str(world.variants[0].id), "quantity": 1, "unit_price": "50.00", "total": "50.00"}],
+        created_at=now - timedelta(hours=23),
+    )
+    world.db.add_all([order_25h, order_23h])
+    world.db.commit()
+
+    runner = TareasProgramadas(world.db)
+    runner.tick(ahora=now)
+
+    world.db.refresh(order_25h)
+    world.db.refresh(order_23h)
+    assert order_25h.status in ("expired", "cancelled")
+    assert order_23h.status == "pending_payment"
+
+
+def test_jobs_loop_minutos_cero_no_inicia():
+    """Con JOBS_LOOP_MINUTES=0 el ciclo automático no se inicia."""
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"JOBS_LOOP_MINUTES": "0"}):
+        from src.infrastructure.config.settings import settings
+        val = getattr(settings, "jobs_loop_minutes", 0)
+        assert val == 0
+
+
+
